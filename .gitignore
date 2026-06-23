@@ -1,3 +1,10 @@
+# Repository scope
+# Keep this repository focused on the beam_optimization package.
+/*
+!/.gitignore
+!/beam_optimization/
+!/beam_optimization/**
+
 # Python
 __pycache__/
 *.py[cod]
@@ -10,14 +17,14 @@ build/
 *.egg
 
 # Virtual environments
-venv/
-env/
-.venv/
-.env/
+/venv/
+/env/
+/.venv/
+/.env/
+beam_optimization/.venv/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb
 
 # IDE / local tools
 .vscode/
@@ -35,7 +42,9 @@ Thumbs.db
 !thesis_proposal.pdf
 
 # Training artifacts
-runs/
+beam_optimization/runs/
+beam_optimization/results/
+beam_optimization/**/calc/
 checkpoints/
 *.pt
 *.pth
@@ -45,9 +54,23 @@ checkpoints/
 *.log
 *.csv
 
+# Local TraceWin binary (large/licensed executable)
+beam_optimization/env/tracewin_env/tracewin/pyTraceWin_wrapper/TraceWin_program/TraceWin
+
+# Local launcher with machine-specific permissions/user setup
+beam_optimization/env/tracewin_env/tracewin/pyTraceWin_wrapper/run_tracewin_with_permissions.sh
+
+# Local TraceWin physical workspace: input distributions and field maps are large.
+# Keep it on disk, but do not store it in normal Git history.
+beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/
+
 # Data
 data/raw/
 *.h5
 *.hdf5
 *.npy
 *.npz
+
+
+#cartelle
+file_utili
