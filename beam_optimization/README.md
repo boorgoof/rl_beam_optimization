@@ -231,6 +231,34 @@ Quick benchmark:
 python -m beam_optimization benchmark --quick
 ```
 
+Evaluate one trained policy on the surrogate and save render images:
+
+```bash
+python -m beam_optimization evaluate \
+  --algo sac \
+  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --env surrogate \
+  --episodes 1 \
+  --render
+```
+
+Evaluate the same kind of policy on real TraceWin:
+
+```bash
+python -m beam_optimization evaluate \
+  --algo sac \
+  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --env tracewin \
+  --episodes 1 \
+  --render
+```
+
+`benchmark` is for numerical comparison between methods, normally on the fast
+surrogate. `evaluate` is for final inspection of one trained policy. With
+`--render`, it saves step-by-step figures under `beam_optimization/runs/all/renders/`.
+For TraceWin, the render also saves the true final particle phase-space images
+from the latest `.dst` file when available.
+
 ## 5. Repository Layout
 
 ```text
@@ -248,6 +276,7 @@ beam_optimization/
 └── scripts/
     ├── train.py
     ├── benchmark.py
+    ├── evaluate.py
     └── check.py
 ```
 
@@ -256,6 +285,7 @@ The old numbered scripts are not used. Prefer:
 ```bash
 python -m beam_optimization train
 python -m beam_optimization benchmark
+python -m beam_optimization evaluate
 python -m beam_optimization check
 ```
 
