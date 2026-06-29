@@ -1,4 +1,9 @@
-from beam_optimization.env.tracewin_env.tracewin.simulator import TraceWinSimulator, SimResult, ERROR_SCORE
+from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator, SimResult, ERROR_SCORE
 from beam_optimization.env.simulation import BeamSimulationResult
 
-__all__ = ["TraceWinSimulator", "BeamSimulationResult", "SimResult", "ERROR_SCORE"]
+__all__ = [
+    "TraceWinSimulator",
+    "BeamSimulationResult",
+    "SimResult",
+    "ERROR_SCORE",
+]

@@ -33,7 +33,7 @@ class BOResult:
 
 class BayesianOptimizer:
     """Gaussian Process Bayesian Optimization over the 16 beam parameters.
-
+    
     Args:
         n_calls:      Total number of objective evaluations.
         n_initial:    Random initial points (before GP fits).

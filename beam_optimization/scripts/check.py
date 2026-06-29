@@ -73,7 +73,7 @@ check("SAC", lambda: __import__("beam_optimization.algorithms.model_free.sac",
                                  fromlist=["SAC"]))
 
 check("config adige", lambda: __import__("beam_optimization.config.adige",
-                                          fromlist=["PARAM_KEYS", "BEAM_STATE_VARS"]))
+                                          fromlist=["PARAM_KEYS", "BEAM_STATE_FEATURES"]))
 
 # ── 2. Dataset e surrogati ────────────────────────────────────────────────────
 
@@ -146,11 +146,11 @@ print("\n[4/6] SurrogateEnv — ensemble Thompson sampling")
 def _thompson():
     from beam_optimization.env.surrogate_env import SurrogateEnv
     env = SurrogateEnv(model=surrogates, dataset=ds, max_steps=3)
-    assert len(env._ensemble) == 4
+    assert len(env.simulator.ensemble) == 4
     seen = set()
     for _ in range(30):
         env.reset()
-        seen.add(id(env.model))
+        seen.add(id(env.simulator.model))
     assert len(seen) > 1, "Thompson sampling non diversifica il surrogate"
     print(f"       {len(seen)} surrogati diversi su 30 reset")
 
@@ -197,7 +197,7 @@ print("\n[5b] SurrogateUpdater — bootstrap fine-tuning ensemble")
 
 def _surrogate_updater():
     from beam_optimization.env.surrogate_env.surrogate.updater import SurrogateUpdater
-    from beam_optimization.env.tracewin_env.tracewin.simulator import SimResult
+    from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import SimResult
     from beam_optimization.config.adige import default_params, score
     import numpy as np
 
@@ -213,7 +213,7 @@ def _surrogate_updater():
         fake_final = {v: float(fake_bs[-1][vi])
                       for vi, v in enumerate(__import__(
                           "beam_optimization.config.adige",
-                          fromlist=["BEAM_STATE_VARS"]).BEAM_STATE_VARS)}
+                          fromlist=["BEAM_STATE_FEATURES"]).BEAM_STATE_FEATURES)}
         res = SimResult(
             params=default_params(),
             beam_states=fake_bs,
@@ -237,7 +237,7 @@ check("SurrogateUpdater: add + bootstrap update su 4 surrogati", _surrogate_upda
 print("\n[6/6] TraceWin (solo import + istanziazione, senza eseguire)")
 
 check("Import TraceWinSimulator",
-      lambda: __import__("beam_optimization.env.tracewin_env.tracewin.simulator",
+      lambda: __import__("beam_optimization.env.tracewin_env.tracewin.tracewin_simulator",
                           fromlist=["TraceWinSimulator", "SimResult"]))
 
 check("Import TraceWinEnv",

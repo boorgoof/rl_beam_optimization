@@ -44,15 +44,16 @@ import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
 from beam_optimization.config.adige import (
-    PARAM_KEYS, N_PARAMS, BEAM_STATE_DIM, N_BEAM_STATE_STAGES,
-    BEAM_STATE_VARS, STAGE_PARAM_SIZES,
+    PARAM_KEYS, N_PARAMS, BEAM_STATE_DIM, N_STAGES,
+    STAGE_PARAM_SIZES,
     default_params, sensitivity_vec, action_bounds,
     params_to_vec, vec_to_params, score_tensor,
 )
+from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
 
-OBS_DIM = N_BEAM_STATE_STAGES * BEAM_STATE_DIM  # 108
+OBS_DIM = N_STAGES * BEAM_STATE_DIM  # 108
 
 
 @dataclass
@@ -103,8 +104,6 @@ class SVGAgent:
         obs_mode: str = "full",
         device: Optional[str] = None,
     ):
-        self._ensemble    = surrogate if isinstance(surrogate, list) else [surrogate]
-        self.surrogate    = self._ensemble[0]   # active surrogate (swapped per episode)
         self.dataset      = dataset
         self.H            = H
         self.alpha        = alpha
@@ -113,12 +112,11 @@ class SVGAgent:
         self.obs_mode     = obs_mode
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
+        # Owns the ensemble + beam0 sampling, shared with SurrogateEnv's simulator.
         # Surrogate weights are frozen during SVG — only policy is optimized.
         # We use torch.no_grad() during forward passes instead of permanently
         # disabling requires_grad, so models can still be fine-tuned externally.
-        for surr in self._ensemble:
-            surr.eval()
-            surr.to(self.device)
+        self.simulator = SurrogateBeamSimulator(surrogate, dataset, device=self.device)
 
         act_low, act_high = action_bounds(action_scale)
         bounds = (act_low.tolist(), act_high.tolist())
@@ -129,7 +127,6 @@ class SVGAgent:
         self._defaults = torch.tensor(
             params_to_vec(default_params()), dtype=torch.float32, device=self.device
         )
-        self._initial_beam_states = dataset.get_initial_beam_states().to(self.device)
 
         if stage_weights is not None:
             w = torch.tensor(stage_weights, dtype=torch.float32, device=self.device)
@@ -140,6 +137,11 @@ class SVGAgent:
         self.best_score  = -float("inf")
         self.best_params = default_params()
         self.train_steps = 0
+
+    @property
+    def surrogate(self):
+        """Active ensemble member (swapped per episode via self.simulator)."""
+        return self.simulator.model
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -153,8 +155,7 @@ class SVGAgent:
             SVGResult with loss, final score, per-step history.
         """
         # Thompson sampling: pick one surrogate from ensemble for this episode
-        if len(self._ensemble) > 1:
-            self.surrogate = self._ensemble[np.random.randint(len(self._ensemble))]
+        self.simulator.set_active_model(self.simulator.sample_model_index())
 
         # Freeze surrogate params for this episode (gradient flows through, but
         # params don't accumulate grad). Restored after backward.
@@ -162,8 +163,8 @@ class SVGAgent:
             p.requires_grad_(False)
 
         if beam0 is None:
-            idx   = np.random.randint(0, self._initial_beam_states.shape[0])
-            beam0 = self._initial_beam_states[idx:idx+1]  # (1, 9)
+            beam0_np = self.simulator.sample_beam0()
+            beam0 = torch.tensor(beam0_np, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         # Sample initial params with Gaussian noise
         noise  = torch.randn(N_PARAMS, device=self.device) * self._sens * self.sigma_factor
@@ -171,7 +172,9 @@ class SVGAgent:
 
         # First obs: run surrogate with initial params (no grad needed for obs construction)
         with torch.no_grad():
-            outputs_init = self.surrogate(self._split_params(params), beam0)
+            outputs_init = self.simulator.forward_differentiable(
+                self.surrogate, beam0, self._split_params(params)
+            )
         obs = self._build_obs(beam0, outputs_init)  # (1, 108)
 
         # Score at t=0 (detached — used only as delta baseline)
@@ -193,7 +196,9 @@ class SVGAgent:
 
             # ── Surrogate rollout ─────────────────────────────────────────────
             # Surrogate weights are frozen, but gradient flows through params → action → θ
-            beam_states = self.surrogate(self._split_params_grad(params), beam0)
+            beam_states = self.simulator.forward_differentiable(
+                self.surrogate, beam0, self._split_params_grad(params)
+            )
             # beam_states: list of 11 tensors (1, 9), all in graph
 
             # ── Reward ────────────────────────────────────────────────────────
@@ -247,21 +252,24 @@ class SVGAgent:
         scores = []
         with torch.no_grad():
             for _ in range(n_episodes):
-                if len(self._ensemble) > 1:
-                    self.surrogate = self._ensemble[np.random.randint(len(self._ensemble))]
-                idx   = np.random.randint(0, self._initial_beam_states.shape[0])
-                beam0 = self._initial_beam_states[idx:idx+1]
+                self.simulator.set_active_model(self.simulator.sample_model_index())
+                beam0_np = self.simulator.sample_beam0()
+                beam0 = torch.tensor(beam0_np, dtype=torch.float32, device=self.device).unsqueeze(0)
                 noise = torch.randn(N_PARAMS, device=self.device) * self._sens * self.sigma_factor
                 params = self._defaults + noise
 
                 for _ in range(self.H):
-                    outputs = self.surrogate(self._split_params(params), beam0)
+                    outputs = self.simulator.forward_differentiable(
+                        self.surrogate, beam0, self._split_params(params)
+                    )
                     obs     = self._build_obs_detach(beam0, outputs)
                     action  = self.policy.select_greedy_action(obs.cpu().numpy())
                     action_t = torch.tensor(action, dtype=torch.float32, device=self.device)
                     params  = params + action_t
 
-                outputs = self.surrogate(self._split_params(params), beam0)
+                outputs = self.simulator.forward_differentiable(
+                    self.surrogate, beam0, self._split_params(params)
+                )
                 scores.append(float(score_tensor(outputs[-1])))
         self.policy.train()
         return float(np.mean(scores))

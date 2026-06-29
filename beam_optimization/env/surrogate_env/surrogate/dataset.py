@@ -1,12 +1,12 @@
 """
-SurrogateTrainingDataset — dati di simulazione per allenare il surrogate.
+BeamDataset — dati di simulazione per allenare il surrogate.
 
 Storage interno: flat tensors X(N,25) e Y(N,99), identici al formato
 ml_dataset su disco.  La conversione stage-wise per ModularMLP avviene
 solo in get_training_batch(), esclusivamente quando il surrogate ne ha bisogno.
 
 Formato X (N, 25):
-    [:, 0:9]  = beam_state_0  (9 variabili BEAM_STATE_VARS)
+    [:, 0:9]  = beam_state_0  (9 variabili BEAM_STATE_FEATURES)
     [:, 9:25] = parametri flat (16, ordine di PARAMETERS in adige.py)
 
 Formato Y (N, 99):
@@ -27,24 +27,24 @@ import torch
 from torch.utils.data import Dataset as TorchDataset
 
 from beam_optimization.config.adige import (
-    BEAM_STATE_VARS, BEAM_STATE_DIM, N_STAGES, N_BEAM_STATE_STAGES,
+    BEAM_STATE_FEATURES, BEAM_STATE_DIM, N_OUTPUT_STAGES, N_STAGES,
     STAGE_PARAM_SIZES, params_to_vec, score_from_vec,
 )
 from beam_optimization.env.simulation import BeamSimulationResult
 
 # Nomi colonne del formato flat (usati come metadati nel .pt)
-_X_COLS = list(BEAM_STATE_VARS) + [
+_X_COLS = list(BEAM_STATE_FEATURES) + [
     "AD.SO.01", "AD.SO.02", "AD.ST.04.X", "AD.ST.04.Y",
     "AD.1EQ.01", "AD.1EQ.02", "AD.D.02",
     "AD.EM.6", "AD.EM.8", "AD.EM.10", "AD.EM.12",
     "AD.D.03", "AD.1EQ.03", "AD.1EQ.04",
     "AD.ST.05.X", "AD.ST.05.Y",
 ]
-_Y_COLS = [f"{v}_s{s}" for s in range(1, 12) for v in BEAM_STATE_VARS]
+_Y_COLS = [f"{v}_s{s}" for s in range(1, 12) for v in BEAM_STATE_FEATURES]
 from beam_optimization.config.adige import STAGE_MARKERS as _MARKERS
 
 
-class SurrogateTrainingDataset(TorchDataset):
+class BeamDataset(TorchDataset):
     """Dataset per training e fine-tuning del surrogate.
 
     Archivia i dati nativamente come tensori flat X(N,25) e Y(N,99),
@@ -147,7 +147,7 @@ class SurrogateTrainingDataset(TorchDataset):
     # ── Caricamento da file ────────────────────────────────────────────────────
 
     @classmethod
-    def load(cls, path: str | Path) -> "SurrogateTrainingDataset":
+    def load(cls, path: str | Path) -> "BeamDataset":
         """Carica da .pt.  Supporta il formato flat (ml_dataset) e legacy modular.
 
         Il formato flat è riconosciuto dalla presenza delle chiavi "X" e "Y".
@@ -193,14 +193,14 @@ class SurrogateTrainingDataset(TorchDataset):
                 "Atteso: chiavi 'X','Y' (flat) oppure 'parameter_stage_tensors' (modular)."
             )
 
-        print(f"[SurrogateTrainingDataset] {len(ds):,} campioni caricati da {path}")
+        print(f"[BeamDataset] {len(ds):,} campioni caricati da {path}")
         return ds
 
     # ── Merge ─────────────────────────────────────────────────────────────────
 
-    def merge(self, other: "SurrogateTrainingDataset") -> "SurrogateTrainingDataset":
+    def merge(self, other: "BeamDataset") -> "BeamDataset":
         """Ritorna un nuovo dataset con i campioni di self + other concatenati."""
-        merged = SurrogateTrainingDataset()
+        merged = BeamDataset()
         merged._X = torch.cat([self._X, other._X], dim=0)
         merged._Y = torch.cat([self._Y, other._Y], dim=0)
         merged._scores = torch.cat([self._scores, other._scores], dim=0)
@@ -219,8 +219,8 @@ class SurrogateTrainingDataset(TorchDataset):
             "markers":    list(_MARKERS),
             "num_samples": len(self),
         }, str(path))
-        print(f"[SurrogateTrainingDataset] {len(self):,} campioni salvati in {path}")
+        print(f"[BeamDataset] {len(self):,} campioni salvati in {path}")
 
 
 # Legacy alias kept so older imports and scripts continue to work.
-BeamDataset = SurrogateTrainingDataset
+SurrogateTrainingDataset = BeamDataset

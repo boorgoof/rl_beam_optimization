@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 
 from beam_optimization.config.adige import (
-    BEAM_STATE_DIM, STAGE_PARAM_SIZES, N_STAGES,
+    BEAM_STATE_DIM, STAGE_PARAM_SIZES, N_OUTPUT_STAGES,
     STAGE_PARAM_KEYS, STAGE_MARKERS,
 )
 
@@ -52,7 +52,7 @@ class ModularMLP(nn.Module):
         self._norm_stats = norm_stats
 
         param_sizes = list(STAGE_PARAM_SIZES)   # [1,1,2,1,1,1,4,1,1,1,2]
-        n_stages = N_STAGES                      # 11
+        n_stages = N_OUTPUT_STAGES                      # 11
         beam_dim = BEAM_STATE_DIM                # 9
 
         def _block(in_dim: int, hidden: List[int], drop: float) -> nn.Sequential:

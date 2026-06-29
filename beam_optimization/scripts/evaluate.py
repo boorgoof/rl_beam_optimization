@@ -134,10 +134,10 @@ def final_features(info: dict[str, Any]) -> dict[str, float]:
     if result is None or result.beam_states is None:
         return {}
 
-    from beam_optimization.config.adige import BEAM_STATE_VARS
+    from beam_optimization.config.adige import BEAM_STATE_FEATURES
 
     final = np.asarray(result.beam_states[-1], dtype=float)
-    return {name: float(final[i]) for i, name in enumerate(BEAM_STATE_VARS)}
+    return {name: float(final[i]) for i, name in enumerate(BEAM_STATE_FEATURES)}
 
 
 def save_render(env, args, episode_idx: int, step_idx: int) -> None:
@@ -156,14 +156,17 @@ def save_render(env, args, episode_idx: int, step_idx: int) -> None:
     if args.env == "tracewin":
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="FigureCanvasAgg is non-interactive.*")
-            fig = env.render(include_phase_space=False)
+            fig = env.render(render_beam_distribution=False)
         fig.savefig(prefix.with_name(prefix.name + "_features.png"), dpi=args.dpi)
         plt.close(fig)
 
         if args.tracewin_phase_space:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="FigureCanvasAgg is non-interactive.*")
-                phase_fig = env.render_phase_space(max_particles=args.max_particles, bins=args.bins)
+                phase_fig = env.render_final_beam_distribution(
+                    max_particles=args.max_particles,
+                    bins=args.bins,
+                )
             if phase_fig is not None:
                 phase_fig.savefig(prefix.with_name(prefix.name + "_phase_space.png"), dpi=args.dpi)
                 plt.close(phase_fig)

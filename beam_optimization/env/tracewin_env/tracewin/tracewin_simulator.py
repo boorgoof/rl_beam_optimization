@@ -1,14 +1,9 @@
 """
-TraceWin simulator wrapper for the beam_optimization project.
-
-Provides TraceWinSimulator — a thin, retry-capable wrapper around pyTraceWin_wrapper
-that returns BeamSimulationResult objects compatible with SurrogateTrainingDataset
-and the RL environments.
-
-Execution model:
-    pyTraceWin_wrapper runs TraceWin via SSH as `comunian@localhost` (license requirement).
-    Each call to simulate() resets the calc_dir and launches a fresh process.
-    See TRACEWIN_SETUP.md for system-level prerequisites.
+It is a class that maps ADIGE parameters to a BeamSimulationResult using TraceWin via SSH to run the program with permission of the user comunian. 
+Note:
+pyTraceWin_wrapper runs TraceWin via SSH as `comunian@localhost` (license requirement).
+Each call to simulate() resets the calc_dir and launches a fresh process.
+See TRACEWIN_SETUP.md for system-level prerequisites.
 """
 from __future__ import annotations
 
@@ -26,7 +21,7 @@ from .pyTraceWin_wrapper import TraceWin
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 
 from beam_optimization.config.adige import (
-    BEAM_STATE_VARS, STAGE_MARKERS, INITIAL_NPART,
+    BEAM_STATE_FEATURES, STAGE_MARKERS, INITIAL_NPART,
     default_params, score,
 )
 
@@ -37,7 +32,6 @@ ERROR_SCORE = -999.0
 SimResult = BeamSimulationResult
 
 
-# ── Simulator ─────────────────────────────────────────────────────────────────
 
 class TraceWinSimulator(BeamSimulator):
     """Run TraceWin simulations and return structured BeamSimulationResult objects.
@@ -72,6 +66,7 @@ class TraceWinSimulator(BeamSimulator):
         use_local_project_cache: bool = True,
         local_project_cache_root: Optional[str] = None,
     ):
+        # Initialize the TraceWinSimulator with the given parameters. 
         project_path = Path(project_file).resolve()
         self.project_file = str(project_path)
         self.calc_dir     = str(Path(calc_dir).resolve())
@@ -89,37 +84,45 @@ class TraceWinSimulator(BeamSimulator):
         self._runtime_project_dir = self._source_project_dir
         self._sim_count   = 0
 
+        # if the project file does not exist, raise a FileNotFoundError.
         if not Path(self.project_file).exists():
             raise FileNotFoundError(
                 f"TraceWin project file not found: {self.project_file}"
             )
-        # Create calc_dir now (needed before first _reset_calc_dir call)
+        
+        # Create the calculation directory with open permissions for comunian.
         Path(self.calc_dir).mkdir(parents=True, exist_ok=True)
         os.chmod(self.calc_dir, 0o777)
 
-    # ── Public API ─────────────────────────────────────────────────────────────
 
     def simulate(self, params: Optional[Dict[str, float]] = None) -> BeamSimulationResult:
         """Run one TraceWin simulation.
 
         Args:
-            params: {TraceWin_key: value} dict. Keys not present fall back to
-                    the default values defined in adige.py.
+            params: {STAGE_PARAM_KEYS: value} dict. {"ele[2][5]": 0.365663,"ele[4][5]": 0.168963, ...}
+            if None, fall back to the default values defined in adige.py.
 
         Returns:
-            BeamSimulationResult with beam states at all STAGE_MARKERS, score,
-            and TraceWin metadata.
+            BeamSimulationResult with beam states at all STAGE_MARKERS, score, and TraceWin metadata.
         """
+        
+        # use default parameters if none are provided
         full_params = default_params()
+        # update the default parameters with the provided parameters
         if params:
             full_params.update(params)
 
+        # Kill any leftover TraceWin processes if kill_stale is True
         if self.kill_stale:
-            _kill_tracewin_processes()
+            _kill_stale_tracewin_processes()
 
+        # Increment the simulation count and initialize last_exc to None
         self._sim_count += 1
         last_exc: Optional[Exception] = None
 
+        # try to run the simulation using _run_once(), retrying up to self.retries times if it fails 
+        # (if retris = 2 it will try 3 times in total. first attempt + 2 retries   )
+        # if ok return the result
         for attempt in range(self.retries + 1):
             try:
                 return self._run_once(full_params)
@@ -129,13 +132,25 @@ class TraceWinSimulator(BeamSimulator):
                     print(f"  [TraceWin] attempt {attempt+1} failed: {exc}  — retrying in {self.retry_sleep}s")
                     time.sleep(self.retry_sleep)
 
+        # If we reach here, return a failed result 
         return self._failed_result(full_params, str(last_exc))
 
     @property
     def n_simulations(self) -> int:
+        """Return the number of simulations run so far."""
         return self._sim_count
 
-    # ── Internal ───────────────────────────────────────────────────────────────
+    #Internal methods for use tracewin (Nota questa parte è dovuta solo perche ho avuto probleme nel runnare tracewin con utente comunian)
+    # ------------
+    #  simulate() calls _run_once()
+    #  _run_once() calls _reset_calc_dir() and _prepare_runtime_project() which retunrn the file .ini in the cache to run using TraceWin wrapper.
+    #  prepare_runtime_project() calls 
+    #     - _local_cache_dir() decide the local cache directory to use for containing the project workspace copy
+    #     - _project_signature() compute a hash describing the current project workspace state (to decide whether the cached project workspace is still valid, otherwise it will rebuild the cache)
+    #     - _copy_project_workspace() copy the project workspace into the local cache.
+    #     - _should_copy_project_path() decide what should be copied to the cache.
+    #     - _clean_runtime_project_artifacts() remove generated files from the cached
+    #     - _make_world_accessible() let the comunian SSH user read/write the local project cache.
 
     def _reset_calc_dir(self):
         """Delete and recreate calc_dir with open permissions for comunian."""
@@ -147,21 +162,27 @@ class TraceWinSimulator(BeamSimulator):
     def _prepare_runtime_project(self) -> str:
         """Return the project file that TraceWin should open for this run.
 
-        The original project can live on a network mount. TraceWin may create
-        generated project-side files when command-line element parameters are
-        used, so we run it on a local cached copy of the project folder. The
-        calculation output folder is still self.calc_dir.
+        TraceWin can create or modify files inside the project workspace when
+        it runs. To keep the original workspace untouched, this method can copy
+        the whole project workspace into a local cache and return the cached
+        project ``.ini`` file that is used to run TraceWin.  
+        
+        Note that however the simulation outputs are still written to ``self.calc_dir`` correctly because it has comunian permissions.
         """
+        
+        # If the cache is disabled, TraceWin opens the original project file.
         if not self.use_local_project_cache:
             self._runtime_project_file = self.project_file
             self._runtime_project_dir = self._source_project_dir
             return self._runtime_project_file
 
+        # Otherwise, identify the cache folder and compute the current project signature.
         source_dir = Path(self._source_project_dir)
         cache_dir = self._local_cache_dir()
         signature = self._project_signature(source_dir)
         signature_file = cache_dir / ".tracewin_cache_signature"
 
+        # Reuse the cache only if it exists and its saved signature still matches.
         cache_is_current = (
             cache_dir.exists()
             and (cache_dir / self._project_filename).exists()
@@ -169,6 +190,7 @@ class TraceWinSimulator(BeamSimulator):
             and signature_file.read_text(encoding="utf-8").strip() == signature
         )
 
+        # If the original workspace changed, rebuild the cached copy from scratch.
         if not cache_is_current:
             if cache_dir.exists():
                 shutil.rmtree(cache_dir, ignore_errors=True)
@@ -176,31 +198,61 @@ class TraceWinSimulator(BeamSimulator):
             self._copy_project_workspace(source_dir, cache_dir)
             signature_file.write_text(signature, encoding="utf-8")
 
+        # TraceWin runs as comunian, so the cached workspace must be writable by that user.
         self._make_world_accessible(cache_dir)
         self._clean_runtime_project_artifacts(cache_dir)
 
+        # Return only the cached .ini path: TraceWin receives this file as entrypoint.
         self._runtime_project_dir = str(cache_dir)
         self._runtime_project_file = str((cache_dir / self._project_filename).resolve())
         return self._runtime_project_file
 
     def _local_cache_dir(self) -> Path:
+        """Return the local cache directory for this TraceWin project.
+
+        The directory name is built from:
+        - the project file stem, for readability;
+        - a short hash of the full project path, to avoid collisions between
+          projects with the same filename in different folders.
+
+        Example:
+            ``/path/to/condensed.ini`` ->
+            ``/tmp/tracewin_project_cache/condensed_<hash>``
+        """
         digest = hashlib.sha1(self.project_file.encode("utf-8")).hexdigest()[:12]
         stem = Path(self.project_file).stem
         return Path(self.local_project_cache_root) / f"{stem}_{digest}"
 
     def _project_signature(self, source_dir: Path) -> str:
+        """Return a hash describing the current project workspace state.
+
+        The signature is used to decide whether the cached project workspace is
+        still valid. 
+
+        If any relevant project file is added, removed, renamed, resized, or
+        modified, this signature changes and the cache is rebuilt.
+        """
         h = hashlib.sha1()
         for path in sorted(source_dir.rglob("*")):
+            # The signature must describe the same files that would be copied.
             if path.is_dir() or not self._should_copy_project_path(path, source_dir):
                 continue
             stat = path.stat()
             rel = path.relative_to(source_dir).as_posix()
+
+            # Relative path + size + mtime are enough to detect relevant cache changes.
             h.update(rel.encode("utf-8"))
             h.update(str(stat.st_size).encode("ascii"))
             h.update(str(stat.st_mtime_ns).encode("ascii"))
         return h.hexdigest()
 
     def _copy_project_workspace(self, source_dir: Path, cache_dir: Path) -> None:
+        """Copy the project workspace into the local cache.
+
+        Only files accepted by ``_should_copy_project_path`` are copied. This
+        keeps the cached workspace focused on project inputs and avoids copying
+        old TraceWin outputs or generated files.
+        """
         for path in sorted(source_dir.rglob("*")):
             if not self._should_copy_project_path(path, source_dir):
                 continue
@@ -213,6 +265,18 @@ class TraceWinSimulator(BeamSimulator):
                 shutil.copy2(path, dst)
 
     def _should_copy_project_path(self, path: Path, source_dir: Path) -> bool:
+        """Return True if a workspace path should be copied to the cache.
+
+        The cache should contain the project inputs, not previous simulation
+        outputs or generated artifacts.
+
+        Skipped paths:
+        - output/cache folders such as ``calc`` and ``calc_env_dashboard``;
+        - Python cache folders;
+        - TraceWin generated ``.cal`` files;
+        - generated ``*_new.ini`` files, except when that file is the selected
+          project file itself.
+        """
         rel_parts = path.relative_to(source_dir).parts
         if any(part in {"calc", "calc_env_dashboard", "__pycache__"} for part in rel_parts):
             return False
@@ -247,12 +311,17 @@ class TraceWinSimulator(BeamSimulator):
                 pass
 
     def _run_once(self, params: Dict[str, float]) -> BeamSimulationResult:
+        """Run one TraceWin simulation and return the results."""
+        
+        # Reset the calculation directory and prepare the runtime project file for TraceWin (copy the project file and obtain the runtime project file).
         self._reset_calc_dir()
         runtime_project_file = self._prepare_runtime_project()
 
+        # Run TraceWin with the given parameters and timeout.
         tw = TraceWin(runtime_project_file, self.calc_dir)
         success = tw.run(timeout=self.timeout, elem_params=params)
 
+        # If TraceWin failed, raise an exception.
         if not success:
             raise RuntimeError(
                 f"TraceWin failed.\n"
@@ -260,10 +329,12 @@ class TraceWinSimulator(BeamSimulator):
                 f"  stderr: {tw.last_stderr[:300]}"
             )
 
+        # Extract the results from TraceWin and compute the score final.
         df = tw.results()
         beam_states, final_beam = self._extract_beam_states(df)
         score_val = score(final_beam)
 
+        # Return the simulation result.
         return BeamSimulationResult(
             params=params.copy(),
             beam_states=beam_states,
@@ -280,39 +351,41 @@ class TraceWinSimulator(BeamSimulator):
                 "sim_count": self._sim_count,
             },
         )
-
+    # Internal methods for building the BeamSimulationResult from TraceWin output.
+    # ------------
     def _extract_beam_states(self, df):
-        """Extract beam states at each STAGE_MARKER from partran1.out DataFrame.
+        """Extract beam states at each STAGE_MARKER from partran1.out.
 
         Returns:
             beam_states: (N_stages, 9) float32 ndarray
-            final_beam:  dict of variable name → float for the last stage
+            final_beam:  dict of feature name → float 
         """
         # Build (N_stages, 9) array by matching element indices in the ## column
         n = len(STAGE_MARKERS)
-        beam_states = np.zeros((n, len(BEAM_STATE_VARS)), dtype=np.float32)
+        beam_states = np.zeros((n, len(BEAM_STATE_FEATURES)), dtype=np.float32)
 
         for si, marker in enumerate(STAGE_MARKERS):
-            hits = df[df["##"] == _canonical(marker)]
+            hits = df[df["##"] == _normalize_tracewin_marker(marker)]
             if hits.empty:
                 # Fuzzy fallback: accept values within ±0.5 of the marker
                 hits = df[(df["##"] - marker).abs() < 0.5]
             if hits.empty:
                 continue
             row = hits.iloc[-1]
-            for vi, var in enumerate(BEAM_STATE_VARS):
-                beam_states[si, vi] = _read_var(row, var, self._sim_count)
+            for vi, var in enumerate(BEAM_STATE_FEATURES):
+                beam_states[si, vi] = _read_beam_feature_from_tracewin_row(row, var)
 
         # Final beam state from last row
         last = df.iloc[-1]
         final_beam = {
-            var: _read_var(last, var, self._sim_count)
-            for var in BEAM_STATE_VARS
+            var: _read_beam_feature_from_tracewin_row(last, var)
+            for var in BEAM_STATE_FEATURES
         }
 
         return beam_states, final_beam
 
     def _failed_result(self, params: Dict[str, float], error: str) -> BeamSimulationResult:
+        """ define the BeamSimulationResult to return in case of failure. """
         return BeamSimulationResult(
             params=params.copy(),
             beam_states=None,
@@ -332,10 +405,10 @@ class TraceWinSimulator(BeamSimulator):
         )
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _canonical(value) -> int | float:
-    """Normalize marker to int if it is a whole number, else float."""
+# Helpers 
+#--------------
+def _normalize_tracewin_marker(value) -> int | float:
+    """Normalize a TraceWin marker value before matching the partran1.out rows."""
     try:
         f = float(value)
         return int(f) if f.is_integer() else f
@@ -343,15 +416,15 @@ def _canonical(value) -> int | float:
         return value
 
 
-def _read_var(row, var: str, sim_id: int) -> float:
-    """Read one beam-state variable from a DataFrame row."""
-    if var == "npart_ratio":
+def _read_beam_feature_from_tracewin_row(row, feature: str) -> float:
+    """Read one beam-state feature from a TraceWin output DataFrame row."""
+    if feature == "npart_ratio":
         npart = float(row.get("npart", 0.0))
         return npart / INITIAL_NPART if INITIAL_NPART > 0 else 0.0
-    return float(row.get(var, 0.0))
+    return float(row.get(feature, 0.0))
 
 
-def _kill_tracewin_processes():
+def _kill_stale_tracewin_processes():
     """Kill any leftover TraceWin processes running as `comunian`.
 
     Prevents resource conflicts when a previous simulation timed out and left
@@ -360,7 +433,9 @@ def _kill_tracewin_processes():
     try:
         result = subprocess.run(
             ["ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-             "comunian@localhost", "pkill -u comunian TraceWin || true"],
+             "comunian@localhost",
+             "pkill -u comunian -x TraceWin || true; "
+             "pkill -u comunian -f '[x]vfb-run.*TraceWin' || true"],
             timeout=10,
             capture_output=True,
         )

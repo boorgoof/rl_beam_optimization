@@ -52,7 +52,7 @@ from beam_optimization.algorithms.model_based.mbpo import MBPO
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.env.simulation import BeamSimulationResult
 from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
-from beam_optimization.config.adige import N_STAGES
+from beam_optimization.config.adige import N_OUTPUT_STAGES
 
 
 class MBPOWithModelUpdate(MBPO):
@@ -199,7 +199,7 @@ class MBPOWithModelUpdate(MBPO):
     def _finetune_surrogates(self):
         """Bootstrap fine-tune each surrogate on a mix of offline + online data."""
         criterion = nn.MSELoss()
-        stage_w   = 1.0 / N_STAGES
+        stage_w   = 1.0 / N_OUTPUT_STAGES
 
         for surrogate, opt in zip(self.surrogates, self._surrogate_optimizers):
             surrogate.train()

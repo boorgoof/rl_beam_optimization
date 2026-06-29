@@ -48,7 +48,7 @@ from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
-    N_PARAMS, N_BEAM_STATE_STAGES, BEAM_STATE_DIM,
+    N_PARAMS, N_STAGES, BEAM_STATE_DIM,
     action_bounds,
 )
 

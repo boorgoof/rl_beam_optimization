@@ -46,11 +46,11 @@ from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
-    N_PARAMS, N_BEAM_STATE_STAGES, BEAM_STATE_DIM,
-    action_bounds, params_to_stage_tensors, BEAM_STATE_VARS, score,
+    N_PARAMS, N_STAGES, BEAM_STATE_DIM,
+    action_bounds, params_to_stage_tensors, BEAM_STATE_FEATURES, score,
 )
 
-OBS_DIM = N_BEAM_STATE_STAGES * BEAM_STATE_DIM  # 108
+OBS_DIM = N_STAGES * BEAM_STATE_DIM  # 108
 ACT_DIM = N_PARAMS                               # 16
 
 STAGE_WEIGHT_CONFIGS = {
@@ -69,7 +69,7 @@ def run_pso(surrogate, dataset, budget, seed) -> Dict:
     def objective(params):
         with torch.no_grad():
             outs = surrogate(params_to_stage_tensors(params), beam0)
-            return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_VARS)})
+            return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
 
     n_particles  = 30
     n_iterations = max(1, budget // n_particles - 1)
@@ -85,7 +85,7 @@ def run_bo(surrogate, dataset, budget, seed) -> Dict:
     def objective(params):
         with torch.no_grad():
             outs = surrogate(params_to_stage_tensors(params), beam0)
-            return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_VARS)})
+            return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
 
     result = BayesianOptimizer(n_calls=min(budget, 200), seed=seed).optimize(objective)
     return {"best_score": result.best_score, "history": result.score_history}

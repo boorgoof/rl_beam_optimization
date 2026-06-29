@@ -1,18 +1,13 @@
 """
-BaseBeamEnv — Gymnasium scaffolding shared by TraceWinEnv and SurrogateEnv.
+It is a base class for two beam optimization environments: TraceWinEnv and SurrogateEnv.
 
-Both environments are "the same loop, a different simulator": same observation/
-action spaces, same parameter-delta episode design, same reward (score delta),
-same truncation logic.  Subclasses only install `self.simulator`, which must
-implement BeamSimulator.
+Both environments perform the same Gym loop (reset, step, render) but they differ 
+in the backend simulator that produces the beam states and score for a given set of machine parameters.
 
-Subclass contract:
-    - Set `self.simulator` before calling `super().__init__(...)`.
-    - Optionally override `_on_episode_start()` for extra per-episode setup.
 """
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Dict
 
 import numpy as np
@@ -20,10 +15,11 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from beam_optimization.config.adige import (
-    PARAM_KEYS, BEAM_STATE_DIM, N_BEAM_STATE_STAGES,
-    BEAM_STATE_VARS, default_params, action_bounds, sensitivity_vec,
+    PARAM_KEYS, BEAM_STATE_DIM, N_STAGES,
+    BEAM_STATE_FEATURES, default_params, action_bounds, sensitivity_vec,
 )
-from beam_optimization.env.simulation import BeamSimulationResult
+
+from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 
 ERROR_SCORE = -99.0
 
@@ -34,12 +30,14 @@ class BaseBeamEnv(gym.Env, ABC):
     Args:
         action_scale: Multiplier on sensitivity for action bounds.
         max_steps:    Episode length.
-        sigma_factor: Gaussian noise scale (× sensitivity) for initial parameters.
+        sigma_factor: Gaussian noise scale (* sensitivity) for initial parameters.
         obs_mode:     'full' (108), 'final' (9), or 'final_with_beam0' (18).
     """
 
     metadata = {"render_modes": ["human"]}
 
+    # Construction: simulator, Gym spaces(observations and actions), and episode state (step count, current params, current obs, current score, previous obs, last action, last reward, best score, best params).
+    # -------------------------------------------------------------------------
     def __init__(
         self,
         action_scale: float = 1.0,
@@ -49,25 +47,40 @@ class BaseBeamEnv(gym.Env, ABC):
     ):
         super().__init__()
 
-        self.max_steps    = int(max_steps)
-        self.sigma_factor = float(sigma_factor)
-        self.obs_mode     = obs_mode
+        # every subclass must have a BeamSimulator
+        self.simulator = self._build_simulator()
+        if not isinstance(self.simulator, BeamSimulator):
+            raise TypeError(
+                f"{type(self).__name__}._build_simulator() must return a "
+                f"BeamSimulator, got {type(self.simulator).__name__}"
+            )
 
+        # Gym spaces 
+        
+        # 1) Observation space
+        self.obs_mode = obs_mode
         if obs_mode == "full":
-            obs_dim = N_BEAM_STATE_STAGES * BEAM_STATE_DIM  # 108
+            obs_dim = N_STAGES * BEAM_STATE_DIM  # 108
         elif obs_mode == "final":
-            obs_dim = BEAM_STATE_DIM                         # 9
+            obs_dim = BEAM_STATE_DIM                              # 9
         elif obs_mode == "final_with_beam0":
-            obs_dim = 2 * BEAM_STATE_DIM                     # 18
+            obs_dim = 2 * BEAM_STATE_DIM                          # 18
         else:
             raise ValueError(f"obs_mode must be 'full', 'final', or 'final_with_beam0', got {obs_mode!r}")
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
+        # 2) Action space
+        self.action_scale = float(action_scale)
+        self.max_steps = int(max_steps)
+        self.sigma_factor = float(sigma_factor)
+        # Action space is set with bounds based on action_scale and sensitivity vector.  
         act_low, act_high = action_bounds(action_scale)
         self.action_space = spaces.Box(low=act_low, high=act_high, dtype=np.float32)
 
+        # we want also a sensitivity vector used for perturbing initial parameters in reset(). 
+        # stddev = sigma_factor * sensitivity is the standard deviation of the Gaussian noise applied to each parameter.
         self._sens = sensitivity_vec().astype(np.float32)
 
         # Episode state
@@ -78,86 +91,108 @@ class BaseBeamEnv(gym.Env, ABC):
         self._previous_obs   = None
         self._last_action    = None
         self._last_reward    = 0.0
-        self.best_score       = ERROR_SCORE
-        self.best_params      = default_params()
+        self.best_score      = ERROR_SCORE
+        self.best_params     = default_params()
 
-    # ── Gym interface ──────────────────────────────────────────────────────────
 
-    def reset(self, *, seed=None, options=None):
+    def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._step_count = 0
 
-        # Sample random initial params
+        # Sample random initial params and perturb them with Gaussian noise scaled by sensitivity.
         params = default_params()
         for key, sens in zip(PARAM_KEYS, self._sens):
             params[key] += float(self.np_random.normal(0.0, self.sigma_factor * sens))
         self._current_params = params
 
-        self._on_episode_start()
+        # Let the simulator prepare its context to start the episode. 
+        # For the surrogate, it samples beam0 and chooses the active ensemble member.
         self.simulator.reset_context(self.np_random)
 
+        # Run the simulator with the initial parameters.
         result = self.simulator.simulate(params)
-        obs, sc, extra = self._result_to_obs_score_info(result)
+
+        obs, score, extra = self._result_to_obs_score_info(result)
         self._current_obs   = obs
-        self._current_score = sc
+        self._current_score = score
         self._previous_obs  = None
         self._last_action   = None
         self._last_reward   = 0.0
 
-        info = {"score": sc, "step": 0, **extra}
+        info = {"score": score, "step": 0, **extra}
         return obs.copy(), info
 
     def step(self, action: np.ndarray):
+
+        # action to perform. It is a delta to apply to the current parameters. 
+        # The action is clipped to the action space bounds.
         action = np.clip(action, self.action_space.low, self.action_space.high)
         prev_obs = self._current_obs.copy()
 
-        # Apply delta
+        # modify parameter with deltas to the current parameters. 
         for key, delta in zip(PARAM_KEYS, action):
             self._current_params[key] = float(self._current_params[key]) + float(delta)
 
+        # perform concretely the action (the simulation) and get the new observation and final score.
         prev_score = self._current_score
         result = self.simulator.simulate(self._current_params)
-        obs, sc, extra = self._result_to_obs_score_info(result)
+        obs, score, extra = self._result_to_obs_score_info(result)
 
-        reward = sc - prev_score
+        # compute reward 
+        reward = score - prev_score
+
+        # update episode state
         self._current_obs   = obs
-        self._current_score = sc
+        self._current_score = score
         self._previous_obs  = prev_obs
         self._last_action   = action.copy()
         self._last_reward   = float(reward)
 
-        if sc > self.best_score:
-            self.best_score  = sc
+        # update best score and best parameters if the current score is better than the best score so far.
+        if score > self.best_score:
+            self.best_score  = score
             self.best_params = self._current_params.copy()
 
+        # update step count
         self._step_count += 1
         truncated = self._step_count >= self.max_steps
 
-        info = {"score": sc, "prev_score": prev_score, "step": self._step_count,
+        info = {"score": score, "prev_score": prev_score, "step": self._step_count,
                 "best_score": self.best_score, **extra}
+        
+        # return the observation next state, reward, terminated with success flag (False), truncated flag, and info dictionary.
         return obs.copy(), reward, False, truncated, info
 
-    def render(self, mode: str = "human"):
-        """Render the current observation as beam-feature bars.
 
-        The render intentionally does not draw a synthetic particle cloud.  It
-        only visualizes the features actually exposed by the selected
-        ``obs_mode``.  If called after ``step()``, the previous observation is
-        shown as dashed reference segments; after ``reset()``, the reference is
-        the current observation itself.
+    def render(self, mode: str = "human"):
+        """Render the current observation as graphical beam-feature bars ().
+
+        It visualizes a graphical representation of the current observation,
+        showing the before and after values of each beam feature (npart_ratio, x0, y0, SizeX, SizeY, ex, ey, x'0, y'0) for each stage, 
+        along with the delta compared to the previous observation. 
+        
+        The number of stages shown is determined by the selected ``obs_mode``.  
+        
+        If called after ``step()``, the previous observation is shown as dashed reference segments; 
+        if called after ``reset()``, the reference is the current observation itself.
         """
         if mode != "human":
             raise NotImplementedError(f"Only render(mode='human') is supported, got {mode!r}")
 
         import matplotlib.pyplot as plt
 
+        # Convert current and previous observations to DataFrames
+        # (rows = stages, columns = beam features)
         current = self._obs_to_stage_frame(self._current_obs)
-        previous_obs = self._previous_obs if self._previous_obs is not None else self._current_obs
+    
+        previous_obs = self._previous_obs if self._previous_obs is not None else self._current_obs # If no previous obs exists (e.g. just after reset), use current as reference
         previous = self._obs_to_stage_frame(previous_obs)
 
+        # Build a flat list of dicts, one per (stage, feature) combination,
+        # storing before/after values, the delta, and the trend direction
         rows = []
         for row_idx, stage in enumerate(current["stage"]):
-            for feature in BEAM_STATE_VARS:
+            for feature in BEAM_STATE_FEATURES:
                 before = float(previous.loc[row_idx, feature])
                 after = float(current.loc[row_idx, feature])
                 rows.append(
@@ -171,7 +206,9 @@ class BaseBeamEnv(gym.Env, ABC):
                     }
                 )
 
+        # Create a 3×3 grid of subplots, one panel per beam feature
         fig, axes = plt.subplots(3, 3, figsize=(16, 10.2))
+        # Title bar with environment name, obs mode, step count, score, and last reward
         fig.suptitle(
             f"{type(self).__name__} render | obs_mode={self.obs_mode!r} | "
             f"step={self._step_count} | score={self._current_score:.6g} | "
@@ -179,51 +216,55 @@ class BaseBeamEnv(gym.Env, ABC):
             fontsize=13,
         )
 
-        for ax, feature in zip(axes.ravel(), BEAM_STATE_VARS):
+        # Fill each subplot with the bar chart for its feature
+        for ax, feature in zip(axes.ravel(), BEAM_STATE_FEATURES):
             feature_rows = [row for row in rows if row["feature"] == feature]
             self._plot_render_feature_panel(ax, feature, feature_rows)
 
-        plt.tight_layout()
+        plt.tight_layout()  # Prevent overlapping labels between subplots
         plt.show()
-        return fig
+        return fig 
 
-    # ── Convenience ───────────────────────────────────────────────────────────
 
+    
     def evaluate_params(self, params: Dict[str, float]) -> float:
-        """Evaluate a fixed parameter set without stepping the episode."""
+        """Evaluate a fixed parameter set without stepping the episode.
+        Returns the final score of a specific simulation."""
+
         result = self.simulator.simulate(params)
-        _, sc, _ = self._result_to_obs_score_info(result)
-        return sc
+        _, score, _ = self._result_to_obs_score_info(result)
+        return score
 
-    # ── Hooks for subclasses ──────────────────────────────────────────────────
-
-    def _on_episode_start(self) -> None:
-        """Optional per-episode setup beyond parameter perturbation.
-
-        No-op by default.  Most per-episode simulator setup should live in
-        `self.simulator.reset_context()`.
+    
+    @abstractmethod
+    def _build_simulator(self) -> BeamSimulator:
+        """Return the simulator for the environment to perform actions.
+        BaseBeamEnv define the common Gymnasium loop; while subclasses decide which BeamSimulator implementation powers that loop.
         """
-        pass
+        raise NotImplementedError
 
-    def _result_to_obs_score_info(
-        self,
-        result: BeamSimulationResult,
-    ) -> tuple[np.ndarray, float, dict]:
-        """Convert a BeamSimulationResult into Gym obs, score and info extras."""
+
+    # Observation helpers for reset() and step()
+    # -------------------------------------------------------------------------
+    def _result_to_obs_score_info(self, result: BeamSimulationResult) -> tuple[np.ndarray, float, dict]:
+        """Convert a BeamSimulationResult into (obs, score, info_extras)."""
+        
+        # If the simulation failed, return a zero observation and the error score.
         if not result.success or result.beam_states is None:
             obs = np.zeros(self.observation_space.shape, dtype=np.float32)
             return obs, ERROR_SCORE, {"sim_result": result}
 
-        obs = self._slice_obs(result.beam_states, self.obs_mode)
+        # Select the beam stages produced by the simulator to expose as the Gym observation, based on the obs_mode.
+        obs = self._select_beam_stages_for_observation(result.beam_states, self.obs_mode)
         return obs, result.score_val, {"sim_result": result}
 
     @staticmethod
-    def _slice_obs(stages, obs_mode: str) -> np.ndarray:
-        """Slice a (12, 9) beam-states array/list according to obs_mode.
-
-        Shared by both simulators. The only difference is how `stages` is
-        produced (TraceWin output vs surrogate forward pass), not how it is
-        sliced into an observation.
+    def _select_beam_stages_for_observation(stages, obs_mode: str) -> np.ndarray:
+        """Select the beam stages produced by the simulator to be exposed as the concrete Gym observation.
+        for obs_mode='full', return all 12 stages (108 dim array); 
+        for 'final', return only the last stage (9 dim array); 
+        for 'final_with_beam0', return the first and last stages (18 dim array).
+        
         """
         if obs_mode == "full":
             return np.asarray(stages, dtype=np.float32).flatten()
@@ -232,26 +273,38 @@ class BaseBeamEnv(gym.Env, ABC):
         else:  # "final_with_beam0"
             return np.concatenate([stages[0], stages[-1]]).astype(np.float32)
 
+    
+    # Render helpers
+    # -------------------------------------------------------------------------
     def _obs_to_stage_frame(self, obs: np.ndarray):
+        """Convert a Gym observation array into a DataFrame with columns 
+        ["stage", *BEAM_STATE_FEATURES] = ["stage",  "npart_ratio", "x0", "y0", "SizeX", "SizeY", "ex", "ey", "x'0", "y'0"].
+        It is used for rendering the before/after values of each beam feature for each stage.
+        """
         import pandas as pd
 
         obs = np.asarray(obs, dtype=np.float32)
+        # Convert the observation into a DataFrame with columns  ["stage", *BEAM_STATE_FEATURES] = ["stage",  "npart_ratio", "x0", "y0", "SizeX", "SizeY", "ex", "ey", "x'0", "y'0"].
+        # the number of stages (the number of rows) shown is determined by the selected ``obs_mode``.
         if self.obs_mode == "full":
-            df = pd.DataFrame(obs.reshape(-1, BEAM_STATE_DIM), columns=BEAM_STATE_VARS)
+            df = pd.DataFrame(obs.reshape(-1, BEAM_STATE_DIM), columns=BEAM_STATE_FEATURES)
             df.insert(0, "stage", np.arange(len(df)))
             return df
         if self.obs_mode == "final":
-            df = pd.DataFrame([obs], columns=BEAM_STATE_VARS)
+            df = pd.DataFrame([obs], columns=BEAM_STATE_FEATURES)
             df.insert(0, "stage", ["final"])
             return df
-
+        # self.obs_mode == "final_with_beam0"
         arr = obs.reshape(2, BEAM_STATE_DIM)
-        df = pd.DataFrame(arr, columns=BEAM_STATE_VARS)
+        df = pd.DataFrame(arr, columns=BEAM_STATE_FEATURES)
         df.insert(0, "stage", ["beam0", "final"])
         return df
 
     @staticmethod
     def _feature_improved(feature: str, before: float, after: float) -> bool:
+        """Return True if the feature value improved from before to after, False otherwise.
+        We want npart_ratio to increase, SizeX/SizeY/ex/ey to decrease, and x0/y0/x'0/y'0 to move closer to zero.
+        """
         if feature == "npart_ratio":
             return round(float(after), 3) >= round(float(before), 3)
         if feature in {"SizeX", "SizeY", "ex", "ey"}:
@@ -262,6 +315,8 @@ class BaseBeamEnv(gym.Env, ABC):
 
     @classmethod
     def _feature_trend(cls, feature: str, before: float, after: float) -> str:
+        """Return 'improved', 'worse', or 'same' based on the before and after values of a feature. """
+        
         if feature == "npart_ratio":
             return "improved" if cls._feature_improved(feature, before, after) else "worse"
         if np.isclose(before, after):
@@ -269,7 +324,11 @@ class BaseBeamEnv(gym.Env, ABC):
         return "improved" if cls._feature_improved(feature, before, after) else "worse"
 
     @staticmethod
-    def _feature_ylim(before_values, after_values):
+    def _feature_ylim(before_values, after_values) -> tuple[float, float]:
+        """
+        Compute the y-axis limits (min, max) for a feature panel based on the before and after values of the feature.
+        It is used in _plot_render_feature_panel() to set the y-axis limits for each feature panel in the render() visualization.
+        """
         values = np.asarray(list(before_values) + list(after_values), dtype=float)
         values = values[np.isfinite(values)]
         if values.size == 0:
@@ -284,6 +343,8 @@ class BaseBeamEnv(gym.Env, ABC):
 
     @classmethod
     def _plot_render_feature_panel(cls, ax, feature: str, feature_rows: list[dict]) -> None:
+        """it is used in render() to plot a single feature panel, showing before/after values and delta for each stage."""
+        
         stages = [str(row["stage"]) for row in feature_rows]
         before = np.asarray([row["before"] for row in feature_rows], dtype=float)
         after = np.asarray([row["after"] for row in feature_rows], dtype=float)

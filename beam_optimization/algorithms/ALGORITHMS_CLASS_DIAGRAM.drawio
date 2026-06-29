@@ -1,0 +1,559 @@
+<mxfile host="65bd71144e">
+  <diagram id="algorithms-class-diagram" name="Algorithms class diagram">
+    <mxGraphModel dx="6020" dy="4347" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3900" pageHeight="2500" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="beam_optimization/algorithms - UML class diagram" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-470" y="-700" width="780" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="Legend" value="&lt;b&gt;Legend&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-430" y="-910" width="420" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="Legend_body" value="hollow triangle = real Python inheritance&lt;br&gt;black diamond = owned object/composition&lt;br&gt;white diamond = shared reference/wrapper&lt;br&gt;open arrow = dependency/return/call&lt;br&gt;dashed arrow = concept/API grouping only" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="Legend" vertex="1" connectable="0">
+          <mxGeometry y="50" width="420" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="OnPolicyAgent" value="&amp;lt;&amp;lt;concept&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;OnPolicyAgent&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-40" y="70" width="330" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="OnPolicyAgent_body" value="&lt;b&gt;concept attributes&lt;/b&gt;&lt;br&gt;+ current-policy trajectories&lt;br&gt;+ EpisodeBuffer-style storage&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(state, training)&lt;br&gt;+ store(state, action, reward, value, logpa, done)&lt;br&gt;+ optimize(last_value)&lt;br&gt;+ save(path) / load(path)&lt;br&gt;&lt;i&gt;no common Python base&lt;/i&gt;" style="text;html=1;strokeColor=#6c8ebf;fillColor=#dae8fc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="OnPolicyAgent" vertex="1" connectable="0">
+          <mxGeometry y="50" width="330" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="OffPolicyAgent" value="&amp;lt;&amp;lt;concept&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;OffPolicyAgent&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" parent="1" vertex="1">
+          <mxGeometry x="910" y="60" width="330" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="OffPolicyAgent_body" value="&lt;b&gt;concept attributes&lt;/b&gt;&lt;br&gt;+ replay-based training&lt;br&gt;+ reusable transitions&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(state, training)&lt;br&gt;+ store(s, a, r, ns, done)&lt;br&gt;+ optimize()&lt;br&gt;+ save(path) / load(path)&lt;br&gt;&lt;i&gt;no common Python base&lt;/i&gt;" style="text;html=1;strokeColor=#82b366;fillColor=#d5e8d4;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="OffPolicyAgent" vertex="1" connectable="0">
+          <mxGeometry y="50" width="330" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="REINFORCE" value="&lt;b&gt;REINFORCE&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-450" y="410" width="220" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="REINFORCE_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ policy_network : stocActor&lt;br&gt;+ optimizer : Adam&lt;br&gt;+ episode_buffer : EpisodeBuffer&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(...)&lt;br&gt;+ store(...)&lt;br&gt;+ optimize(last_value=0.0)&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#6c8ebf;fillColor=#dae8fc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="REINFORCE" vertex="1" connectable="0">
+          <mxGeometry y="34" width="220" height="136" as="geometry" />
+        </mxCell>
+        <mxCell id="A2C" value="&lt;b&gt;A2C&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-460" y="645" width="250" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="A2C_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ policy_network : stocActor&lt;br&gt;+ value_network : ValueNetwork&lt;br&gt;+ policy_optimizer / value_optimizer&lt;br&gt;+ episode_buffer : EpisodeBuffer&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(...)&lt;br&gt;+ store(...)&lt;br&gt;+ optimize(last_value=0.0)&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#6c8ebf;fillColor=#dae8fc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="A2C" vertex="1" connectable="0">
+          <mxGeometry y="34" width="250" height="156" as="geometry" />
+        </mxCell>
+        <mxCell id="PPO" value="&lt;b&gt;PPO&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-460" y="1220" width="220" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="PPO_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ policy : stocActor&lt;br&gt;+ value : ValueNetwork&lt;br&gt;+ p_opt / v_opt&lt;br&gt;+ buffer : EpisodeBuffer&lt;br&gt;+ clip_range / n_epochs&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(...)&lt;br&gt;+ store(...)&lt;br&gt;+ optimize(last_value=0.0)&lt;br&gt;- _eval_logpa(...)&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#6c8ebf;fillColor=#dae8fc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="PPO" vertex="1" connectable="0">
+          <mxGeometry y="34" width="220" height="176" as="geometry" />
+        </mxCell>
+        <mxCell id="TRPO" value="&lt;b&gt;TRPO&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-460" y="930" width="250" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="TRPO_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ policy_network : stocActor&lt;br&gt;+ value_network : ValueNetwork&lt;br&gt;+ value_optimizer&lt;br&gt;+ episode_buffer : EpisodeBuffer&lt;br&gt;+ max_kl / cg_steps / cg_damping&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(...)&lt;br&gt;+ store(...)&lt;br&gt;+ optimize(last_value=0.0)&lt;br&gt;- _compute_log_prob(...)&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#6c8ebf;fillColor=#dae8fc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="TRPO" vertex="1" connectable="0">
+          <mxGeometry y="34" width="250" height="186" as="geometry" />
+        </mxCell>
+        <mxCell id="DDPG" value="&lt;b&gt;DDPG&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="670" y="390" width="250" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="DDPG_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ actor / target_actor : detActor&lt;br&gt;+ critic / target_critic : QNetwork&lt;br&gt;+ actor_opt / critic_opt&lt;br&gt;+ replay : ReplayBuffer&lt;br&gt;+ noise : NormalNoiseDecayStrategy&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(...)&lt;br&gt;+ store(...)&lt;br&gt;+ optimize()&lt;br&gt;- _soft_update(...)&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#82b366;fillColor=#d5e8d4;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="DDPG" vertex="1" connectable="0">
+          <mxGeometry y="34" width="250" height="186" as="geometry" />
+        </mxCell>
+        <mxCell id="TD3" value="&lt;b&gt;TD3&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="660" y="720" width="250" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="TD3_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ actor / target_actor : detActor&lt;br&gt;+ critic / target_critic : TwinQNetwork&lt;br&gt;+ replay : ReplayBuffer&lt;br&gt;+ exploration_noise / policy_noise&lt;br&gt;+ policy_frequency / total_steps&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(...)&lt;br&gt;+ store(...)&lt;br&gt;+ optimize()&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#82b366;fillColor=#d5e8d4;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="TD3" vertex="1" connectable="0">
+          <mxGeometry y="34" width="250" height="186" as="geometry" />
+        </mxCell>
+        <mxCell id="SB3SAC" value="&lt;b&gt;SB3SAC&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="610" y="2370" width="300" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="SB3SAC_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ _model : stable_baselines3.SAC&lt;br&gt;+ _env : Gymnasium env&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ train(env, n_steps, log_every)&lt;br&gt;+ select_action(obs, deterministic)&lt;br&gt;+ save(path)&lt;br&gt;+ load(path, env) : SB3SAC" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SB3SAC" vertex="1" connectable="0">
+          <mxGeometry y="34" width="300" height="196" as="geometry" />
+        </mxCell>
+        <mxCell id="BestScoreCallback" value="&lt;b&gt;_BestScoreCallback&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="635" y="2720" width="250" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="BestScoreCallback_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ best_score : float&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;- _on_step() : bool" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="BestScoreCallback" vertex="1" connectable="0">
+          <mxGeometry y="34" width="250" height="96" as="geometry" />
+        </mxCell>
+        <mxCell id="GaussianPolicyNetwork" value="&amp;lt;&amp;lt;torch.nn.Module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;stocActor&lt;/b&gt;&lt;br&gt;(GaussianPolicyNetwork)" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=68;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-200" y="1950" width="330" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="GaussianPolicyNetwork_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ env_min / env_max&lt;br&gt;+ target_entropy&lt;br&gt;+ logalpha : nn.Parameter&lt;br&gt;+ input_layer / hidden_layers&lt;br&gt;+ mean_layer / log_std_layer&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ forward(state) : mean, log_std&lt;br&gt;+ full_pass(state) : action, log_prob, ...&lt;br&gt;+ select_action(state)&lt;br&gt;+ select_greedy_action(state)" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="GaussianPolicyNetwork" vertex="1" connectable="0">
+          <mxGeometry y="68" width="330" height="152" as="geometry" />
+        </mxCell>
+        <mxCell id="DeterministicPolicyNetwork" value="&amp;lt;&amp;lt;torch.nn.Module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;detActor&lt;/b&gt;&lt;br&gt;(DeterministicPolicyNetwork)" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=68;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="830" y="1410" width="330" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="DeterministicPolicyNetwork_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ env_min / env_max&lt;br&gt;+ input_layer / hidden_layers&lt;br&gt;+ output_layer&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ forward(state) : Tensor&lt;br&gt;+ select_action(state) : ndarray" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="DeterministicPolicyNetwork" vertex="1" connectable="0">
+          <mxGeometry y="68" width="330" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="ValueNetwork" value="&amp;lt;&amp;lt;torch.nn.Module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;ValueNetwork&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-730" y="1540" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="ValueNetwork_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ input_layer&lt;br&gt;+ hidden_layers&lt;br&gt;+ output_layer&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ forward(state) : Tensor" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="ValueNetwork" vertex="1" connectable="0">
+          <mxGeometry y="50" width="250" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="QNetwork" value="&amp;lt;&amp;lt;torch.nn.Module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;QNetwork&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="440" y="1640" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="QNetwork_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ input_layer&lt;br&gt;+ hidden_layers&lt;br&gt;+ output_layer&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ forward(state, action) : Tensor" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="QNetwork" vertex="1" connectable="0">
+          <mxGeometry y="50" width="250" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="TwinQNetwork" value="&amp;lt;&amp;lt;torch.nn.Module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;TwinQNetwork&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="140" y="1640" width="270" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="TwinQNetwork_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ input_a / hidden_a / output_a&lt;br&gt;+ input_b / hidden_b / output_b&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ forward(state, action) : q1, q2&lt;br&gt;+ Q1(state, action) : Tensor" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="TwinQNetwork" vertex="1" connectable="0">
+          <mxGeometry y="50" width="270" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="EpisodeBuffer" value="&lt;b&gt;EpisodeBuffer&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-1110" y="70" width="260" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="EpisodeBuffer_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ gamma : float&lt;br&gt;+ tau : float&lt;br&gt;+ states / actions / rewards&lt;br&gt;+ values / logpas / dones&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ store(...)&lt;br&gt;+ get(last_value=0.0) : tensors&lt;br&gt;- _reset()" style="text;html=1;strokeColor=#9673a6;fillColor=#e1d5e7;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="EpisodeBuffer" vertex="1" connectable="0">
+          <mxGeometry y="34" width="260" height="146" as="geometry" />
+        </mxCell>
+        <mxCell id="ReplayBuffer" value="&lt;b&gt;ReplayBuffer&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="280" y="-330" width="310" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="ReplayBuffer_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ max_size / ptr / size&lt;br&gt;+ states / actions&lt;br&gt;+ rewards / next_states / terminals&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ store(state, action, reward, next_state, done)&lt;br&gt;+ sample(batch_size)&lt;br&gt;+ __len__()" style="text;html=1;strokeColor=#9673a6;fillColor=#e1d5e7;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="ReplayBuffer" vertex="1" connectable="0">
+          <mxGeometry y="34" width="310" height="146" as="geometry" />
+        </mxCell>
+        <mxCell id="MixedReplayBuffer" value="&lt;b&gt;MixedReplayBuffer&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="1400" y="-345" width="310" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="MixedReplayBuffer_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ real_buffer : ReplayBuffer&lt;br&gt;+ synth_buffer : ReplayBuffer&lt;br&gt;+ real_ratio : float&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ store_real(...)&lt;br&gt;+ store_synth(...)&lt;br&gt;+ store(...)&lt;br&gt;+ sample(batch_size)&lt;br&gt;+ size : int property" style="text;html=1;strokeColor=#9673a6;fillColor=#e1d5e7;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="MixedReplayBuffer" vertex="1" connectable="0">
+          <mxGeometry y="34" width="310" height="176" as="geometry" />
+        </mxCell>
+        <mxCell id="NormalNoiseDecayStrategy" value="&lt;b&gt;NormalNoiseDecayStrategy&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" parent="1" vertex="1">
+          <mxGeometry x="1160" y="420" width="310" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="NormalNoiseDecayStrategy_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ low / high&lt;br&gt;+ noise_ratio&lt;br&gt;+ ratio_noise_injected&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(model, state, max_exploration)&lt;br&gt;+ update()" style="text;html=1;strokeColor=#9673a6;fillColor=#e1d5e7;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="NormalNoiseDecayStrategy" vertex="1" connectable="0">
+          <mxGeometry y="34" width="310" height="126" as="geometry" />
+        </mxCell>
+        <mxCell id="Logger" value="&lt;b&gt;Logger&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="1080" y="-720" width="260" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="Logger_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ run_dir : Path&lt;br&gt;+ tb : SummaryWriter&lt;br&gt;+ rows : list[dict]&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ log(metrics, step)&lt;br&gt;+ close()" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="Logger" vertex="1" connectable="0">
+          <mxGeometry y="34" width="260" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="MBPO" value="&lt;b&gt;MBPO&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="2050" y="15" width="360" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="MBPO_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ agent : SAC/TD3-like&lt;br&gt;+ simulator : SurrogateBeamSimulator&lt;br&gt;+ mixed_buffer : MixedReplayBuffer&lt;br&gt;+ rollout_length / n_synthetic_per_step&lt;br&gt;+ sigma_factor / real_ratio / obs_mode&lt;br&gt;+ surrogates : list[ModularMLP] property&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ step(obs, action, reward, next_obs, done)&lt;br&gt;+ select_action(state, training)&lt;br&gt;- _generate_synthetic()&lt;br&gt;- _surrogate_forward(...)" style="text;html=1;strokeColor=#d6b656;fillColor=#fff2cc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="MBPO" vertex="1" connectable="0">
+          <mxGeometry y="34" width="360" height="236" as="geometry" />
+        </mxCell>
+        <mxCell id="MBPOWithModelUpdate" value="&lt;b&gt;MBPOWithModelUpdate&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="2040" y="450" width="380" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="MBPOWithModelUpdate_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ _offline_dataset : SurrogateTrainingDataset&lt;br&gt;+ _online_dataset : SurrogateTrainingDataset&lt;br&gt;+ _surrogate_optimizers : list[Adam]&lt;br&gt;+ model_train_freq / model_train_epochs&lt;br&gt;+ online_mix_ratio / dataset_save_path&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ step(..., sim_result=None)&lt;br&gt;- _finetune_surrogates()&lt;br&gt;- _collate_mixed(n_total)&lt;br&gt;+ n_online_samples property&lt;br&gt;+ save_dataset(...)&lt;br&gt;+ save_surrogates(...)" style="text;html=1;strokeColor=#d6b656;fillColor=#fff2cc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="MBPOWithModelUpdate" vertex="1" connectable="0">
+          <mxGeometry y="34" width="380" height="286" as="geometry" />
+        </mxCell>
+        <mxCell id="SVGAgent" value="&lt;b&gt;SVGAgent&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="3310" y="444" width="390" height="330" as="geometry" />
+        </mxCell>
+        <mxCell id="SVGAgent_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ dataset : SurrogateTrainingDataset&lt;br&gt;+ simulator : SurrogateBeamSimulator&lt;br&gt;+ policy : stocActor&lt;br&gt;+ optimizer : Adam&lt;br&gt;+ H / alpha / sigma_factor&lt;br&gt;+ best_score / best_params / train_steps&lt;br&gt;+ surrogate property&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ optimize_episode(beam0=None) : SVGResult&lt;br&gt;+ select_action(obs, training=False)&lt;br&gt;+ evaluate(n_episodes)&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#d6b656;fillColor=#fff2cc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="SVGAgent" vertex="1" connectable="0">
+          <mxGeometry y="34" width="390" height="296" as="geometry" />
+        </mxCell>
+        <mxCell id="SVGResult" value="&amp;lt;&amp;lt;dataclass&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;SVGResult&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="3900" y="530" width="290" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="SVGResult_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ episode_loss : float&lt;br&gt;+ final_score : float&lt;br&gt;+ score_history : list[float]&lt;br&gt;+ grad_norm : float" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="SVGResult" vertex="1" connectable="0">
+          <mxGeometry y="50" width="290" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="SurrogateBeamSimulator" value="&amp;lt;&amp;lt;external&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;SurrogateBeamSimulator&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="2690" y="45" width="330" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="SurrogateBeamSimulator_body" value="&lt;b&gt;external attributes&lt;/b&gt;&lt;br&gt;+ ensemble&lt;br&gt;+ model&lt;br&gt;+ dataset&lt;br&gt;+ _episode_beam0&lt;br&gt;&lt;hr&gt;&lt;b&gt;external methods&lt;/b&gt;&lt;br&gt;+ sample_beam0(...)&lt;br&gt;+ sample_model_index(...)&lt;br&gt;+ reset_context(...)&lt;br&gt;+ forward_differentiable(...)&lt;br&gt;+ simulate(params)" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateBeamSimulator" vertex="1" connectable="0">
+          <mxGeometry y="50" width="330" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="ModularMLP" value="&amp;lt;&amp;lt;external&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;ModularMLP&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="2720" y="-150" width="270" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="ModularMLP_body" value="&lt;b&gt;external attributes&lt;/b&gt;&lt;br&gt;+ input_net / stage_nets / output_nets&lt;br&gt;+ single_output&lt;br&gt;&lt;hr&gt;&lt;b&gt;external methods&lt;/b&gt;&lt;br&gt;+ forward(stage_params, beam0)&lt;br&gt;+ save(path)&lt;br&gt;+ load(path)" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="ModularMLP" vertex="1" connectable="0">
+          <mxGeometry y="50" width="270" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="SurrogateTrainingDataset" value="&amp;lt;&amp;lt;external&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;SurrogateTrainingDataset&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="2680" y="525" width="300" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="SurrogateTrainingDataset_body" value="&lt;b&gt;external attributes&lt;/b&gt;&lt;br&gt;+ _X / _Y / _scores&lt;br&gt;&lt;hr&gt;&lt;b&gt;external methods&lt;/b&gt;&lt;br&gt;+ add(...) / merge(...)&lt;br&gt;+ get_training_batch(...)&lt;br&gt;+ get_initial_beam_states()&lt;br&gt;+ save_flat(path)" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateTrainingDataset" vertex="1" connectable="0">
+          <mxGeometry y="50" width="300" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="BeamSimulationResult" value="&amp;lt;&amp;lt;external&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;BeamSimulationResult&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="2065" y="890" width="330" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="BeamSimulationResult_body" value="&lt;b&gt;external attributes&lt;/b&gt;&lt;br&gt;+ params / beam_states&lt;br&gt;+ score_val / success / source&lt;br&gt;+ final_beam / metadata&lt;br&gt;&lt;hr&gt;&lt;b&gt;use&lt;/b&gt;&lt;br&gt;source=&amp;quot;tracewin&amp;quot; feeds online dataset" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="BeamSimulationResult" vertex="1" connectable="0">
+          <mxGeometry y="50" width="330" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="ObjectiveFunction" value="&amp;lt;&amp;lt;callable&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;ObjectiveFunction&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="4620" y="325" width="300" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="ObjectiveFunction_body" value="&lt;b&gt;callable input&lt;/b&gt;&lt;br&gt;+ params : dict[str, float]&lt;br&gt;&lt;hr&gt;&lt;b&gt;returns&lt;/b&gt;&lt;br&gt;+ score : float" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="ObjectiveFunction" vertex="1" connectable="0">
+          <mxGeometry y="50" width="300" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="PSOOptimizer" value="&lt;b&gt;PSOOptimizer&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="4630" y="-40" width="300" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="PSOOptimizer_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ n_particles : int&lt;br&gt;+ n_iterations : int&lt;br&gt;+ bounds_scale : float&lt;br&gt;+ w / c1 / c2&lt;br&gt;+ seed&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ optimize(objective) : PSOResult" style="text;html=1;strokeColor=#d79b00;fillColor=#ffe6cc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="PSOOptimizer" vertex="1" connectable="0">
+          <mxGeometry y="34" width="300" height="186" as="geometry" />
+        </mxCell>
+        <mxCell id="PSOResult" value="&amp;lt;&amp;lt;dataclass&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;PSOResult&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="5130" y="-10" width="300" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="PSOResult_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ best_params : dict[str, float]&lt;br&gt;+ best_score : float&lt;br&gt;+ score_history : list[float]&lt;br&gt;+ n_evaluations : int" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="PSOResult" vertex="1" connectable="0">
+          <mxGeometry y="50" width="300" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="BayesianOptimizer" value="&lt;b&gt;BayesianOptimizer&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="4620" y="640" width="300" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="BayesianOptimizer_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ n_calls : int&lt;br&gt;+ n_initial : int&lt;br&gt;+ bounds_scale : float&lt;br&gt;+ acq_func : str&lt;br&gt;+ seed&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ optimize(objective) : BOResult" style="text;html=1;strokeColor=#d79b00;fillColor=#ffe6cc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="BayesianOptimizer" vertex="1" connectable="0">
+          <mxGeometry y="34" width="300" height="186" as="geometry" />
+        </mxCell>
+        <mxCell id="BOResult" value="&amp;lt;&amp;lt;dataclass&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;BOResult&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="5140" y="670" width="300" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="BOResult_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ best_params : dict[str, float]&lt;br&gt;+ best_score : float&lt;br&gt;+ score_history : list[float]&lt;br&gt;+ n_calls : int" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="BOResult" vertex="1" connectable="0">
+          <mxGeometry y="50" width="300" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="StableBaselinesSAC" value="&amp;lt;&amp;lt;external&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;stable_baselines3.SAC&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="635" y="2150" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="StableBaselinesSAC_body" value="&lt;b&gt;external attributes&lt;/b&gt;&lt;br&gt;+ policy / replay_buffer / logger&lt;br&gt;&lt;hr&gt;&lt;b&gt;external methods&lt;/b&gt;&lt;br&gt;+ learn(...)&lt;br&gt;+ predict(...)&lt;br&gt;+ save(...) / load(...)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="StableBaselinesSAC" vertex="1" connectable="0">
+          <mxGeometry y="50" width="250" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="BaseCallback" value="&amp;lt;&amp;lt;external&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;BaseCallback&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="635" y="2950" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="BaseCallback_body" value="&lt;b&gt;external attributes&lt;/b&gt;&lt;br&gt;+ locals / globals&lt;br&gt;&lt;hr&gt;&lt;b&gt;external methods&lt;/b&gt;&lt;br&gt;+ _on_step() : bool" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="BaseCallback" vertex="1" connectable="0">
+          <mxGeometry y="50" width="250" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="api_on_1" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" parent="1" source="REINFORCE" target="OnPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="-340" y="360" />
+              <mxPoint x="125" y="360" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="api_on_2" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" parent="1" source="A2C" target="OnPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-335" y="644.9999999999995" as="sourcePoint" />
+            <mxPoint x="125" y="249.99999999999955" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-335" y="620" />
+              <mxPoint x="125" y="620" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="api_on_3" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" parent="1" source="PPO" target="OnPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-350" y="1180" as="sourcePoint" />
+            <mxPoint x="125" y="249.99999999999955" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-350" y="1200" />
+              <mxPoint x="125" y="1200" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="api_on_4" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" parent="1" source="TRPO" target="OnPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-335" y="890" as="sourcePoint" />
+            <mxPoint x="125" y="250" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-335" y="910" />
+              <mxPoint x="125" y="910" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="api_off_1" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" parent="1" source="DDPG" target="OffPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="795" y="330" />
+              <mxPoint x="1075" y="330" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="api_off_2" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" parent="1" source="TD3" target="OffPolicyAgent" edge="1">
+          <mxGeometry x="-0.5914" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="785" y="700" />
+              <mxPoint x="1075" y="700" />
+            </Array>
+            <mxPoint x="1" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="api_off_3" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;" parent="1" source="SAC" target="OffPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="785" y="1000" />
+              <mxPoint x="1075" y="1000" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="reinforce_policy" value="stochastic actor" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="REINFORCE" target="GaussianPolicyNetwork" edge="1">
+          <mxGeometry x="-0.8683" relative="1" as="geometry">
+            <mxPoint x="-291" y="580" as="sourcePoint" />
+            <mxPoint x="-320" y="1810" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-291" y="590" />
+              <mxPoint x="-117" y="590" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="reinforce_buffer" value="trajectory" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="REINFORCE" target="EpisodeBuffer" edge="1">
+          <mxGeometry x="-0.3295" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a2c_policy" value="stochastic actor" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="A2C" target="GaussianPolicyNetwork" edge="1">
+          <mxGeometry x="-0.8294" relative="1" as="geometry">
+            <mxPoint x="-272.5" y="835" as="sourcePoint" />
+            <mxPoint x="-79.92307692307713" y="1610" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-272" y="850" />
+              <mxPoint x="-117" y="850" />
+            </Array>
+            <mxPoint x="1" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a2c_value" value="V critic" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" parent="1" source="A2C" target="ValueNetwork" edge="1">
+          <mxGeometry x="-0.6766" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="-397" y="880" />
+              <mxPoint x="-605" y="880" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="a2c_buffer" value="trajectory" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="A2C" target="EpisodeBuffer" edge="1">
+          <mxGeometry x="-0.4909" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ppo_policy" value="stochastic actor" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="PPO" target="GaussianPolicyNetwork" edge="1">
+          <mxGeometry x="-0.6411" relative="1" as="geometry">
+            <mxPoint x="-293" y="1430" as="sourcePoint" />
+            <mxPoint x="-80.42000000000007" y="1611.5400000000009" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-293" y="1460" />
+              <mxPoint x="-117" y="1460" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ppo_value" value="V critic" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" parent="1" source="PPO" target="ValueNetwork" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ppo_buffer" value="trajectory" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="PPO" target="EpisodeBuffer" edge="1">
+          <mxGeometry x="-0.6677" relative="1" as="geometry">
+            <mxPoint x="-240" y="1270" as="sourcePoint" />
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="trpo_policy" value="stochastic actor" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="TRPO" target="GaussianPolicyNetwork" edge="1">
+          <mxGeometry x="-0.7639" relative="1" as="geometry">
+            <mxPoint x="-271.5" y="1150" as="sourcePoint" />
+            <mxPoint x="-81" y="1610" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-271" y="1170" />
+              <mxPoint x="-117" y="1170" />
+              <mxPoint x="-117" y="1610" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="trpo_value" value="V critic" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" parent="1" source="TRPO" target="ValueNetwork" edge="1">
+          <mxGeometry x="-0.5898" relative="1" as="geometry">
+            <mxPoint x="-396.5" y="1150" as="sourcePoint" />
+            <mxPoint x="-604" y="1540" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-396" y="1160" />
+              <mxPoint x="-604" y="1160" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="trpo_buffer" value="trajectory" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.25;exitDx=0;exitDy=0;" parent="1" source="TRPO" target="EpisodeBuffer" edge="1">
+          <mxGeometry x="-0.5836" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="-980" y="985" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="trpo_utils_edge" value="trust-region math" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.75;exitDx=0;exitDy=0;" parent="1" source="TRPO" target="TRPOUtils" edge="1">
+          <mxGeometry x="-0.8065" relative="1" as="geometry">
+            <mxPoint x="-430" y="1090" as="sourcePoint" />
+            <Array as="points">
+              <mxPoint x="-670" y="1095" />
+              <mxPoint x="-670" y="1095" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ddpg_actor" value="detActor + target" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="DDPG" target="DeterministicPolicyNetwork" edge="1">
+          <mxGeometry x="-0.7814" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="858" y="640" />
+              <mxPoint x="995" y="640" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ddpg_critic" value="critic + target" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" parent="1" source="DDPG" target="QNetwork" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="733" y="640" />
+              <mxPoint x="560" y="640" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ddpg_replay" value="transitions" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.25;exitDx=0;exitDy=0;" parent="1" source="DDPG" target="ReplayBuffer" edge="1">
+          <mxGeometry x="-0.7288" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ddpg_noise" value="exploration" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="DDPG" target="NormalNoiseDecayStrategy" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="td3_actor" value="detActor + target" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.75;exitY=1;exitDx=0;exitDy=0;" parent="1" source="TD3" target="DeterministicPolicyNetwork" edge="1">
+          <mxGeometry x="-0.6681" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="848" y="970" />
+              <mxPoint x="995" y="970" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="td3_critic" value="twin critic + target" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" parent="1" source="TD3" target="TwinQNetwork" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="722" y="960" />
+              <mxPoint x="355" y="960" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="td3_replay" value="transitions" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.25;exitDx=0;exitDy=0;" parent="1" source="TD3" target="ReplayBuffer" edge="1">
+          <mxGeometry x="-0.917" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sac_policy" value="stochastic actor" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" parent="1" source="SAC" target="GaussianPolicyNetwork" edge="1">
+          <mxGeometry x="-0.923" relative="1" as="geometry">
+            <mxPoint x="853" y="1075" as="sourcePoint" />
+            <mxPoint x="-12" y="1610" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="-118" y="1170" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sac_critic" value="critic1/critic2 + targets" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" parent="1" source="SAC" target="QNetwork" edge="1">
+          <mxGeometry x="-0.531" relative="1" as="geometry">
+            <mxPoint x="787.5" y="1290" as="sourcePoint" />
+            <mxPoint x="560" y="1640" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="720" y="1280" />
+              <mxPoint x="720" y="1320" />
+              <mxPoint x="560" y="1320" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sac_replay" value="transitions" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.25;exitDx=0;exitDy=0;" parent="1" source="SAC" target="ReplayBuffer" edge="1">
+          <mxGeometry x="-0.8571" y="5" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sb3_wraps" value="wraps" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SB3SAC" target="StableBaselinesSAC" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sb3_callback" value="training callback" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SB3SAC" target="BestScoreCallback" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="callback_inherits" value="" style="endArrow=block;endFill=0;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="BestScoreCallback" target="BaseCallback" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mixed_real_synth" value="real + synth buffers" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MixedReplayBuffer" target="ReplayBuffer" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mbpo_inherits_api" value="delegates to agent" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPO" target="OffPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mbpo_mixed" value="replaces agent.replay" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPO" target="MixedReplayBuffer" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mbpo_agent" value="agent SAC/TD3-like" style="startArrow=diamond;startFill=0;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPO" target="OffPolicyAgent" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mbpo_sim" value="owns simulator" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPO" target="SurrogateBeamSimulator" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sim_models" value="ensemble" style="startArrow=diamond;startFill=0;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateBeamSimulator" target="ModularMLP" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sim_dataset" value="beam0 source" style="startArrow=diamond;startFill=0;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateBeamSimulator" target="SurrogateTrainingDataset" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2810" y="460" />
+              <mxPoint x="2810" y="460" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="mbpo_update_inherits" value="" style="endArrow=block;endFill=0;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPOWithModelUpdate" target="MBPO" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mbpo_update_dataset" value="offline + online" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPOWithModelUpdate" target="SurrogateTrainingDataset" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mbpo_update_tracewin" value="sim_result" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPOWithModelUpdate" target="BeamSimulationResult" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="svg_policy" value="stochastic actor" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;entryX=0.75;entryY=0;entryDx=0;entryDy=0;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" parent="1" source="SVGAgent" target="GaussianPolicyNetwork" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1790" y="1740" as="sourcePoint" />
+            <mxPoint x="-16.99999999999909" y="1610" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="3408" y="1870" />
+              <mxPoint x="48" y="1870" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="svg_sim" value="owns simulator" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="SVGAgent" target="SurrogateBeamSimulator" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="3505" y="150" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="svg_dataset" value="initial beams" style="startArrow=diamond;startFill=0;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SVGAgent" target="SurrogateTrainingDataset" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="svg_returns" value="returns" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SVGAgent" target="SVGResult" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pso_calls" value="calls" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="PSOOptimizer" target="ObjectiveFunction" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pso_returns" value="returns" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="PSOOptimizer" target="PSOResult" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="bo_calls" value="calls" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="BayesianOptimizer" target="ObjectiveFunction" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="bo_returns" value="returns" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="BayesianOptimizer" target="BOResult" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="TRPOUtils" value="&amp;lt;&amp;lt;module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;trpo_utils&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="-1400" y="1004" width="320" height="196" as="geometry" />
+        </mxCell>
+        <mxCell id="TRPOUtils_body" value="&lt;b&gt;functions&lt;/b&gt;&lt;br&gt;+ conjugate_gradient(...)&lt;br&gt;+ fisher_vector_product(...)&lt;br&gt;+ compute_kl_divergence(...)&lt;br&gt;+ get_flat_params(...) / set_flat_params(...)&lt;br&gt;+ get_flat_grad(...)&lt;br&gt;+ line_search(...)" style="text;html=1;strokeColor=#9673a6;fillColor=#e1d5e7;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="TRPOUtils" vertex="1" connectable="0">
+          <mxGeometry y="34" width="320" height="162" as="geometry" />
+        </mxCell>
+        <mxCell id="SAC" value="&lt;b&gt;SAC&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="660" y="1050" width="250" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="SAC_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ policy : stocActor&lt;br&gt;+ critic1 / critic2 : QNetwork&lt;br&gt;+ tc1 / tc2 target critics&lt;br&gt;+ actor_opt / critic*_opt / alpha_opt&lt;br&gt;+ target_entropy&lt;br&gt;+ replay : ReplayBuffer&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ select_action(state, training)&lt;br&gt;+ store(s, a, r, ns, done)&lt;br&gt;+ optimize()&lt;br&gt;+ save(path) / load(path)" style="text;html=1;strokeColor=#82b366;fillColor=#d5e8d4;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="SAC" vertex="1" connectable="0">
+          <mxGeometry y="34" width="250" height="196" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

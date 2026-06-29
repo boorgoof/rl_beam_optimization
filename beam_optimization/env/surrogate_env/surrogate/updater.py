@@ -37,7 +37,7 @@ import torch.nn as nn
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
 from beam_optimization.env.simulation import BeamSimulationResult
-from beam_optimization.config.adige import N_STAGES
+from beam_optimization.config.adige import N_OUTPUT_STAGES
 
 
 class SurrogateUpdater:
@@ -121,7 +121,7 @@ class SurrogateUpdater:
             return None
 
         criterion = nn.MSELoss()
-        stage_w   = 1.0 / N_STAGES
+        stage_w   = 1.0 / N_OUTPUT_STAGES
         final_losses = {}
 
         for i, (surrogate, opt) in enumerate(zip(self.surrogates, self._optimizers)):

@@ -35,68 +35,16 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from beam_optimization.algorithms.utils.replay_buffer import ReplayBuffer
+from beam_optimization.algorithms.utils.replay_buffer import MixedReplayBuffer
+from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator, run_surrogate_forward
 from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.config.adige import (
-    BEAM_STATE_VARS, BEAM_STATE_DIM, N_BEAM_STATE_STAGES,
+    BEAM_STATE_DIM, N_STAGES,
     PARAM_KEYS, N_PARAMS,
     default_params, sensitivity_vec,
-    params_to_stage_tensors, vec_to_params, params_to_vec, score,
+    vec_to_params, params_to_vec,
 )
-
-
-# ── Mixed replay buffer ────────────────────────────────────────────────────────
-
-class MixedReplayBuffer:
-    """Samples from real and synthetic buffers with a fixed real/synth ratio.
-
-    Args:
-        obs_dim:    Observation dimension.
-        act_dim:    Action dimension.
-        real_size:  Max real transitions.
-        synth_size: Max synthetic transitions.
-        real_ratio: Fraction of each mini-batch drawn from real_buffer.
-    """
-
-    def __init__(
-        self,
-        obs_dim: int,
-        act_dim: int,
-        real_size: int = int(1e5),
-        synth_size: int = int(1e6),
-        real_ratio: float = 0.05,
-    ):
-        self.real_buffer  = ReplayBuffer(obs_dim, act_dim, real_size)
-        self.synth_buffer = ReplayBuffer(obs_dim, act_dim, synth_size)
-        self.real_ratio   = float(real_ratio)
-
-    def store_real(self, s, a, r, ns, done):
-        self.real_buffer.store(s, a, r, ns, float(done))
-
-    def store_synth(self, s, a, r, ns, done):
-        self.synth_buffer.store(s, a, r, ns, float(done))
-
-    def store(self, s, a, r, ns, done):
-        self.store_real(s, a, r, ns, float(done))
-
-    def sample(self, batch_size: int):
-        n_real  = max(1, int(batch_size * self.real_ratio))
-        n_synth = batch_size - n_real
-
-        if len(self.synth_buffer) < n_synth:
-            return self.real_buffer.sample(batch_size)
-
-        real_batch  = self.real_buffer.sample(n_real)
-        synth_batch = self.synth_buffer.sample(n_synth)
-        return tuple(torch.cat([r, s], dim=0) for r, s in zip(real_batch, synth_batch))
-
-    def __len__(self) -> int:
-        return len(self.real_buffer) + len(self.synth_buffer)
-
-    @property
-    def size(self) -> int:
-        return len(self.real_buffer)
 
 
 # ── DynaMBPO ──────────────────────────────────────────────────────────────────
@@ -144,17 +92,8 @@ class MBPO:
         self.obs_mode         = obs_mode
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        # Accept single surrogate or ensemble list
-        if isinstance(surrogates, list):
-            self.surrogates = surrogates
-        else:
-            self.surrogates = [surrogates]
-        for s in self.surrogates:
-            s.eval()
-            s.to(self.device)
-
-        # Dataset for beam0 sampling
-        self._initial_beam_states = dataset.get_initial_beam_states().numpy()  # (N, 9) float32
+        # Owns the ensemble + beam0 sampling, shared with SurrogateEnv's simulator
+        self.simulator = SurrogateBeamSimulator(surrogates, dataset, device=self.device)
 
         # Precompute defaults and sensitivities for random param sampling
         self._defaults_vec = params_to_vec(default_params())       # (16,) float32
@@ -165,6 +104,12 @@ class MBPO:
             obs_dim, act_dim, real_buffer_size, synth_buffer_size, real_ratio
         )
         agent.replay = self.mixed_buffer
+
+    @property
+    def surrogates(self) -> List[ModularMLP]:
+        """Backward-compat alias used by MBPOWithModelUpdate: the underlying
+        ModularMLP ensemble, now owned by self.simulator."""
+        return self.simulator.ensemble
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -204,23 +149,21 @@ class MBPO:
         """Generate fresh synthetic rollouts following the episode design:
            sample beam0 → sample random params → surrogate pre-run → RL rollout.
         """
-        n_beams = self._initial_beam_states.shape[0]
-        n_surr  = len(self.surrogates)
+        rng = np.random.default_rng()
 
         for _ in range(self.n_synthetic_per_step):
-            # 1. Sample beam0 from dataset
-            idx      = np.random.randint(0, n_beams)
-            beam0_np = self._initial_beam_states[idx].astype(np.float32)
+            # 1. Sample beam0 from dataset, fixed for the duration of this rollout
+            beam0_np = self.simulator.sample_beam0(rng)
             beam0    = torch.tensor(beam0_np, dtype=torch.float32,
                                     device=self.device).unsqueeze(0)
 
             # 2. Sample random initial params
-            noise  = np.random.randn(N_PARAMS).astype(np.float32) * self._sens * self.sigma_factor
+            noise  = rng.standard_normal(N_PARAMS).astype(np.float32) * self._sens * self.sigma_factor
             params = vec_to_params(self._defaults_vec + noise)
 
             # 3. Pick a surrogate from ensemble, get starting obs
-            surrogate = self.surrogates[np.random.randint(n_surr)]
-            obs_i, score_i = self._surrogate_forward(surrogate, beam0, params)
+            self.simulator.set_active_model(self.simulator.sample_model_index(rng))
+            obs_i, score_i = self._surrogate_forward(beam0, params)
 
             # 4. Roll out for rollout_length steps
             for _ in range(self.rollout_length):
@@ -230,10 +173,8 @@ class MBPO:
                     new_params[key] = float(new_params[key]) + float(delta)
 
                 # Optionally pick a different surrogate for the next step
-                surrogate_step = self.surrogates[np.random.randint(n_surr)]
-                next_obs_i, next_score_i = self._surrogate_forward(
-                    surrogate_step, beam0, new_params
-                )
+                self.simulator.set_active_model(self.simulator.sample_model_index(rng))
+                next_obs_i, next_score_i = self._surrogate_forward(beam0, new_params)
 
                 reward_i = next_score_i - score_i
                 self.mixed_buffer.store_synth(obs_i, action_i, reward_i, next_obs_i, 0.0)
@@ -244,33 +185,27 @@ class MBPO:
 
     def _surrogate_forward(
         self,
-        surrogate: ModularMLP,
         beam0: torch.Tensor,
         params: dict,
     ) -> Tuple[np.ndarray, float]:
-        """One surrogate forward pass → (obs 108-dim, score)."""
+        """One surrogate forward pass (using self.simulator's active model) →
+        (obs 108-dim, score)."""
         try:
-            stage_t = params_to_stage_tensors(params, device=self.device)
-            with torch.no_grad():
-                outputs = surrogate(stage_t, beam0)
-
-            all_stages = [beam0.squeeze(0).cpu().numpy()]
-            for t in outputs:
-                all_stages.append(t.squeeze(0).cpu().numpy())
+            beam_states, _, sc = run_surrogate_forward(
+                self.simulator.model, beam0, params, self.device
+            )
 
             if self.obs_mode == "full":
-                obs = np.concatenate(all_stages).astype(np.float32)
+                obs = beam_states.reshape(-1).astype(np.float32)
             elif self.obs_mode == "final":
-                obs = all_stages[-1].astype(np.float32)
+                obs = beam_states[-1].astype(np.float32)
             else:  # "final_with_beam0"
-                obs = np.concatenate([all_stages[0], all_stages[-1]]).astype(np.float32)
+                obs = np.concatenate([beam_states[0], beam_states[-1]]).astype(np.float32)
 
-            final = {v: float(all_stages[-1][i]) for i, v in enumerate(BEAM_STATE_VARS)}
-            sc    = score(final)
             return obs, sc
         except Exception:
             if self.obs_mode == "full":
-                dim = N_BEAM_STATE_STAGES * BEAM_STATE_DIM
+                dim = N_STAGES * BEAM_STATE_DIM
             elif self.obs_mode == "final":
                 dim = BEAM_STATE_DIM
             else:

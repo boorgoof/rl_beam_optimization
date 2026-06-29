@@ -1,9 +1,9 @@
 """
-Common simulation contracts for real TraceWin and neural surrogate engines.
-
-Both engines map machine parameters to beam states and a scalar score.  The
-source field keeps the physical origin explicit so downstream code can decide
-whether a sample is real TraceWin data or a surrogate prediction.
+TraceWin and the surrogate model are the two engines that power the gym environments.
+Both do exactly the same thing but TraceWin is more accurate while the surrogate is faster
+So both implement the same interface (BeamSimulator), which defines the simulate method: 
+takes machine parameters as input and returns a BeamSimulationResult that mainly contains the beam description 
+at the output stages plus a score (of the final stage).
 """
 from __future__ import annotations
 
@@ -17,7 +17,13 @@ import numpy as np
 
 @dataclass
 class BeamSimulationResult:
-    """Structured output of one beam simulation."""
+    """"One simulation run's output.
+
+    Returns:
+    - beam_states wihich describes the beam at each output stage.
+    - score_val wihich is the scalar score at the final stage.
+    - source wihich tells you whether the result came from TraceWin or the surrogate.
+    """
 
     params: Dict[str, float]
     beam_states: Optional[np.ndarray]
@@ -35,18 +41,18 @@ class BeamSimulationResult:
 
 
 class BeamSimulator(ABC):
-    """Common interface for engines that simulate beam transport."""
+    """Interface that both TraceWin and the surrogate implement."""
 
     def reset_context(self, rng=None) -> None:
-        """Prepare per-episode context.
+        """Reset state before a new episode.
 
-        TraceWin has a fixed input beam in the project files, so it can ignore
-        this.  The surrogate uses it to sample beam0 and choose an ensemble
+        TraceWin ignores this because its input beam is fixed in the project
+        files. The surrogate uses it to sample beam0 and choose an ensemble
         member for the episode.
         """
         pass
 
     @abstractmethod
     def simulate(self, params: Dict[str, float]) -> BeamSimulationResult:
-        """Run one simulation for a parameter dictionary."""
+        """Run one simulation for a given set of machine parameters."""
         raise NotImplementedError

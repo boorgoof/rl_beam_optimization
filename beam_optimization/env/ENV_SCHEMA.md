@@ -1,102 +1,27 @@
 # Schema Della Cartella `env`
 
-Questo file descrive solo la cartella `beam_optimization/env/`: qui vivono gli
-ambienti Gymnasium, il simulatore TraceWin reale, il simulatore surrogate
-neurale, i dataset usati dal surrogate e i file TraceWin necessari per lanciare
-la fisica reale.
+Questa cartella contiene tutto cio che trasforma il problema fisico della linea
+ADIGE in un ambiente Gymnasium usabile dagli algoritmi RL.
 
-La cosa piu importante da tenere a mente e questa:
+L'idea centrale e semplice:
 
 ```text
-TraceWinEnv e SurrogateEnv hanno la stessa forma esterna.
-Entrambi fanno reset/step/evaluate_params.
-La differenza e solo il motore che produce il risultato fisico.
+Agente RL
+  -> ambiente Gymnasium
+      -> simulatore fisico
+          -> BeamSimulationResult
+      -> obs, reward, terminated, truncated, info
 ```
 
-## Come Siamo Arrivati Qui
+Il codice mantiene separati due livelli:
 
-Questa cartella non e nata cosi. La forma attuale e il risultato di una
-serie di problemi concreti, risolti uno dopo l'altro.
+- il **ciclo RL comune**, cioe reset, step, reward, action space e observation
+  space;
+- il **motore fisico**, che puo essere TraceWin reale oppure il surrogate
+  neurale.
 
-**Il punto di partenza.** `TraceWinEnv` e `SurrogateEnv` erano due classi
-indipendenti, ognuna con il proprio `reset()`/`step()` scritto a mano. Il
-~80% del codice era identico in entrambe: stesso campionamento dei
-parametri iniziali, stesso calcolo del reward, stessa logica di
-troncamento dell'episodio. Solo `TraceWinEnv`, però, restituiva un
-risultato strutturato (`SimResult`); `SurrogateEnv` faceva il forward del
-`ModularMLP` inline, dentro `_evaluate()`, senza costruire nessun oggetto
-risultato.
-
-**Prima unificazione.** E nato `BaseBeamEnv` per eliminare la duplicazione
-del ciclo Gym (Template Method: la parte comune sta nella classe base, le
-sottoclassi implementano solo il motore). Ma l'asimmetria tra i due motori
-restava: `TraceWinSimulator` produceva un `SimResult`, il surrogato non
-produceva niente di equivalente.
-
-**Il problema concreto causato dall'asimmetria.** Durante il fine-tuning
-online di `MBPOWithModelUpdate`, i pesi del surrogato aggiornati in RAM
-non venivano mai salvati su disco — un primo problema, risolto con
-`save_surrogates()`/`save_dataset()`. Ma parlando di come funziona il
-fine-tuning e emersa una domanda piu di fondo: il surrogato produce un
-equivalente di `SimResult`? La risposta era no, e il motivo era semplice:
-non esisteva nessun "simulatore-surrogato" da confrontare con
-`TraceWinSimulator` — il forward del modello viveva inline dentro
-`SurrogateEnv`, senza un livello a parte.
-
-**La soluzione.** E nato `env/simulation.py`: un contratto comune,
-`BeamSimulator` (interfaccia: `simulate(params) -> BeamSimulationResult`)
-e `BeamSimulationResult` (lo stesso `SimResult` di prima, ma con un campo
-in piu, `source`, che vale `"tracewin"` o `"surrogate"`). E nato
-`SurrogateBeamSimulator`, controparte simmetrica di `TraceWinSimulator`.
-Da quel momento entrambi i motori restituiscono lo stesso tipo di
-oggetto — ma il campo `source` impedisce che una predizione del surrogato
-venga confusa con un dato fisico reale: sia `SurrogateUpdater.add()` sia
-`MBPOWithModelUpdate.step()` controllano esplicitamente
-`source == "tracewin"` prima di accettare un risultato per il
-fine-tuning, cosi il surrogato non puo mai allenarsi sulle proprie stesse
-previsioni.
-
-**Conseguenze a cascata.** Il dataset (`BeamDataset`) e stato rinominato
-`SurrogateTrainingDataset`, per chiarire che e specificamente il dataset
-con cui si allena/affina il surrogato. Le cartelle dei modelli e dei
-dataset si sono separate in `base/` (gli originali, mai toccati) e
-`updated/` (le versioni cumulative che crescono con l'esperienza raccolta
-online) — cosi non si rischia mai di sovrascrivere per errore i dati o i
-pesi di partenza.
-
-**Ultimo passo.** I path sparsi nei vari script sono stati centralizzati
-in `config/paths.py`, e gli script stessi sono stati unificati sotto
-un'unica interfaccia: `python -m beam_optimization {check,train,benchmark}`.
-
-## Vista Generale
-
-```mermaid
-flowchart TD
-    CFG["config/adige.py<br/>parametri, marker, score, dimensioni"] --> BASE
-
-    SIM["env/simulation.py<br/>BeamSimulator<br/>BeamSimulationResult"] --> BASE
-    BASE["env/base_beam_env.py<br/>BaseBeamEnv<br/>reset(), step(), reward, obs"]
-
-    BASE --> TWENV["tracewin_env/tracewin_env.py<br/>TraceWinEnv"]
-    BASE --> SENV["surrogate_env/surrogate_env.py<br/>SurrogateEnv"]
-
-    TWENV --> TWSIM["tracewin_env/tracewin/simulator.py<br/>TraceWinSimulator"]
-    SENV --> SSIM["surrogate_env/simulator.py<br/>SurrogateBeamSimulator"]
-
-    TWSIM --> TWWRAP["tracewin/pyTraceWin_wrapper/<br/>wrapper Python + launcher + binario"]
-    TWWRAP --> TWDISK["TraceWin_workspace/ + calc/<br/>file TraceWin su disco"]
-
-    SSIM --> MLP["surrogate/modular_mlp.py<br/>ModularMLP"]
-    SSIM --> DATASET["surrogate/dataset.py<br/>SurrogateTrainingDataset"]
-    DATASET --> PTDATA["tracewin_env/dataset/<br/>dataset_train.pt, dataset_val.pt"]
-    MLP --> PTMODEL["surrogate/models/<br/>surrogate_*.pt"]
-
-    TWSIM --> RESULT["BeamSimulationResult<br/>source='tracewin'"]
-    SSIM --> RESULT2["BeamSimulationResult<br/>source='surrogate'"]
-
-    RESULT --> BASE
-    RESULT2 --> BASE
-```
+Per questo `TraceWinEnv` e `SurrogateEnv` hanno la stessa forma esterna per
+gli algoritmi. Cambia solo il simulatore montato sotto.
 
 ## Struttura Logica
 
@@ -104,69 +29,75 @@ flowchart TD
 beam_optimization/env/
 ├── simulation.py
 ├── base_beam_env.py
-├── surrogate_env/
-│   ├── surrogate_env.py
-│   ├── simulator.py
-│   └── surrogate/
-│       ├── dataset.py
-│       ├── modular_mlp.py
-│       ├── updater.py
-│       └── models/
-└── tracewin_env/
-    ├── tracewin_env.py
-    ├── dataset/
-    └── tracewin/
-        ├── simulator.py
-        ├── TRACEWIN_GUIDE.md
-        ├── TraceWin_workspace/
-        ├── pyTraceWin_wrapper/
-        └── visualize_distributions.ipynb
+├── tracewin_env/
+│   ├── tracewin_env.py
+│   ├── dataset/updated/collector.py
+│   └── tracewin/
+│       ├── tracewin_simulator.py
+│       └── pyTraceWin_wrapper/
+│           ├── tracewin.py
+│           └── files.py
+└── surrogate_env/
+    ├── surrogate_env.py
+    ├── surrogate_simulator.py
+    └── surrogate/
+        ├── modular_mlp.py
+        ├── dataset.py
+        └── updater.py
 ```
 
-I file `__pycache__/` non fanno parte della logica del progetto: sono cache
-generate automaticamente da Python.
+`config/adige.py` non sta dentro `env`, ma e una dipendenza centrale: definisce
+dimensioni, parametri controllabili, marker TraceWin, bound delle azioni,
+conversione dei parametri e funzione di score.
 
-## Contratto Comune: `env/simulation.py`
+## Contratto Comune: `simulation.py`
 
-`env/simulation.py` contiene il contratto comune tra TraceWin reale e surrogate:
+`simulation.py` contiene due pezzi comuni a entrambi i backend.
 
-- `BeamSimulator`
-- `BeamSimulationResult`
+`BeamSimulationResult` e il contenitore standard prodotto da una simulazione.
+Contiene:
 
-Un simulatore deve avere:
+```text
+params       parametri macchina usati nella simulazione
+beam_states  array degli stati del fascio, normalmente shape (12, 9)
+score_val    score scalare del fascio finale
+success      True se la simulazione e valida
+source       "tracewin" oppure "surrogate"
+error        messaggio di errore se la simulazione fallisce
+final_beam   dizionario delle 9 feature finali
+metadata     dettagli specifici del backend
+timestamp    momento di creazione del risultato
+```
+
+Il campo piu importante e' `source`: impedisce di confondere dati fisici reali
+con predizioni del surrogate.
+
+`BeamSimulator` e' il contratto astratto dei simulatori. Ogni simulatore deve
+esporre:
 
 ```python
+reset_context(rng=None)
 simulate(params) -> BeamSimulationResult
 ```
 
-Il risultato comune contiene:
+`reset_context()` prepara il contesto dell'episodio. TraceWin quasi non ne ha
+bisogno, perche il fascio iniziale vive nei file progetto; il surrogate invece
+lo usa per scegliere `beam0` e modello dell'ensemble.
 
-```text
-params       parametri usati nella simulazione
-beam_states  stati del fascio, tipicamente shape (12, 9)
-score_val    score fisico calcolato sul fascio finale
-success      True se la simulazione e valida
-source       "tracewin" oppure "surrogate"
-error        messaggio di errore, se fallisce
-final_beam   dizionario con le 9 variabili finali
-metadata     dettagli specifici del backend
-timestamp    quando e stato creato il risultato
-```
+## Ambiente Comune: `BaseBeamEnv`
 
-Questo evita di avere due mondi separati: TraceWin e surrogate possono restituire
-lo stesso tipo di oggetto, ma `source` mantiene chiara l'origine del dato.
+`BaseBeamEnv` e la base Gymnasium condivisa. Eredita da `gymnasium.Env` e
+gestisce tutto quello che non dipende dal motore fisico:
 
-## Base Comune: `env/base_beam_env.py`
-
-`BaseBeamEnv` contiene la parte Gymnasium condivisa:
-
-- spazio delle azioni;
-- spazio delle osservazioni;
-- scelta dei parametri iniziali a `reset`;
-- applicazione dell'azione come delta sui parametri;
+- `observation_space`;
+- `action_space`;
+- campionamento dei parametri iniziali a `reset()`;
+- applicazione dell'azione come delta sui 16 parametri;
+- chiamata a `self.simulator.simulate(params)`;
+- conversione del `BeamSimulationResult` in osservazione;
 - calcolo del reward;
-- conversione da `BeamSimulationResult` a osservazione;
-- inserimento di `info["sim_result"]`.
+- aggiornamento di `best_score` e `best_params`;
+- render comune delle feature del fascio.
 
 Il reward e:
 
@@ -174,236 +105,323 @@ Il reward e:
 reward = score_nuovo - score_precedente
 ```
 
-Le osservazioni possono essere:
+Gli episodi non hanno uno stato terminale fisico esplicito. Per questo
+`terminated` e sempre `False`, mentre `truncated` diventa `True` quando
+`_step_count >= max_steps`.
+
+Le modalita di osservazione sono:
 
 ```text
-obs_mode="full"              -> tutti gli stati: 12 * 9 = 108 valori
-obs_mode="final"             -> solo fascio finale: 9 valori
-obs_mode="final_with_beam0"  -> fascio iniziale + finale: 18 valori
+obs_mode="full"              -> 12 stage * 9 feature = 108 valori
+obs_mode="final"             -> solo fascio finale = 9 valori
+obs_mode="final_with_beam0"  -> fascio iniziale + finale = 18 valori
 ```
 
-Quindi gli ambienti specifici non devono riscrivere il ciclo RL. Devono solo
-impostare `self.simulator`.
+`BaseBeamEnv` e astratta: non puo essere istanziata da sola. Le sottoclassi
+devono implementare:
 
-## Flusso TraceWin Reale
-
-```mermaid
-flowchart TD
-    A["TraceWinEnv.reset()/step()"] --> B["BaseBeamEnv aggiorna params<br/>16 parametri TraceWin"]
-    B --> C["TraceWinSimulator.simulate(params)"]
-    C --> D["reset calc_dir<br/>cartella output su DISCO"]
-    D --> E["pyTraceWin_wrapper.TraceWin.run()"]
-    E --> F["run_tracewin_with_permissions.sh"]
-    F --> G["TraceWin_program/TraceWin<br/>binario reale TraceWin"]
-    G --> H["TraceWin scrive in calc/<br/>partran1.out, .dst, .plt"]
-    H --> I["TraceWin.results()<br/>legge partran1.out"]
-    I --> J["TraceWinSimulator estrae gli stati<br/>ai marker di config/adige.py"]
-    J --> K["BeamSimulationResult<br/>source='tracewin'"]
-    K --> L["BaseBeamEnv crea obs, reward, info"]
+```python
+_build_simulator() -> BeamSimulator
 ```
 
-### File Coinvolti
+Il costruttore comune chiama `_build_simulator()`, salva il risultato in
+`self.simulator` e verifica che sia davvero un `BeamSimulator`. In questo modo
+un ambiente senza backend fisico fallisce subito all'istanziazione, non piu al
+primo `reset()` o `step()`.
 
-`tracewin_env/tracewin_env.py`
-: definisce `TraceWinEnv`, cioe l'ambiente Gymnasium che usa TraceWin reale.
+## Backend TraceWin
 
-`tracewin_env/tracewin/simulator.py`
-: contiene `TraceWinSimulator`. E il livello applicativo: prepara la cartella
-`calc`, lancia TraceWin, legge `partran1.out`, estrae gli stati del fascio e
-costruisce `BeamSimulationResult(source="tracewin")`.
+### `TraceWinEnv`
 
-`tracewin_env/tracewin/pyTraceWin_wrapper/tracewin.py`
-: contiene il wrapper tecnico `TraceWin`. Costruisce il comando batch, chiama il
-launcher e legge i file prodotti da TraceWin.
+`TraceWinEnv` e l'ambiente Gymnasium che usa TraceWin reale. Non riscrive il
+ciclo RL: implementa `_build_simulator()` restituendo un `TraceWinSimulator` e
+poi usa il ciclo comune di `BaseBeamEnv`.
 
-`tracewin_env/tracewin/pyTraceWin_wrapper/run_tracewin_with_permissions.sh`
-: launcher locale usato da Python per avviare TraceWin con l'utente e i
-permessi corretti. Non e' versionato perche' dipende dalla macchina.
+In piu, rispetto al render comune, puo visualizzare lo spazio delle fasi finale
+leggendo i file `.dst` scritti da TraceWin. Queste immagini sono diagnostica:
+non sono parte dell'osservazione RL.
 
-`tracewin_env/tracewin/pyTraceWin_wrapper/TraceWin_program/`
-: contiene il binario TraceWin e i file collegati alla licenza/log.
+### `TraceWinSimulator`
 
-`tracewin_env/tracewin/TraceWin_workspace/`
-: contiene il progetto fisico TraceWin: `.ini`, `.dat`, `.dst`, mappe e file
-necessari alla linea.
+`TraceWinSimulator` e il backend fisico reale. Fa questo lavoro:
 
-`calc/`
-: non e codice. E la cartella di output della simulazione. TraceWin ci scrive
-`partran1.out`, distribuzioni `.dst`, traiettorie `.plt` e altri file intermedi.
+1. riceve un dizionario di parametri;
+2. completa i parametri mancanti con i default;
+3. pulisce e ricrea `calc_dir`;
+4. opzionalmente prepara una copia locale della workspace TraceWin;
+5. crea il wrapper `TraceWin`;
+6. lancia il binario TraceWin tramite il launcher;
+7. legge `partran1.out`;
+8. estrae gli stati del fascio ai marker definiti in `config/adige.py`;
+9. calcola lo score del fascio finale;
+10. restituisce `BeamSimulationResult(source="tracewin")`.
 
-## Flusso Surrogate
-
-```mermaid
-flowchart TD
-    A["SurrogateEnv.reset()/step()"] --> B["BaseBeamEnv aggiorna params<br/>16 parametri"]
-    B --> C["SurrogateBeamSimulator.simulate(params)"]
-    C --> D["params_to_stage_tensors()<br/>16 parametri -> 11 gruppi"]
-    C --> E["beam0 dell'episodio<br/>campionato dal dataset"]
-    D --> F["ModularMLP.forward(stage_params, beam0)"]
-    E --> F
-    F --> G["predice 11 stati successivi<br/>tutto in RAM"]
-    G --> H["beam_states = beam0 + 11 output<br/>shape (12, 9)"]
-    H --> I["score(final_beam)"]
-    I --> J["BeamSimulationResult<br/>source='surrogate'"]
-    J --> K["BaseBeamEnv crea obs, reward, info"]
-```
-
-### File Coinvolti
-
-`surrogate_env/surrogate_env.py`
-: definisce `SurrogateEnv`, cioe l'ambiente Gymnasium veloce. Non chiama
-TraceWin: usa un modello neurale gia allenato.
-
-`surrogate_env/simulator.py`
-: contiene `SurrogateBeamSimulator`. Sceglie il modello dell'ensemble, campiona
-il fascio iniziale `beam0`, chiama `ModularMLP` e costruisce
-`BeamSimulationResult(source="surrogate")`.
-
-`surrogate_env/surrogate/modular_mlp.py`
-: contiene `ModularMLP`, la rete neurale surrogate. Riceve:
+Se TraceWin fallisce, il simulatore restituisce comunque un risultato
+strutturato:
 
 ```text
-beam_state_0     shape (batch, 9)
-stage_params     lista di 11 tensori, uno per stage
+success=False
+source="tracewin"
+score_val=-999.0
+error=<messaggio>
 ```
 
-e predice gli 11 stati successivi del fascio.
+Questo evita che il resto del codice debba gestire eccezioni sparse.
 
-`surrogate_env/surrogate/dataset.py`
-: contiene `SurrogateTrainingDataset`. Carica e gestisce i dati `.pt` usati per
-allenare il surrogate e per campionare `beam0` negli episodi.
+### `pyTraceWin_wrapper`
 
-`surrogate_env/surrogate/models/`
-: contiene checkpoint dei modelli surrogate, ad esempio `surrogate_0.pt`,
-`surrogate_1.pt`, ecc. Questi sono pesi del modello, non dati di training.
+`pyTraceWin_wrapper/tracewin.py` contiene la classe tecnica `TraceWin`.
+Il suo compito e lanciare l'eseguibile e leggere i file prodotti.
+
+Espone:
+
+```python
+run(timeout, elem_params, other_params={}, num_threads=None)
+results() -> DataFrame
+dst(out=True) -> Dst
+plt() -> Plt
+```
+
+`files.py` contiene classi di lettura dei formati TraceWin, soprattutto `Dst`
+e `Plt`. Queste classi non sanno nulla di RL, reward o score: servono solo a
+leggere file.
+
+## Backend Surrogate
+
+### `SurrogateEnv`
+
+`SurrogateEnv` e l'ambiente Gymnasium veloce. Come `TraceWinEnv`, non riscrive
+il ciclo RL: implementa `_build_simulator()` restituendo un
+`SurrogateBeamSimulator` e poi delega a `BaseBeamEnv`.
+
+Si usa per training, benchmark e rollout sintetici. Non lancia TraceWin e non
+scrive file TraceWin.
+
+### `SurrogateBeamSimulator`
+
+`SurrogateBeamSimulator` e la controparte neurale di `TraceWinSimulator`.
+
+Riceve:
+
+- un singolo `ModularMLP` oppure una lista di `ModularMLP`;
+- un `SurrogateTrainingDataset`;
+- una modalita di campionamento di `beam0`, cioe `"dataset"` o `"gaussian"`.
+
+A ogni reset:
+
+1. sceglie un modello dell'ensemble;
+2. campiona un fascio iniziale `beam0`;
+3. mantiene quel contesto per l'episodio.
+
+Quando deve simulare:
+
+1. converte i 16 parametri in tensori per stage;
+2. chiama il `ModularMLP`;
+3. ricostruisce `beam_states` come `beam0 + 11 output`;
+4. calcola `final_beam` e score;
+5. restituisce `BeamSimulationResult(source="surrogate")`.
+
+Il metodo `forward_differentiable()` esiste per algoritmi che devono
+retropropagare attraverso il surrogate, come `SVGAgent`.
+
+### `run_surrogate_forward`
+
+`run_surrogate_forward()` e una funzione helper usata dal simulatore surrogate
+per il percorso senza gradiente. Restituisce:
+
+```text
+beam_states, final_beam, score_val
+```
+
+E utile per tenere separata la logica di forward della rete dalla costruzione
+del risultato di simulazione.
+
+## Modello Surrogate: `ModularMLP`
+
+`ModularMLP` e la rete neurale che approssima TraceWin. Segue la struttura a
+stage della linea.
+
+Input:
+
+```text
+beam_state_0 : Tensor (batch, 9)
+stage_params : lista di 11 Tensor, uno per stage
+```
+
+Output:
+
+```text
+single_output=False -> lista di 11 stati predetti
+single_output=True  -> solo stato finale
+```
+
+Internamente ha:
+
+- `input_net`, che costruisce il primo stato latente;
+- `stage_nets`, una rete per propagare il latente stage per stage;
+- `output_nets`, una rete per produrre lo stato del fascio a ogni stage;
+- normalizzazione opzionale dei parametri e degli stati del fascio.
+
+Il modello puo essere salvato e caricato con:
+
+```python
+model.save(path)
+ModularMLP.load(path)
+```
 
 ## Dataset Del Surrogate
 
-Il dataset principale viene salvato su disco in:
-
-```text
-env/tracewin_env/dataset/base/dataset_train.pt
-env/tracewin_env/dataset/base/dataset_val.pt
-```
-
-Quando viene caricato da `SurrogateTrainingDataset.load(path)`, entra in RAM.
+`SurrogateTrainingDataset` mantiene i dati nel formato flat usato su disco e
+li converte al volo nel formato stage-wise richiesto da `ModularMLP`.
 
 Formato flat:
 
 ```text
-X shape (N, 25)
-  primi 9 valori   -> beam_state_0
-  ultimi 16 valori -> parametri TraceWin
-
-Y shape (N, 99)
-  11 stati successivi * 9 variabili = 99
+X:      (N, 25) = beam0(9) + parametri(16)
+Y:      (N, 99) = 11 stati successivi * 9 feature
+scores: (N,)    = score finale del campione
 ```
 
-Il surrogate pero non usa direttamente `X` e `Y` flat nel forward. Prima
-`SurrogateTrainingDataset.get_training_batch()` converte:
+Metodi principali:
 
-```text
-X, Y flat
-  -> stage_params: 11 tensori
-  -> beam_states: 12 tensori
+- `add(result)`: aggiunge un `BeamSimulationResult` valido;
+- `get_training_batch(indices)`: produce `stage_params` e `beam_states`;
+- `get_initial_beam_states()`: restituisce tutti i `beam0`;
+- `get_param_vecs()`: restituisce tutti i vettori parametri;
+- `load(path)`: carica dataset flat o legacy;
+- `merge(other)`: unisce due dataset;
+- `save_flat(path)`: salva in formato flat.
+
+`BeamDataset` e solo un alias legacy di `SurrogateTrainingDataset`.
+
+## Aggiornamento Del Surrogate
+
+`SurrogateUpdater` fine-tuna uno o piu `ModularMLP` usando nuovi risultati
+TraceWin.
+
+La regola critica e:
+
+```python
+if result.source != "tracewin":
+    return False
 ```
 
-Questa conversione serve per adattarsi alla struttura fisica della linea: il
-modello e modulare e ragiona per stage, non come una rete unica piatta.
+Quindi il surrogate viene aggiornato solo con dati fisici reali, mai con le
+sue stesse predizioni.
 
-## RAM E Disco
+Quando ci sono abbastanza campioni:
 
-| Oggetto | Dove vive | Cosa contiene |
+1. campiona batch bootstrap dal dataset interno;
+2. aggiorna ogni surrogate con il proprio ottimizzatore Adam persistente;
+3. puo esportare i dati raccolti in formato flat;
+4. puo salvare i pesi aggiornati come `surrogate_0.pt`, `surrogate_1.pt`, ...
+
+## Collector
+
+`tracewin_env/dataset/updated/collector.py` e una utility per trasformare una
+lista di `BeamSimulationResult` in righe di dataset flat.
+
+Funzioni principali:
+
+- `sim_result_to_xy(result)`;
+- `append_sim_results(results, path)`;
+- `create_flat_dataset(results, path)`.
+
+Il collector non allena modelli. Si occupa solo di convertire risultati
+TraceWin in `X`, `Y`, `scores` compatibili con `SurrogateTrainingDataset`.
+
+## Cosa Scrive Su Disco
+
+| Componente | Scrive? | Cosa |
 | --- | --- | --- |
-| `BeamSimulationResult` | RAM | Risultato di una singola simulazione |
-| `SurrogateTrainingDataset` | RAM dopo il load | Tensori `X`, `Y`, `scores` |
-| `dataset_train.pt`, `dataset_val.pt` | Disco | Dati TraceWin gia raccolti per training/validation |
-| `surrogate_*.pt` | Disco | Pesi dei modelli surrogate |
-| `TraceWin_workspace/` | Disco | Input fisici TraceWin: `.ini`, `.dat`, `.dst`, mappe |
-| `calc/` | Disco | Output generati da TraceWin durante una run |
-| `pyTraceWin_wrapper/` | Disco/codice | Wrapper Python, launcher e binario TraceWin |
-| `info["sim_result"]` | RAM | Risultato passato dall'ambiente agli algoritmi |
+| `BaseBeamEnv` | No | Stato episodio solo in memoria |
+| `TraceWinSimulator` | Si | Output TraceWin in `calc_dir` |
+| `TraceWinSimulator` | Si, se cache attiva | Copia locale della workspace |
+| `TraceWin` wrapper | Indirettamente | Fa scrivere TraceWin in `calc_dir` |
+| `SurrogateEnv` | No | Usa modello e dataset in RAM |
+| `SurrogateBeamSimulator` | No | Produce risultati in RAM |
+| `SurrogateTrainingDataset.save_flat` | Si | Dataset `.pt` flat |
+| `collector.py` | Si | Dataset `.pt` creati/aggiornati |
+| `ModularMLP.save` | Si | Checkpoint del modello |
+| `SurrogateUpdater.export_flat` | Si | Campioni reali raccolti |
+| `SurrogateUpdater.save` | Si | Pesi surrogate fine-tunati |
 
-## Fine-Tuning Online
-
-Il fine-tuning online non deve usare dati inventati dal surrogate come se fossero
-verita fisica.
-
-Per questo il campo `source` e importante:
+## Flusso Di `reset()`
 
 ```text
-source="tracewin"    -> dato reale, puo essere usato per aggiornare il surrogate
-source="surrogate"   -> predizione del modello, non deve diventare target fisico
+BaseBeamEnv.reset()
+  -> campiona parametri iniziali
+  -> simulator.reset_context(rng)
+  -> simulator.simulate(params)
+  -> BeamSimulationResult
+  -> osservazione + score + info
 ```
 
-Il flusso corretto e:
+Nel backend surrogate, `reset_context()` sceglie anche `beam0` e modello
+dell'ensemble. Nel backend TraceWin, il fascio iniziale e definito dal progetto.
 
-```mermaid
-flowchart TD
-    A["TraceWinEnv.step()"] --> B["BeamSimulationResult<br/>source='tracewin'"]
-    B --> C["algoritmo MBPO / updater"]
-    C --> D{"source == 'tracewin'?"}
-    D -- si --> E["SurrogateTrainingDataset.add(result)<br/>buffer online in RAM"]
-    D -- no --> F["scarta per fine-tuning fisico"]
-    E --> G["eventuale save_flat(path)<br/>file .pt su DISCO"]
-    E --> H["SurrogateUpdater.update()<br/>aggiorna pesi surrogate in RAM"]
-    H --> I["save()<br/>surrogate_*.pt aggiornati su DISCO"]
-```
-
-Se non viene passato un path di salvataggio, il dataset online resta solo in RAM.
-Se viene salvato con `save_flat()`, il file `.pt` contiene dati (`X`, `Y`,
-`scores`, colonne e marker), non pesi del modello.
-
-## Come Leggere La Cartella
-
-Per capire il comportamento comune degli ambienti, parti da:
+## Flusso Di `step(action)`
 
 ```text
-env/simulation.py
-env/base_beam_env.py
+BaseBeamEnv.step(action)
+  -> clip dell'azione nei bound
+  -> params = params + action
+  -> simulator.simulate(params)
+  -> BeamSimulationResult
+  -> obs = slice(beam_states, obs_mode)
+  -> reward = score_nuovo - score_precedente
+  -> aggiorna best_score e best_params
+  -> ritorna obs, reward, False, truncated, info
 ```
 
-Per capire TraceWin reale:
+## Come Leggere Il Diagramma Di Classe
+
+Il file modificabile e:
 
 ```text
-env/tracewin_env/tracewin_env.py
-env/tracewin_env/tracewin/simulator.py
-env/tracewin_env/tracewin/pyTraceWin_wrapper/tracewin.py
-env/tracewin_env/tracewin/TRACEWIN_GUIDE.md
+beam_optimization/env/ENV_CLASS_DIAGRAM.drawio
 ```
 
-Per capire il surrogate:
+Il diagramma e diviso in blocchi:
 
-```text
-env/surrogate_env/surrogate_env.py
-env/surrogate_env/simulator.py
-env/surrogate_env/surrogate/modular_mlp.py
-env/surrogate_env/surrogate/dataset.py
-```
+- **common env contract**: `BaseBeamEnv`, `BeamSimulator`,
+  `BeamSimulationResult`, `AdigeConfig`;
+- **TraceWin backend**: `TraceWinEnv`, `TraceWinSimulator`, `TraceWin`,
+  `Dst/Plt`;
+- **surrogate backend**: `SurrogateEnv`, `SurrogateBeamSimulator`,
+  `run_surrogate_forward`, `ModularMLP`;
+- **data/update pipeline**: `SurrogateTrainingDataset`, `SurrogateUpdater`,
+  `collector.py`, file flat `.pt`.
 
-Per capire i dati:
+Le frecce principali sono:
 
-```text
-env/tracewin_env/dataset/base/
-env/tracewin_env/dataset/updated/
-env/surrogate_env/surrogate/models/
-```
+| Soggetto | Relazione | Oggetto | Significato |
+| --- | --- | --- | --- |
+| `TraceWinEnv` | eredita da | `BaseBeamEnv` | Stesso ciclo Gym comune |
+| `SurrogateEnv` | eredita da | `BaseBeamEnv` | Stesso ciclo Gym comune |
+| `TraceWinEnv` | possiede | `TraceWinSimulator` | Backend reale |
+| `SurrogateEnv` | possiede | `SurrogateBeamSimulator` | Backend neurale |
+| `TraceWinSimulator` | implementa | `BeamSimulator` | Simulatore reale |
+| `SurrogateBeamSimulator` | implementa | `BeamSimulator` | Simulatore neurale |
+| `TraceWinSimulator` | produce | `BeamSimulationResult` | `source="tracewin"` |
+| `SurrogateBeamSimulator` | produce | `BeamSimulationResult` | `source="surrogate"` |
+| `SurrogateBeamSimulator` | usa | `ModularMLP` | Forward del modello |
+| `SurrogateBeamSimulator` | usa | `SurrogateTrainingDataset` | Campiona `beam0` |
+| `SurrogateUpdater` | aggiorna | `ModularMLP` | Fine-tuning con dati reali |
+| `collector.py` | converte | `BeamSimulationResult` | Crea righe `X/Y/scores` |
 
-## Riassunto Mentale
+## Regola Mentale
 
-```text
-BaseBeamEnv
-  decide come funziona un episodio RL.
+Se lavori sul ciclo RL, parti da `BaseBeamEnv`.
 
-TraceWinEnv
-  usa BaseBeamEnv + TraceWinSimulator.
-  E lento, ma produce dati fisici reali.
+Se lavori con TraceWin reale, guarda `TraceWinEnv`, `TraceWinSimulator` e
+`pyTraceWin_wrapper`.
 
-SurrogateEnv
-  usa BaseBeamEnv + SurrogateBeamSimulator.
-  E veloce, ma produce predizioni neurali.
+Se lavori con il surrogate, guarda `SurrogateEnv`, `SurrogateBeamSimulator`,
+`ModularMLP` e `SurrogateTrainingDataset`.
 
-BeamSimulationResult
-  e il formato comune che permette agli algoritmi di ricevere sempre
-  params, beam_states, score, success e source.
-```
+Se lavori su nuovi dati reali per migliorare il surrogate, guarda
+`SurrogateUpdater` e `collector.py`.
+
+Se cambi dimensioni, parametri, marker, action bounds o score, guarda
+`config/adige.py`.
