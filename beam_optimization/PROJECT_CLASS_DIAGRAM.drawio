@@ -97,7 +97,7 @@
         <mxCell id="PathsConfig" value="&amp;lt;&amp;lt;module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;config.paths&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
           <mxGeometry x="980" y="570" width="300" height="210" as="geometry" />
         </mxCell>
-        <mxCell id="PathsConfig_body" value="&lt;b&gt;constants&lt;/b&gt;&lt;br&gt;+ PROJECT_ROOT&lt;br&gt;+ DEFAULT_DATASET&lt;br&gt;+ DEFAULT_SURROGATE_DIR&lt;br&gt;+ DEFAULT_SURROGATE_MODEL&lt;br&gt;+ DEFAULT_OUTPUT_DIR&lt;br&gt;+ DEFAULT_BENCHMARK_OUTPUT&lt;br&gt;+ DEFAULT_TRACEWIN_INI" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="PathsConfig" vertex="1" connectable="0">
+        <mxCell id="PathsConfig_body" value="&lt;b&gt;constants&lt;/b&gt;&lt;br&gt;+ PROJECT_ROOT&lt;br&gt;+ DEFAULT_DATASET_ROOT&lt;br&gt;+ DEFAULT_BASE_DATASET_DIR&lt;br&gt;+ DEFAULT_DATASET&lt;br&gt;+ DEFAULT_BASE_SURROGATE_DIR&lt;br&gt;+ DEFAULT_UPDATED_SURROGATE_DIR&lt;br&gt;+ DEFAULT_SURROGATE_DIR&lt;br&gt;+ DEFAULT_SURROGATE_MODEL&lt;br&gt;+ DEFAULT_OUTPUT_DIR&lt;br&gt;+ DEFAULT_BENCHMARK_OUTPUT&lt;br&gt;+ DEFAULT_TRACEWIN_INI&lt;br&gt;&lt;hr&gt;surrogate default = updated if available, else base" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="PathsConfig" vertex="1" connectable="0">
           <mxGeometry y="50" width="300" height="160" as="geometry" />
         </mxCell>
         <mxCell id="GymEnv" value="&amp;lt;&amp;lt;external&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;gymnasium.Env&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
@@ -172,23 +172,35 @@
         <mxCell id="ModularMLP_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ input_net : Sequential&lt;br&gt;+ stage_nets : ModuleList&lt;br&gt;+ output_nets : ModuleList&lt;br&gt;+ single_output : bool&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ forward(stage_params, beam_state_0)&lt;br&gt;+ save(path, extra=None)&lt;br&gt;+ load(path, device=&amp;quot;cpu&amp;quot;)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="ModularMLP" vertex="1" connectable="0">
           <mxGeometry y="50" width="380" height="180" as="geometry" />
         </mxCell>
-        <mxCell id="SurrogateTrainingDataset" value="&amp;lt;&amp;lt;torch Dataset&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;SurrogateTrainingDataset&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+        <mxCell id="SurrogateTrainingDataset" value="&amp;lt;&amp;lt;torch Dataset&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;BeamDataset&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
           <mxGeometry x="2800" y="920" width="410" height="300" as="geometry" />
         </mxCell>
-        <mxCell id="SurrogateTrainingDataset_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ _X : Tensor (N,25)&lt;br&gt;+ _Y : Tensor (N,99)&lt;br&gt;+ _scores : Tensor&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ add(result)&lt;br&gt;+ get_training_batch(indices)&lt;br&gt;+ get_initial_beam_states()&lt;br&gt;+ get_param_vecs()&lt;br&gt;+ load(path)&lt;br&gt;+ merge(other)&lt;br&gt;+ save_flat(path)&lt;br&gt;&lt;hr&gt;&lt;b&gt;alias&lt;/b&gt;&lt;br&gt;BeamDataset" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateTrainingDataset" vertex="1" connectable="0">
+        <mxCell id="SurrogateTrainingDataset_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ _X : Tensor (N,25)&lt;br&gt;+ _Y : Tensor (N,99)&lt;br&gt;+ _scores : Tensor&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ append_flat_sample(x,y,score)&lt;br&gt;+ append_flat_samples(X,Y,scores)&lt;br&gt;+ get_training_batch(indices)&lt;br&gt;+ get_initial_beam_states()&lt;br&gt;+ get_param_vecs()&lt;br&gt;+ load(path)&lt;br&gt;+ merge(other)&lt;br&gt;+ save_flat(path)&lt;br&gt;&lt;hr&gt;&lt;b&gt;alias&lt;/b&gt;&lt;br&gt;SurrogateTrainingDataset" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateTrainingDataset" vertex="1" connectable="0">
           <mxGeometry y="50" width="410" height="250" as="geometry" />
         </mxCell>
-        <mxCell id="SurrogateUpdater" value="&lt;b&gt;SurrogateUpdater&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+        <mxCell id="SurrogateUpdater" value="&lt;b&gt;SurrogateDatasetUpdater&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
           <mxGeometry x="2300" y="1350" width="380" height="270" as="geometry" />
         </mxCell>
-        <mxCell id="SurrogateUpdater_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ surrogates : list[ModularMLP]&lt;br&gt;+ _dataset : SurrogateTrainingDataset&lt;br&gt;+ _optimizers : list[Adam]&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ add(result) : bool&lt;br&gt;+ add_many(results)&lt;br&gt;+ n_samples property&lt;br&gt;+ update() / update_if_ready()&lt;br&gt;+ export_flat(path)&lt;br&gt;+ save(model_dir)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateUpdater" vertex="1" connectable="0">
+        <mxCell id="SurrogateUpdater_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ surrogates : list[ModularMLP]&lt;br&gt;+ _offline_dataset : BeamDataset | None&lt;br&gt;+ _online_dataset : BeamDataset&lt;br&gt;+ _optimizers : list[Adam]&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ add_tracewin_result(result) : bool&lt;br&gt;+ add_many_tracewin_results(results)&lt;br&gt;+ n_online_samples property&lt;br&gt;+ update() / update_if_ready()&lt;br&gt;+ save_online_dataset(path)&lt;br&gt;+ save_merged_dataset(path)&lt;br&gt;+ save_surrogates(model_dir)&lt;br&gt;&lt;hr&gt;&lt;b&gt;alias&lt;/b&gt;&lt;br&gt;SurrogateUpdater" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateUpdater" vertex="1" connectable="0">
           <mxGeometry y="34" width="380" height="236" as="geometry" />
         </mxCell>
-        <mxCell id="Collector" value="&amp;lt;&amp;lt;module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;collector.py&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+        <mxCell id="TraceWinDatasetBuilder" value="&amp;lt;&amp;lt;module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;TraceWinDatasetBuilder&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
           <mxGeometry x="2800" y="1370" width="350" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="Collector_body" value="&lt;b&gt;functions&lt;/b&gt;&lt;br&gt;+ sim_result_to_xy(result)&lt;br&gt;+ append_sim_results(results, path)&lt;br&gt;+ create_flat_dataset(results, path)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="Collector" vertex="1" connectable="0">
+        <mxCell id="TraceWinDatasetBuilder_body" value="Creates fresh offline .pt datasets&lt;br&gt;&lt;hr&gt;&lt;b&gt;functions&lt;/b&gt;&lt;br&gt;+ next_numbered_dataset_dir(...)&lt;br&gt;+ build_tracewin_dataset(...)&lt;br&gt;+ split_dataset(...)&lt;br&gt;&lt;hr&gt;env/dataset/001, 002, ..." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="TraceWinDatasetBuilder" vertex="1" connectable="0">
           <mxGeometry y="50" width="350" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="DatasetUtility" value="&amp;lt;&amp;lt;module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;utility.py&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="3200" y="1370" width="330" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="DatasetUtility_body" value="+ tracewin_result_to_flat_sample(result)&lt;br&gt;&lt;hr&gt;BeamSimulationResult -&amp;gt; X/Y/score" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="DatasetUtility" vertex="1" connectable="0">
+          <mxGeometry y="50" width="330" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="SurrogateEvaluator" value="&amp;lt;&amp;lt;module&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;SurrogateEvaluator&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+          <mxGeometry x="3200" y="1520" width="330" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="SurrogateEvaluator_body" value="+ evaluate_surrogate(...)&lt;br&gt;+ evaluate_surrogate_folder(...)&lt;br&gt;&lt;hr&gt;MSE/RMSE all, final, per stage" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateEvaluator" vertex="1" connectable="0">
+          <mxGeometry y="50" width="330" height="80" as="geometry" />
         </mxCell>
         <mxCell id="OnPolicyAgent" value="&amp;lt;&amp;lt;concept&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;OnPolicyAgent&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
           <mxGeometry x="3640" y="500" width="340" height="190" as="geometry" />
@@ -253,7 +265,7 @@
         <mxCell id="MBPOWithModelUpdate" value="&lt;b&gt;MBPOWithModelUpdate&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
           <mxGeometry x="4100" y="1530" width="390" height="260" as="geometry" />
         </mxCell>
-        <mxCell id="MBPOWithModelUpdate_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ _offline_dataset&lt;br&gt;+ _online_dataset&lt;br&gt;+ _surrogate_optimizers&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ step(..., sim_result=None)&lt;br&gt;- _finetune_surrogates()&lt;br&gt;+ n_online_samples&lt;br&gt;+ save_dataset(...)&lt;br&gt;+ save_surrogates(...)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="MBPOWithModelUpdate" vertex="1" connectable="0">
+        <mxCell id="MBPOWithModelUpdate_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ _updater : SurrogateDatasetUpdater&lt;br&gt;+ model_train_freq&lt;br&gt;+ dataset_save_path / surrogate_save_dir&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ step(..., sim_result=None)&lt;br&gt;+ n_online_samples&lt;br&gt;+ save_dataset(...)&lt;br&gt;+ save_surrogates(...)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="MBPOWithModelUpdate" vertex="1" connectable="0">
           <mxGeometry y="34" width="390" height="226" as="geometry" />
         </mxCell>
         <mxCell id="SVGAgent" value="&lt;b&gt;SVGAgent&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=34;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
@@ -283,7 +295,7 @@
         <mxCell id="SurrogateCheckpoints" value="&amp;lt;&amp;lt;file&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;surrogate_*.pt&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
           <mxGeometry x="1690" y="2540" width="330" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="SurrogateCheckpoints_body" value="&lt;b&gt;contents&lt;/b&gt;&lt;br&gt;+ ModularMLP state_dict&lt;br&gt;+ architecture metadata&lt;br&gt;&lt;hr&gt;&lt;b&gt;locations&lt;/b&gt;&lt;br&gt;base/ and updated/ folders" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateCheckpoints" vertex="1" connectable="0">
+        <mxCell id="SurrogateCheckpoints_body" value="&lt;b&gt;contents&lt;/b&gt;&lt;br&gt;+ ModularMLP state_dict&lt;br&gt;+ architecture metadata&lt;br&gt;&lt;hr&gt;&lt;b&gt;locations&lt;/b&gt;&lt;br&gt;base/ = conserved reference&lt;br&gt;updated/ = working default" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;fontColor=#333333;" parent="SurrogateCheckpoints" vertex="1" connectable="0">
           <mxGeometry y="50" width="330" height="90" as="geometry" />
         </mxCell>
         <mxCell id="AgentCheckpoints" value="&amp;lt;&amp;lt;file&amp;gt;&amp;gt;&lt;br&gt;&lt;b&gt;agent checkpoints&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
@@ -454,28 +466,37 @@
         <mxCell id="forward_mlp" value="calls" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="RunSurrogateForward" target="ModularMLP" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="dataset_result" value="add(result)" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateTrainingDataset" target="BeamSimulationResult" edge="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
         <mxCell id="dataset_file" value="load/save" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateTrainingDataset" target="FlatDatasetFile" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="collector_result" value="converts" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="Collector" target="BeamSimulationResult" edge="1">
+        <mxCell id="builder_result" value="receives TraceWin results" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="TraceWinDatasetBuilder" target="BeamSimulationResult" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="collector_file" value="writes/appends" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="Collector" target="FlatDatasetFile" edge="1">
+        <mxCell id="builder_file" value="saves numbered train/val/test" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="TraceWinDatasetBuilder" target="FlatDatasetFile" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="updater_models" value="fine-tunes" style="startArrow=diamond;startFill=0;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="ModularMLP" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="updater_dataset" value="collected data" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="SurrogateTrainingDataset" edge="1">
+        <mxCell id="updater_dataset" value="online/offline datasets" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="SurrogateTrainingDataset" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="updater_result" value="source=tracewin only" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="BeamSimulationResult" edge="1">
+        <mxCell id="updater_result" value="accepts source=tracewin" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="BeamSimulationResult" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="updater_file" value="export_flat" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="FlatDatasetFile" edge="1">
+        <mxCell id="updater_file" value="save online/merged" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="FlatDatasetFile" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="builder_utility" value="uses conversion" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="TraceWinDatasetBuilder" target="DatasetUtility" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="updater_utility" value="uses conversion" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateUpdater" target="DatasetUtility" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="evaluator_dataset" value="evaluates on" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateEvaluator" target="FlatDatasetFile" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="evaluator_models" value="loads models" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="SurrogateEvaluator" target="ModularMLP" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="on_concept" value="same API" style="endArrow=open;dashed=1;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="OnPolicyClasses" target="OnPolicyAgent" edge="1">
@@ -517,7 +538,7 @@
         <mxCell id="mbpo_inherit" value="" style="endArrow=block;endFill=0;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPOWithModelUpdate" target="MBPO" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="mbpo_update_dataset" value="offline + online" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPOWithModelUpdate" target="SurrogateTrainingDataset" edge="1">
+        <mxCell id="mbpo_update_dataset" value="delegates update" style="startArrow=diamond;startFill=1;endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPOWithModelUpdate" target="SurrogateUpdater" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="mbpo_update_result" value="TraceWin samples" style="endArrow=open;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;" parent="1" source="MBPOWithModelUpdate" target="BeamSimulationResult" edge="1">

@@ -6,16 +6,16 @@ model is trained on real data.
 
 Differences from MBPO (mbpo.py):
   - Surrogate models are fine-tuned every `model_train_freq` real steps
-    using gradient steps on a bootstrap sample of accumulated real data.
+    by a SurrogateDatasetUpdater.
   - `step()` accepts an optional `sim_result` (from TraceWinEnv info dict)
     so the real TraceWin output can be added to the model-update dataset.
-  - One Adam optimizer per surrogate is maintained throughout training.
-  - Ogni batch di fine-tuning mescola dati offline (il `dataset` seed passato
-    al costruttore) e dati online (`_online_dataset`, raccolti in questa
-    run), con una quota target `online_mix_ratio` — evita che il surrogate
-    scordi la distribuzione originale mentre recepisce il feedback reale.
+  - One Adam optimizer per surrogate is maintained by the updater.
+  - Ogni batch di fine-tuning viene costruito dal SurrogateDatasetUpdater, che
+    mescola dati offline (il `dataset` seed) e dati online raccolti in questa
+    run con quota target `online_mix_ratio`.
   - Se `dataset_save_path` è fornito, l'unione offline+online viene salvata
-    periodicamente in formato flat (dataset "maestro" aggiornato).
+    periodicamente in formato flat. Se coincide col dataset base caricato, quel
+    file viene aggiornato con i nuovi dati TraceWin.
 
 Intended use:
     env = TraceWinEnv(project_file=...)
@@ -27,7 +27,7 @@ Intended use:
         obs_dim=108, act_dim=16,
         model_train_freq=50,
         model_train_epochs=20,
-        dataset_save_path="dataset/updated/dataset_train.pt",
+        dataset_save_path="env/dataset/base/dataset_train.pt",
         surrogate_save_dir="surrogate/models/updated",
     )
     obs, info = env.reset()
@@ -45,14 +45,12 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 import numpy as np
-import torch
-import torch.nn as nn
 
 from beam_optimization.algorithms.model_based.mbpo import MBPO
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.env.simulation import BeamSimulationResult
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
-from beam_optimization.config.adige import N_OUTPUT_STAGES
+from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.surrogate_env.surrogate.updater import SurrogateDatasetUpdater
 
 
 class MBPOWithModelUpdate(MBPO):
@@ -75,12 +73,9 @@ class MBPOWithModelUpdate(MBPO):
         model_lr:             Adam learning rate for surrogate fine-tuning.
         online_batch_size:    Bootstrap sample size per fine-tuning call.
         min_samples_to_train: Minimum accumulated real samples before first fine-tune.
-        online_mix_ratio:     Quota target (0-1) di ogni batch di fine-tuning presa da
-                              `_online_dataset`; il resto viene da `_offline_dataset`
-                              (il `dataset` seed). Se i dati online disponibili sono
-                              meno della quota richiesta, si scala automaticamente a
-                              quanto c'è e si riempie il resto con dati offline — il
-                              batch resta sempre di dimensione `online_batch_size`.
+        online_mix_ratio:     Quota target (0-1) di ogni batch di fine-tuning presa
+                              dai dati online dell'updater; il resto viene dal
+                              dataset seed offline.
         dataset_save_path:    Se fornito, salva l'unione offline+online (dataset
                               "maestro" aggiornato) dopo ogni fine-tuning del
                               surrogate. Se coincide col path da cui è stato caricato
@@ -138,15 +133,17 @@ class MBPOWithModelUpdate(MBPO):
         self.dataset_save_path    = Path(dataset_save_path) if dataset_save_path else None
         self.surrogate_save_dir   = Path(surrogate_save_dir) if surrogate_save_dir else None
 
-        # Dataset offline (seed, statico) + online (cresce con .add() durante la run)
-        self._offline_dataset = dataset
-        self._online_dataset  = SurrogateTrainingDataset()
-
-        # Persistent optimizer per surrogate
-        self._surrogate_optimizers = [
-            torch.optim.Adam(s.parameters(), lr=model_lr)
-            for s in self.surrogates
-        ]
+        self._updater = SurrogateDatasetUpdater(
+            surrogates=self.surrogates,
+            offline_dataset=dataset,
+            model_dir=self.surrogate_save_dir,
+            lr=model_lr,
+            batch_size=self.online_batch_size,
+            epochs=self.model_train_epochs,
+            min_samples=self.min_samples_to_train,
+            online_mix_ratio=self.online_mix_ratio,
+            device=device,
+        )
 
         self._real_step_count = 0
 
@@ -175,74 +172,26 @@ class MBPOWithModelUpdate(MBPO):
                         When provided, added to the online dataset and used
                         to fine-tune the surrogate ensemble.
         """
-        if sim_result is not None and sim_result.source == "tracewin":
-            self._online_dataset.add(sim_result)
+        if sim_result is not None:
+            self._updater.add_tracewin_result(sim_result)
 
         self._real_step_count += 1
 
-        if (self._real_step_count % self.model_train_freq == 0
-                and len(self._online_dataset) >= self.min_samples_to_train):
-            self._finetune_surrogates()
+        if self._real_step_count % self.model_train_freq == 0:
+            losses = self._updater.update_if_ready()
 
-            # Salva l'unione offline+online (dataset "maestro" aggiornato)
-            if self.dataset_save_path is not None:
+            if losses is not None and self.dataset_save_path is not None:
                 self.save_dataset()
 
-            # Salva i pesi fine-tunati (mai nei surrogate_*.pt originali)
-            if self.surrogate_save_dir is not None:
+            if losses is not None and self.surrogate_save_dir is not None:
                 self.save_surrogates()
 
         return super().step(obs, action, reward, next_obs, done)
 
-    # ── Surrogate fine-tuning ──────────────────────────────────────────────────
-
-    def _finetune_surrogates(self):
-        """Bootstrap fine-tune each surrogate on a mix of offline + online data."""
-        criterion = nn.MSELoss()
-        stage_w   = 1.0 / N_OUTPUT_STAGES
-
-        for surrogate, opt in zip(self.surrogates, self._surrogate_optimizers):
-            surrogate.train()
-            for _ in range(self.model_train_epochs):
-                stage_t, beam0_t, targets_t = self._collate_mixed(self.online_batch_size)
-
-                preds = surrogate(stage_t, beam0_t)
-                loss  = sum(stage_w * criterion(p, t) for p, t in zip(preds, targets_t))
-
-                opt.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(surrogate.parameters(), max_norm=1.0)
-                opt.step()
-
-            surrogate.eval()
-
-    def _collate_mixed(self, n_total: int):
-        """Bootstrap batch misto: quota online_mix_ratio da _online_dataset, il
-        resto da _offline_dataset. Se i dati online disponibili sono meno della
-        quota richiesta, si scala automaticamente e si riempie con dati offline
-        (il batch resta sempre di dimensione n_total)."""
-        N_online  = len(self._online_dataset)
-        N_offline = len(self._offline_dataset)
-        n_online  = min(int(n_total * self.online_mix_ratio), N_online)
-        n_offline = n_total - n_online
-
-        idx_off = np.random.choice(N_offline, size=n_offline, replace=True)
-        stage, beam = self._offline_dataset.get_training_batch(idx_off)
-
-        if n_online > 0:
-            idx_on = np.random.choice(N_online, size=n_online, replace=True)
-            stage_on, beam_on = self._online_dataset.get_training_batch(idx_on)
-            stage = [torch.cat([a, b], dim=0) for a, b in zip(stage, stage_on)]
-            beam  = [torch.cat([a, b], dim=0) for a, b in zip(beam, beam_on)]
-
-        stage_t  = [t.to(self.device) for t in stage]
-        beam_all = [t.to(self.device) for t in beam]
-        return stage_t, beam_all[0], beam_all[1:]
-
     @property
     def n_online_samples(self) -> int:
         """Numero di risultati TraceWin reali accumulati."""
-        return len(self._online_dataset)
+        return self._updater.n_online_samples
 
     # ── Persistenza dataset ──────────────────────────────────────────────────────
 
@@ -255,9 +204,7 @@ class MBPOWithModelUpdate(MBPO):
         save_path = Path(path) if path is not None else self.dataset_save_path
         if save_path is None:
             raise ValueError("Specifica dataset_save_path nel costruttore o path qui")
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        merged = self._offline_dataset.merge(self._online_dataset)
-        merged.save_flat(save_path)
+        self._updater.save_merged_dataset(save_path)
 
     # ── Persistenza pesi fine-tunati ────────────────────────────────────────────
 
@@ -273,14 +220,4 @@ class MBPOWithModelUpdate(MBPO):
         save_dir = Path(output_dir) if output_dir is not None else self.surrogate_save_dir
         if save_dir is None:
             raise ValueError("Specifica surrogate_save_dir nel costruttore o output_dir qui")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        for i, surrogate in enumerate(self.surrogates):
-            surrogate.save(
-                str(save_dir / f"surrogate_{i}.pt"),
-                extra={
-                    "normalization_metadata": surrogate._norm_stats,
-                    "online_finetune_step": self._real_step_count,
-                    "online_samples": len(self._online_dataset),
-                },
-            )
-        print(f"[MBPOWithModelUpdate] salvati {len(self.surrogates)} surrogati fine-tunati in {save_dir}")
+        self._updater.save_surrogates(save_dir)

@@ -401,16 +401,19 @@ da parametri iniziali campionati intorno ai default.
 
 ### `MBPOWithModelUpdate`
 
-Estende `MBPO` aggiungendo l'aggiornamento online del surrogate.
+Estende `MBPO` aggiungendo l'aggiornamento online del surrogate tramite
+`SurrogateDatasetUpdater`.
 
 Durante il training con `TraceWinEnv`, se `info["sim_result"]` contiene un
-`BeamSimulationResult(source="tracewin")`, il risultato reale viene aggiunto a
-un dataset online. Ogni `model_train_freq` step, se ci sono abbastanza campioni:
+`BeamSimulationResult(source="tracewin")`, il risultato reale viene delegato
+all'updater. Ogni `model_train_freq` step, se ci sono abbastanza campioni:
 
-1. crea batch misti offline + online;
-2. fine-tuna ogni surrogate dell'ensemble;
-3. opzionalmente salva il dataset aggiornato;
-4. opzionalmente salva i pesi aggiornati dei surrogate.
+1. l'updater converte il risultato TraceWin in righe `X/Y/scores`;
+2. lo aggiunge al dataset online;
+3. crea batch misti offline + online;
+4. fine-tuna ogni surrogate dell'ensemble;
+5. opzionalmente salva il dataset aggiornato;
+6. opzionalmente salva i pesi aggiornati dei surrogate.
 
 Questa classe e la variante piu vicina all'idea originale di MBPO, dove il
 modello viene migliorato man mano che arrivano nuovi dati reali.
@@ -506,7 +509,8 @@ per ogni step reale:
 ```
 
 Con `MBPOWithModelUpdate`, quando l'ambiente reale e `TraceWinEnv`, i
-`BeamSimulationResult(source="tracewin")` possono anche aggiornare il surrogate.
+`BeamSimulationResult(source="tracewin")` vengono passati a
+`SurrogateDatasetUpdater`, che aggiorna dataset online e surrogate.
 
 ### Training SVG
 

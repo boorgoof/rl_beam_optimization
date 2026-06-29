@@ -10,8 +10,8 @@ Uso rapido (test, pochi step):
 
 Uso completo:
     python -m beam_optimization train \\
-        --surrogate env/surrogate_env/surrogate/models/base \\
-        --dataset   env/tracewin_env/dataset/base/dataset_train.pt \\
+        --surrogate env/surrogate_env/surrogate/models/updated \\
+        --dataset   env/dataset/base/dataset_train.pt \\
         --output    runs/all \\
         --rl-steps  300000 \\
         --svg-episodes 2000
@@ -45,7 +45,7 @@ from beam_optimization.config.paths import (
     DEFAULT_TRACEWIN_INI,
 )
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import SurrogateTrainingDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
     N_PARAMS, N_STAGES, BEAM_STATE_DIM,
@@ -226,15 +226,12 @@ def train_dyna(surrogate, dataset, n_steps, action_scale, max_ep_steps,
     che affina il surrogato ad ogni model_train_freq step reali mescolando dati
     offline (dataset originale) e online (TraceWin raccolto in questa run, quota
     online_mix_ratio). In questo caso:
-      - i pesi fine-tunati vengono salvati come nuovi surrogate_*.pt in una
-        cartella separata (sorella di surrogate_path/base/, di default
-        surrogate_path/../updated, mai sovrascrivendo gli originali), override
-        con update_surrogates_path;
-      - il dataset aggiornato (offline+online unito) viene salvato in una
-        cartella separata (sorella di dataset_path/base/, di default
-        dataset_path/../updated), override con update_dataset_path. Se
-        update_dataset_path coincide col path da cui è stato caricato il
-        dataset originale, quel file cresce run dopo run.
+      - i pesi fine-tunati vengono salvati in models/updated. Se parti da
+        models/base, base resta conservato; se parti da models/updated, la run
+        aggiorna la working copy in-place. Override con update_surrogates_path;
+      - il dataset aggiornato (offline+online unito) viene salvato di default
+        nello stesso file caricato per beam0, quindi il dataset base cresce run
+        dopo run. Puoi usare update_dataset_path per salvarlo altrove.
     """
     from beam_optimization.algorithms.model_free.sac import SAC
 
@@ -283,9 +280,9 @@ def train_dyna(surrogate, dataset, n_steps, action_scale, max_ep_steps,
         if update_dataset_path is not None:
             dataset_save_path = Path(update_dataset_path)
         elif dataset_path is not None:
-            base_dir = dataset_path.parent
-            default_update_dir = (base_dir.parent / "updated") if base_dir.name == "base" else (base_dir / "updated")
-            dataset_save_path = default_update_dir / dataset_path.name
+            # By default MBPOWithModelUpdate writes the merged offline+online
+            # dataset back to the dataset used for beam0 sampling.
+            dataset_save_path = dataset_path
         else:
             dataset_save_path = out_dir / "updated_dataset.pt"
         mbpo_kwargs["dataset_save_path"] = dataset_save_path
@@ -294,7 +291,12 @@ def train_dyna(surrogate, dataset, n_steps, action_scale, max_ep_steps,
             surrogate_save_dir = Path(update_surrogates_path)
         elif surrogate_path is not None:
             base_dir = surrogate_path if surrogate_path.is_dir() else surrogate_path.parent
-            surrogate_save_dir = (base_dir.parent / "updated") if base_dir.name == "base" else (base_dir / "updated")
+            if base_dir.name == "base":
+                surrogate_save_dir = base_dir.parent / "updated"
+            elif base_dir.name == "updated":
+                surrogate_save_dir = base_dir
+            else:
+                surrogate_save_dir = base_dir / "updated"
         else:
             surrogate_save_dir = out_dir / "updated"
         mbpo_kwargs["surrogate_save_dir"] = surrogate_save_dir
@@ -362,7 +364,8 @@ def main():
     parser = argparse.ArgumentParser(description="Allena tutti gli algoritmi")
     parser.add_argument("--surrogate",      default=None,
                         help="Singolo .pt, oppure cartella con surrogate_*.pt. "
-                             f"Default: {DEFAULT_SURROGATE_DIR}")
+                             "Default: models/updated se contiene checkpoint, "
+                             f"altrimenti models/base. Risolto ora a: {DEFAULT_SURROGATE_DIR}")
     parser.add_argument("--dataset",        default=str(DEFAULT_DATASET))
     parser.add_argument("--output",         default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--rl-steps",       type=int, default=200_000)
@@ -392,14 +395,13 @@ def main():
                              "distribuzione originale). Default: 0.5.")
     parser.add_argument("--update-dataset",  default=None, metavar="PATH",
                         help="Path .pt dove salvare il dataset aggiornato (offline+online "
-                             "uniti) raccolto da MBPOWithModelUpdate. Default: sorella "
-                             "'updated/' di --dataset. Per far crescere lo stesso file "
-                             "invece di scriverne uno parallelo, passa lo stesso path di "
-                             "--dataset. Richiede --online-finetune.")
+                             "uniti) raccolto da MBPOWithModelUpdate. Default: stesso "
+                             "path di --dataset, quindi il dataset base cresce run dopo "
+                             "run. Richiede --online-finetune.")
     parser.add_argument("--update-surrogates", default=None, metavar="PATH",
                         help="Cartella dove salvare i surrogate_*.pt fine-tunati da "
-                             "MBPOWithModelUpdate. Default: sorella 'updated/' di "
-                             "--surrogate (non sovrascrive mai i surrogate_*.pt originali).")
+                             "MBPOWithModelUpdate. Default: models/updated; "
+                             "models/base resta conservato.")
     parser.add_argument("--obs-mode",        default="full",
                         choices=["full", "final", "final_with_beam0"],
                         help="Stato RL: 'full'=108 dim (tutti gli stadi), "

@@ -37,7 +37,7 @@ from typing import List, Optional, Union
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import SurrogateTrainingDataset
 
 
 class SurrogateEnv(BaseBeamEnv):

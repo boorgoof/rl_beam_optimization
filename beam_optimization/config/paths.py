@@ -11,12 +11,32 @@ from pathlib import Path
 # parent, i.e. .../beam_optimization).
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# TraceWin-generated dataset used to train the surrogate and to sample initial
-# beam states during environment resets.
-DEFAULT_DATASET = PROJECT_ROOT / "env/tracewin_env/dataset/base/dataset_train.pt"
+# Root folder for flat BeamDataset files.
+DEFAULT_DATASET_ROOT = PROJECT_ROOT / "env/dataset"
 
-# Directory that holds the base surrogate ensemble checkpoints.
-DEFAULT_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/models/base"
+# Base dataset used to train the base surrogate and to sample initial beam
+# states during environment resets.
+DEFAULT_BASE_DATASET_DIR = DEFAULT_DATASET_ROOT / "base"
+DEFAULT_DATASET = DEFAULT_BASE_DATASET_DIR / "dataset_train.pt"
+
+# Surrogate checkpoint folders. "base" is kept as the clean reference ensemble.
+# "updated" is the working ensemble used by default and fine-tuned by online
+# TraceWin updates.
+DEFAULT_BASE_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/models/base"
+DEFAULT_UPDATED_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/models/updated"
+
+
+def _has_surrogate_checkpoints(path: Path) -> bool:
+    return path.exists() and any(path.glob("surrogate_*.pt"))
+
+
+# Use the updated working ensemble by default when it exists; otherwise fall
+# back to the conserved base ensemble.
+DEFAULT_SURROGATE_DIR = (
+    DEFAULT_UPDATED_SURROGATE_DIR
+    if _has_surrogate_checkpoints(DEFAULT_UPDATED_SURROGATE_DIR)
+    else DEFAULT_BASE_SURROGATE_DIR
+)
 
 # Single surrogate checkpoint; used by commands that do not need the full ensemble.
 DEFAULT_SURROGATE_MODEL = DEFAULT_SURROGATE_DIR / "surrogate_0.pt"

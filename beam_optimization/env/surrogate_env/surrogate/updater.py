@@ -1,29 +1,11 @@
 """
-SurrogateUpdater — fine-tuning offline dell'ensemble di surrogati.
+SurrogateDatasetUpdater centralizes TraceWin data ingestion and surrogate fine-tuning.
 
-Raccoglie BeamSimulationResult da TraceWin (tipicamente durante le fasi di valutazione)
-e aggiorna ogni surrogate dell'ensemble con un bootstrap draw indipendente,
-mantenendo la diversità dell'ensemble.
-
-I dati vengono archiviati nel SurrogateTrainingDataset interno (formato flat nativo).
-export_flat() permette di salvare i campioni raccolti come flat .pt per uso futuro.
-
-Flusso tipico:
-    updater = SurrogateUpdater(surrogates, model_dir="env/surrogate_env/surrogate/models/models_finetuned")
-
-    # durante il training RL, ogni N episodi:
-    result = tracewin_env.evaluate_params(agent.best_params)
-    updater.add(sim_result)
-
-    # quando hai abbastanza dati:
-    if updater.n_samples >= 20:
-        updater.update()   # fine-tuna tutti i surrogati
-
-    # salva i dati raccolti nel formato flat ml_dataset
-    updater.export_flat("env/tracewin_env/dataset/updated/finetuned.pt")
-
-    # opzionale: salva i pesi del surrogate
-    updater.save()
+It is the online component that accepts BeamSimulationResult objects from
+TraceWin during MBPO/model-update workflows. It uses the common dataset utility
+to convert them to BeamDataset's flat format, stores new samples in an online
+dataset, and fine-tunes the surrogate ensemble on online data alone or on a mix
+of offline + online data.
 """
 from __future__ import annotations
 
@@ -34,174 +16,263 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
-from beam_optimization.env.simulation import BeamSimulationResult
 from beam_optimization.config.adige import N_OUTPUT_STAGES
+from beam_optimization.env.dataset import BeamDataset, tracewin_result_to_flat_sample
+from beam_optimization.env.simulation import BeamSimulationResult
+from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 
 
-class SurrogateUpdater:
-    """Fine-tuna l'ensemble di surrogati con dati reali da TraceWin.
+class SurrogateDatasetUpdater:
+    """Collect TraceWin samples, update BeamDataset, and fine-tune surrogates.
 
     Args:
-        surrogates:     Lista di ModularMLP (o singolo modello).
-        model_dir:      Cartella dove salvare i pesi aggiornati (opzionale).
-        lr:             Learning rate Adam per il fine-tuning.
-        batch_size:     Dimensione del bootstrap sample per ogni surrogate.
-        epochs:         Gradient steps per ogni chiamata a update().
-        min_samples:    Numero minimo di campioni prima di aggiornare.
-        device:         Device torch ('cpu', 'cuda', o None per auto).
-        flat_save_path: Se fornito, salva automaticamente i nuovi campioni
-                        su questo path flat .pt dopo ogni update().
+        surrogates: One ModularMLP or an ensemble of ModularMLPs.
+        offline_dataset: Optional seed dataset used to mix old and new samples
+            during fine-tuning.
+        model_dir: Optional output directory for fine-tuned surrogate weights.
+        lr: Adam learning rate.
+        batch_size: Batch size for each fine-tuning call.
+        epochs: Gradient steps per fine-tuning call.
+        min_samples: Minimum online samples required before update().
+        online_mix_ratio: Target fraction of each batch drawn from online data
+            when an offline dataset is available.
+        device: Torch device string or None for auto-detect.
+        online_dataset_save_path: Optional default path for save_online_dataset().
+        merged_dataset_save_path: Optional default path for save_merged_dataset().
     """
 
     def __init__(
         self,
         surrogates: Union[ModularMLP, List[ModularMLP]],
-        model_dir: Optional[str] = None,
+        offline_dataset: Optional[BeamDataset] = None,
+        model_dir: Optional[str | Path] = None,
         lr: float = 3e-5,
         batch_size: int = 64,
         epochs: int = 20,
         min_samples: int = 20,
+        online_mix_ratio: float = 1.0,
         device: Optional[str] = None,
+        online_dataset_save_path: Optional[str | Path] = None,
+        merged_dataset_save_path: Optional[str | Path] = None,
         flat_save_path: Optional[str | Path] = None,
     ):
-        self.surrogates  = surrogates if isinstance(surrogates, list) else [surrogates]
-        self.model_dir   = Path(model_dir) if model_dir else None
-        self.batch_size  = int(batch_size)
-        self.epochs      = int(epochs)
+        self.surrogates = surrogates if isinstance(surrogates, list) else [surrogates]
+        self._offline_dataset = offline_dataset
+        self._online_dataset = BeamDataset()
+
+        self.model_dir = Path(model_dir) if model_dir else None
+        self.batch_size = int(batch_size)
+        self.epochs = int(epochs)
         self.min_samples = int(min_samples)
-        self.device      = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-        self.flat_save_path = Path(flat_save_path) if flat_save_path else None
+        self.online_mix_ratio = min(max(float(online_mix_ratio), 0.0), 1.0)
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        for s in self.surrogates:
-            s.to(self.device)
+        # Backward-compatible flat_save_path means "save the newly collected
+        # online samples", matching the old updater's internal dataset behavior.
+        self.online_dataset_save_path = Path(
+            online_dataset_save_path or flat_save_path
+        ) if (online_dataset_save_path or flat_save_path) else None
+        self.merged_dataset_save_path = (
+            Path(merged_dataset_save_path) if merged_dataset_save_path else None
+        )
 
-        self._dataset = SurrogateTrainingDataset()
+        for surrogate in self.surrogates:
+            surrogate.to(self.device)
 
-        # Un ottimizzatore persistente per surrogate (evita cold-start Adam)
         self._optimizers = [
-            torch.optim.Adam(s.parameters(), lr=lr)
-            for s in self.surrogates
+            torch.optim.Adam(surrogate.parameters(), lr=lr)
+            for surrogate in self.surrogates
         ]
-
         self._update_count = 0
 
-    # ── Aggiunta dati ──────────────────────────────────────────────────────────
+    # ── Datasets / counters ───────────────────────────────────────────────────
 
-    def add(self, result: BeamSimulationResult) -> bool:
-        """Aggiungi un risultato TraceWin al dataset interno.
+    @property
+    def online_dataset(self) -> BeamDataset:
+        """New TraceWin samples collected during this run."""
+        return self._online_dataset
 
-        Returns:
-            True se il risultato è stato aggiunto (simulazione riuscita).
-        """
-        if result.source != "tracewin":
-            return False
-        return self._dataset.add(result)
+    @property
+    def offline_dataset(self) -> Optional[BeamDataset]:
+        """Seed/pretraining dataset, if configured."""
+        return self._offline_dataset
 
-    def add_many(self, results: List[BeamSimulationResult]) -> int:
-        """Aggiungi una lista di risultati. Restituisce quanti sono stati aggiunti."""
-        return sum(1 for r in results if self.add(r))
+    @property
+    def n_online_samples(self) -> int:
+        """Number of new TraceWin samples collected in this run."""
+        return len(self._online_dataset)
 
     @property
     def n_samples(self) -> int:
-        return len(self._dataset)
+        """Backward-compatible alias for n_online_samples."""
+        return self.n_online_samples
 
-    # ── Update ────────────────────────────────────────────────────────────────
+    # ── TraceWin ingestion ────────────────────────────────────────────────────
+
+    def add_tracewin_result(self, result: BeamSimulationResult) -> bool:
+        """Add one successful TraceWin result to the online dataset."""
+        if result.source != "tracewin" or not result.success or result.beam_states is None:
+            return False
+
+        x, y, score = tracewin_result_to_flat_sample(result)
+        self._online_dataset.append_flat_sample(x, y, score)
+        return True
+
+    def add_many_tracewin_results(self, results: List[BeamSimulationResult]) -> int:
+        """Add many TraceWin results and return how many were accepted."""
+        return sum(1 for result in results if self.add_tracewin_result(result))
+
+    # Legacy names kept for older scripts/tests.
+    def add(self, result: BeamSimulationResult) -> bool:
+        return self.add_tracewin_result(result)
+
+    def add_many(self, results: List[BeamSimulationResult]) -> int:
+        return self.add_many_tracewin_results(results)
+
+    # ── Fine-tuning ───────────────────────────────────────────────────────────
 
     def update(self) -> Optional[dict]:
-        """Fine-tuna ogni surrogate con un bootstrap draw indipendente.
-
-        Returns:
-            Dict con le loss finali per ogni surrogate, o None se skip.
-        """
-        N = len(self._dataset)
-        if N < self.min_samples:
-            print(f"[SurrogateUpdater] skip: {N} < {self.min_samples} campioni minimi")
+        """Fine-tune each surrogate on online or mixed offline+online batches."""
+        if self.n_online_samples < self.min_samples:
+            print(
+                f"[SurrogateDatasetUpdater] skip: {self.n_online_samples} "
+                f"< {self.min_samples} campioni online minimi"
+            )
             return None
 
         criterion = nn.MSELoss()
-        stage_w   = 1.0 / N_OUTPUT_STAGES
+        stage_w = 1.0 / N_OUTPUT_STAGES
         final_losses = {}
 
-        for i, (surrogate, opt) in enumerate(zip(self.surrogates, self._optimizers)):
-            idx = np.random.choice(N, size=min(N, self.batch_size), replace=True)
-
+        for i, (surrogate, optimizer) in enumerate(zip(self.surrogates, self._optimizers)):
             surrogate.train()
-            for p in surrogate.parameters():
-                p.requires_grad_(True)
+            for param in surrogate.parameters():
+                param.requires_grad_(True)
+
             last_loss = 0.0
             for _ in range(self.epochs):
-                np.random.shuffle(idx)
-                stage_t, beam0_t, targets_t = self._collate(idx)
-
+                stage_t, beam0_t, targets_t = self._collate_mixed(self.batch_size)
                 preds = surrogate(stage_t, beam0_t)
-                loss  = sum(stage_w * criterion(p, t) for p, t in zip(preds, targets_t))
+                loss = sum(stage_w * criterion(pred, target)
+                           for pred, target in zip(preds, targets_t))
 
-                opt.zero_grad()
+                optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(surrogate.parameters(), max_norm=1.0)
-                opt.step()
+                optimizer.step()
                 last_loss = float(loss.detach())
 
             surrogate.eval()
             final_losses[f"surrogate_{i}"] = last_loss
 
         self._update_count += 1
-        print(f"[SurrogateUpdater] update #{self._update_count}  "
-              f"N={N}  losses={{{', '.join(f'{k}: {v:.5f}' for k, v in final_losses.items())}}}")
+        print(
+            f"[SurrogateDatasetUpdater] update #{self._update_count} "
+            f"online={self.n_online_samples} "
+            f"losses={{{', '.join(f'{k}: {v:.5f}' for k, v in final_losses.items())}}}"
+        )
 
-        # Auto-save flat .pt se configurato
-        if self.flat_save_path is not None:
-            self.export_flat(self.flat_save_path)
+        if self.online_dataset_save_path is not None:
+            self.save_online_dataset(self.online_dataset_save_path)
+        if self.merged_dataset_save_path is not None:
+            self.save_merged_dataset(self.merged_dataset_save_path)
 
         return final_losses
 
     def update_if_ready(self) -> Optional[dict]:
-        """Chiama update() solo se ci sono abbastanza campioni."""
-        if self.n_samples >= self.min_samples:
+        """Call update() only when enough online samples have been collected."""
+        if self.n_online_samples >= self.min_samples:
             return self.update()
         return None
 
-    # ── Export flat ───────────────────────────────────────────────────────────
+    # ── Persistence ───────────────────────────────────────────────────────────
 
-    def export_flat(self, path: str | Path) -> int:
-        """Salva tutti i campioni accumulati come flat .pt (formato ml_dataset).
+    def save_online_dataset(self, path: Optional[str | Path] = None) -> int:
+        """Save only the newly collected online TraceWin samples."""
+        save_path = Path(path) if path is not None else self.online_dataset_save_path
+        if save_path is None:
+            raise ValueError("Specifica un path per save_online_dataset()")
+        self._online_dataset.save_flat(save_path)
+        return len(self._online_dataset)
 
-        Se il file esiste già, i nuovi campioni vengono aggiunti in coda.
+    def save_merged_dataset(self, path: Optional[str | Path] = None) -> int:
+        """Save offline + online samples as one flat dataset."""
+        save_path = Path(path) if path is not None else self.merged_dataset_save_path
+        if save_path is None:
+            raise ValueError("Specifica un path per save_merged_dataset()")
 
-        Returns:
-            Numero di campioni nel dataset dopo il salvataggio.
-        """
-        if path is None:
-            raise ValueError("Specifica un path per export_flat()")
-        self._dataset.save_flat(path)
-        return len(self._dataset)
+        merged = self._online_dataset
+        if self._offline_dataset is not None:
+            merged = self._offline_dataset.merge(self._online_dataset)
+        merged.save_flat(save_path)
+        return len(merged)
 
-    # ── Salvataggio pesi ──────────────────────────────────────────────────────
-
-    def save(self, model_dir: Optional[str] = None):
-        """Salva i pesi aggiornati come surrogate_0.pt … surrogate_N.pt."""
-        save_dir = Path(model_dir) if model_dir else self.model_dir
+    def save_surrogates(self, model_dir: Optional[str | Path] = None) -> None:
+        """Save fine-tuned surrogate weights as surrogate_0.pt ... surrogate_N.pt."""
+        save_dir = Path(model_dir) if model_dir is not None else self.model_dir
         if save_dir is None:
-            raise ValueError("Specifica model_dir nel costruttore o in save()")
+            raise ValueError("Specifica model_dir nel costruttore o in save_surrogates()")
         save_dir.mkdir(parents=True, exist_ok=True)
+
         for i, surrogate in enumerate(self.surrogates):
             surrogate.save(
                 str(save_dir / f"surrogate_{i}.pt"),
                 extra={
                     "normalization_metadata": surrogate._norm_stats,
                     "update_count": self._update_count,
+                    "online_samples": self.n_online_samples,
                 },
             )
-        print(f"[SurrogateUpdater] salvati {len(self.surrogates)} surrogati in {save_dir}")
+        print(
+            f"[SurrogateDatasetUpdater] salvati {len(self.surrogates)} "
+            f"surrogati fine-tunati in {save_dir}"
+        )
 
-    # ── Interno ───────────────────────────────────────────────────────────────
+    # Legacy names kept for older scripts/tests.
+    def export_flat(self, path: str | Path) -> int:
+        return self.save_online_dataset(path)
 
-    def _collate(self, indices: np.ndarray):
-        """Collate dei dati per il training: usa get_training_batch() del dataset."""
-        stage_params, beam_states = self._dataset.get_training_batch(indices)
-        # Sposta sul device corretto
-        stage_t  = [t.to(self.device) for t in stage_params]   # list[11] × (batch, sz)
-        beam_all = [t.to(self.device) for t in beam_states]    # list[12] × (batch, 9)
-        return stage_t, beam_all[0], beam_all[1:]               # stage_params, beam0, targets
+    def save(self, model_dir: Optional[str | Path] = None) -> None:
+        self.save_surrogates(model_dir)
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _collate_mixed(self, n_total: int):
+        """Build one training batch from online data, optionally mixed with offline."""
+        n_total = int(n_total)
+        n_online_available = len(self._online_dataset)
+
+        if self._offline_dataset is None or len(self._offline_dataset) == 0:
+            n_online = min(n_total, n_online_available)
+            if n_online == 0:
+                raise ValueError("No online samples available for fine-tuning")
+            idx_on = np.random.choice(n_online_available, size=n_online, replace=True)
+            stage, beam = self._online_dataset.get_training_batch(idx_on)
+        else:
+            n_online = min(int(n_total * self.online_mix_ratio), n_online_available)
+            if n_online == 0:
+                n_online = min(n_total, n_online_available)
+            n_offline = n_total - n_online
+
+            idx_off = np.random.choice(
+                len(self._offline_dataset),
+                size=n_offline,
+                replace=True,
+            )
+            stage, beam = self._offline_dataset.get_training_batch(idx_off)
+
+            if n_online > 0:
+                idx_on = np.random.choice(n_online_available, size=n_online, replace=True)
+                stage_on, beam_on = self._online_dataset.get_training_batch(idx_on)
+                stage = [torch.cat([old, new], dim=0)
+                         for old, new in zip(stage, stage_on)]
+                beam = [torch.cat([old, new], dim=0)
+                        for old, new in zip(beam, beam_on)]
+
+        stage_t = [tensor.to(self.device) for tensor in stage]
+        beam_all = [tensor.to(self.device) for tensor in beam]
+        return stage_t, beam_all[0], beam_all[1:]
+
+
+# Legacy alias kept so older imports and scripts continue to work.
+SurrogateUpdater = SurrogateDatasetUpdater

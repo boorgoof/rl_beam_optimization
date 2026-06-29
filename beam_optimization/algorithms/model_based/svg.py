@@ -51,7 +51,7 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import SurrogateTrainingDataset
 
 OBS_DIM = N_STAGES * BEAM_STATE_DIM  # 108
 

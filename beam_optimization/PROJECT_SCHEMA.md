@@ -304,7 +304,7 @@ E il simulatore neurale.
 Contiene:
 
 - uno o piu `ModularMLP`;
-- un `SurrogateTrainingDataset`;
+- un `BeamDataset`;
 - la logica per campionare `beam0`;
 - la logica per scegliere il modello attivo dell'ensemble.
 
@@ -341,14 +341,14 @@ beam0 + parametri per stage -> stati successivi del fascio
 Viene usata da:
 
 - `SurrogateBeamSimulator`;
-- `SurrogateUpdater`;
+- `SurrogateDatasetUpdater`;
 - `MBPO`;
 - `SVGAgent`;
 - baseline e script di benchmark.
 
-### `SurrogateTrainingDataset`
+### `BeamDataset`
 
-Mantiene il dataset flat:
+Vive in `env/dataset/dataset.py` e mantiene il dataset flat:
 
 ```text
 X      beam0 + parametri
@@ -361,11 +361,43 @@ Lo stesso dataset serve per:
 - allenare il surrogate;
 - campionare `beam0`;
 - generare rollout sintetici MBPO;
-- fine-tuning online.
+- fornire batch al fine-tuning online.
 
-### `SurrogateUpdater`
+`SurrogateTrainingDataset` resta un alias legacy di `BeamDataset`.
+Non esiste piu un `dataset.py` dentro `surrogate/`: gli import devono passare
+da `beam_optimization.env.dataset`.
 
-Aggiorna uno o piu surrogate usando nuovi risultati TraceWin.
+### `TraceWinDatasetBuilder` e `utility.py`
+
+`env/dataset/tracewin_dataset_builder.py` crea dataset offline nuovi usando
+TraceWin reale. Non appende a file `.pt` esistenti.
+
+Flusso:
+
+```text
+parametri
+  -> TraceWinSimulator.simulate(params)
+  -> BeamSimulationResult(source="tracewin")
+  -> utility.tracewin_result_to_flat_sample(...)
+  -> BeamDataset
+  -> env/dataset/001/dataset_train.pt
+  -> env/dataset/001/dataset_val.pt
+  -> env/dataset/001/dataset_test.pt
+```
+
+`env/dataset/utility.py` contiene la conversione comune
+`BeamSimulationResult -> x/y/score`, usata sia dal builder offline sia
+dall'updater online.
+
+`env/dataset/base/dataset_train.pt` e il dataset base usato per campionare
+`beam0`. Quando MBPO online salva il merged dataset senza override esplicito,
+aggiorna questo stesso file. I dataset offline creati da TraceWin vengono invece
+salvati in cartelle numerate sotto `env/dataset`, come `001`, `002`, ...
+
+### `SurrogateDatasetUpdater`
+
+Riceve nuovi risultati TraceWin, li converte in righe flat per `BeamDataset`,
+mantiene il dataset online e aggiorna uno o piu surrogate.
 
 La regola chiave e:
 
@@ -375,15 +407,22 @@ aggiorna solo con BeamSimulationResult(source="tracewin")
 
 Questo evita di addestrare il modello sulle sue stesse predizioni.
 
-### `collector.py`
+`collector.py` non e piu parte del flusso ufficiale per creare o aggiornare
+file `.pt` flat.
 
-Converte risultati TraceWin in righe dataset:
+### `SurrogateEvaluator`
+
+`surrogate/evaluator.py` valuta tutti i checkpoint `surrogate_*.pt` di una
+cartella su un dataset validation/test.
+
+Calcola:
 
 ```text
-BeamSimulationResult -> X, Y, score
+mse_all / rmse_all
+mse_final_stage / rmse_final_stage
+mse_per_stage / rmse_per_stage
+n_samples
 ```
-
-Serve per creare o aggiornare file `.pt` flat.
 
 ## Algoritmi
 
@@ -578,7 +617,10 @@ scores
 metadata
 ```
 
-Viene letto da `SurrogateTrainingDataset` e scritto da collector/updater.
+Viene letto e scritto da `BeamDataset`; il flusso applicativo di aggiornamento
+passa da `SurrogateDatasetUpdater` e puo aggiornare il dataset base usato per
+`beam0`, mentre la creazione offline da zero passa da `TraceWinDatasetBuilder`
+e usa cartelle numerate.
 
 ### `surrogate_*.pt`
 
@@ -586,8 +628,9 @@ Checkpoint dei `ModularMLP`.
 
 Possono essere:
 
-- surrogate base;
-- surrogate aggiornati online.
+- `models/base`: surrogate originali conservati come riferimento pulito;
+- `models/updated`: surrogate di lavoro, usati di default se presenti e
+  aggiornati online.
 
 ### `agent checkpoints`
 
@@ -618,7 +661,7 @@ Output di valutazione e benchmark:
 
 ```text
 scripts.train
-  -> carica ModularMLP e SurrogateTrainingDataset
+  -> carica ModularMLP e BeamDataset
   -> crea SurrogateEnv
   -> crea agente
   -> agente interagisce con env
@@ -662,10 +705,31 @@ batch misto
 ```text
 TraceWinEnv
   -> BeamSimulationResult(source="tracewin")
-      -> MBPOWithModelUpdate / SurrogateUpdater
+      -> MBPOWithModelUpdate / SurrogateDatasetUpdater
           -> dataset online
               -> update ModularMLP
                   -> salva dataset/checkpoint aggiornati
+```
+
+### Creazione Dataset Offline TraceWin
+
+```text
+TraceWinDatasetBuilder
+  -> genera o riceve parametri
+  -> TraceWinSimulator.simulate(params)
+  -> utility.tracewin_result_to_flat_sample(result)
+  -> BeamDataset
+  -> salva env/dataset/001/dataset_train.pt / dataset_val.pt / dataset_test.pt
+```
+
+### Evaluation Dei Surrogate
+
+```text
+surrogate/evaluator.py
+  -> carica dataset_val.pt o dataset_test.pt
+  -> carica tutti i surrogate_*.pt in una cartella
+  -> calcola MSE/RMSE aggregati, final stage e per stage
+  -> opzionalmente salva surrogate_evaluation.json
 ```
 
 ## Come Leggere Le Frecce

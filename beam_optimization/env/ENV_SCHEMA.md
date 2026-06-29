@@ -29,9 +29,12 @@ gli algoritmi. Cambia solo il simulatore montato sotto.
 beam_optimization/env/
 ├── simulation.py
 ├── base_beam_env.py
+├── dataset/
+│   ├── dataset.py
+│   ├── utility.py
+│   └── tracewin_dataset_builder.py
 ├── tracewin_env/
 │   ├── tracewin_env.py
-│   ├── dataset/updated/collector.py
 │   └── tracewin/
 │       ├── tracewin_simulator.py
 │       └── pyTraceWin_wrapper/
@@ -42,7 +45,7 @@ beam_optimization/env/
     ├── surrogate_simulator.py
     └── surrogate/
         ├── modular_mlp.py
-        ├── dataset.py
+        ├── evaluator.py
         └── updater.py
 ```
 
@@ -204,7 +207,7 @@ scrive file TraceWin.
 Riceve:
 
 - un singolo `ModularMLP` oppure una lista di `ModularMLP`;
-- un `SurrogateTrainingDataset`;
+- un `BeamDataset`;
 - una modalita di campionamento di `beam0`, cioe `"dataset"` o `"gaussian"`.
 
 A ogni reset:
@@ -271,8 +274,9 @@ ModularMLP.load(path)
 
 ## Dataset Del Surrogate
 
-`SurrogateTrainingDataset` mantiene i dati nel formato flat usato su disco e
-li converte al volo nel formato stage-wise richiesto da `ModularMLP`.
+`BeamDataset` vive in `env/dataset/dataset.py`. Mantiene i dati nel formato
+flat usato su disco e li converte al volo nel formato stage-wise richiesto da
+`ModularMLP`.
 
 Formato flat:
 
@@ -284,7 +288,8 @@ scores: (N,)    = score finale del campione
 
 Metodi principali:
 
-- `add(result)`: aggiunge un `BeamSimulationResult` valido;
+- `append_flat_sample(x, y, score)`: aggiunge un campione gia convertito;
+- `append_flat_samples(X, Y, scores)`: aggiunge un batch gia convertito;
 - `get_training_batch(indices)`: produce `stage_params` e `beam_states`;
 - `get_initial_beam_states()`: restituisce tutti i `beam0`;
 - `get_param_vecs()`: restituisce tutti i vettori parametri;
@@ -292,12 +297,64 @@ Metodi principali:
 - `merge(other)`: unisce due dataset;
 - `save_flat(path)`: salva in formato flat.
 
-`BeamDataset` e solo un alias legacy di `SurrogateTrainingDataset`.
+`SurrogateTrainingDataset` e un alias legacy di `BeamDataset`, ma vive nel
+package comune `env.dataset`. Non esiste piu un `dataset.py` dentro
+`surrogate/`: gli import devono passare da `beam_optimization.env.dataset`.
+
+### `utility.py`
+
+`env/dataset/utility.py` contiene la conversione condivisa:
+
+```python
+tracewin_result_to_flat_sample(result) -> x, y, score
+```
+
+Questa funzione e l'unico punto comune che trasforma un
+`BeamSimulationResult(source="tracewin")` in:
+
+```text
+x:     (25,) = beam0(9) + parametri(16)
+y:     (99,) = 11 output stage * 9 feature
+score: scalare finale
+```
+
+La usano sia il builder offline sia `SurrogateDatasetUpdater`.
+
+## Creazione Dataset Offline Da TraceWin
+
+`TraceWinDatasetBuilder` vive in `env/dataset/tracewin_dataset_builder.py`.
+Serve per creare dataset nuovi da zero usando TraceWin reale.
+
+Flusso:
+
+```text
+parametri
+  -> TraceWinSimulator.simulate(params)
+  -> BeamSimulationResult(source="tracewin")
+  -> tracewin_result_to_flat_sample(...)
+  -> BeamDataset
+  -> env/dataset/001/dataset_train.pt
+  -> env/dataset/001/dataset_val.pt
+  -> env/dataset/001/dataset_test.pt
+```
+
+Di default puo salvare split:
+
+```text
+train = 80%
+val   = 10%
+test  = 10%
+```
+
+Il builder non appende a dataset esistenti: ogni chiamata costruisce un nuovo
+`BeamDataset` in memoria e salva nuovi file `.pt`. Se non viene passato un
+`output_dir`, crea automaticamente la prossima cartella numerata sotto
+`env/dataset`, per esempio `001`, `002`, `003`, ignorando `base`.
 
 ## Aggiornamento Del Surrogate
 
-`SurrogateUpdater` fine-tuna uno o piu `ModularMLP` usando nuovi risultati
-TraceWin.
+`SurrogateDatasetUpdater` e il punto unico che riceve nuovi risultati TraceWin,
+li aggiunge al dataset online e fine-tuna uno o piu `ModularMLP`.
 
 La regola critica e:
 
@@ -311,24 +368,37 @@ sue stesse predizioni.
 
 Quando ci sono abbastanza campioni:
 
-1. campiona batch bootstrap dal dataset interno;
-2. aggiorna ogni surrogate con il proprio ottimizzatore Adam persistente;
-3. puo esportare i dati raccolti in formato flat;
-4. puo salvare i pesi aggiornati come `surrogate_0.pt`, `surrogate_1.pt`, ...
+1. usa `utility.tracewin_result_to_flat_sample()` per ottenere `X`, `Y`, `score`;
+2. aggiunge il campione solo al dataset online;
+3. campiona batch bootstrap dal dataset online o da offline+online;
+4. aggiorna ogni surrogate con il proprio ottimizzatore Adam persistente;
+5. puo salvare solo i dati online o il dataset merged offline+online; nel
+   training MBPO online il default e salvare il merged sul dataset base caricato
+   per `beam0`, cioe `env/dataset/base/dataset_train.pt`;
+6. puo salvare i pesi aggiornati come `surrogate_0.pt`, `surrogate_1.pt`, ...
 
-## Collector
+`collector.py` non e piu parte del flusso ufficiale.
 
-`tracewin_env/dataset/updated/collector.py` e una utility per trasformare una
-lista di `BeamSimulationResult` in righe di dataset flat.
+## Valutazione Dei Surrogate
 
-Funzioni principali:
+`surrogate/evaluator.py` misura la qualita dei checkpoint `surrogate_*.pt` su
+un dataset flat, tipicamente validation o test.
 
-- `sim_result_to_xy(result)`;
-- `append_sim_results(results, path)`;
-- `create_flat_dataset(results, path)`.
+Espone:
 
-Il collector non allena modelli. Si occupa solo di convertire risultati
-TraceWin in `X`, `Y`, `scores` compatibili con `SurrogateTrainingDataset`.
+```python
+evaluate_surrogate(model, dataset, batch_size=1024, device=None)
+evaluate_surrogate_folder(model_dir, dataset_path, batch_size=1024, device=None)
+```
+
+Per ogni modello calcola:
+
+```text
+mse_all / rmse_all
+mse_final_stage / rmse_final_stage
+mse_per_stage / rmse_per_stage
+n_samples
+```
 
 ## Cosa Scrive Su Disco
 
@@ -340,11 +410,13 @@ TraceWin in `X`, `Y`, `scores` compatibili con `SurrogateTrainingDataset`.
 | `TraceWin` wrapper | Indirettamente | Fa scrivere TraceWin in `calc_dir` |
 | `SurrogateEnv` | No | Usa modello e dataset in RAM |
 | `SurrogateBeamSimulator` | No | Produce risultati in RAM |
-| `SurrogateTrainingDataset.save_flat` | Si | Dataset `.pt` flat |
-| `collector.py` | Si | Dataset `.pt` creati/aggiornati |
+| `BeamDataset.save_flat` | Si | Dataset `.pt` flat |
+| `TraceWinDatasetBuilder` | Si | Nuovi dataset train/val/test in cartelle numerate |
 | `ModularMLP.save` | Si | Checkpoint del modello |
-| `SurrogateUpdater.export_flat` | Si | Campioni reali raccolti |
-| `SurrogateUpdater.save` | Si | Pesi surrogate fine-tunati |
+| `SurrogateDatasetUpdater.save_online_dataset` | Si | Solo nuovi campioni TraceWin |
+| `SurrogateDatasetUpdater.save_merged_dataset` | Si | Dataset offline + online |
+| `SurrogateDatasetUpdater.save_surrogates` | Si | Pesi surrogate fine-tunati in `models/updated` |
+| `SurrogateEvaluator` | Opzionale | JSON con MSE/RMSE |
 
 ## Flusso Di `reset()`
 
@@ -390,8 +462,8 @@ Il diagramma e diviso in blocchi:
   `Dst/Plt`;
 - **surrogate backend**: `SurrogateEnv`, `SurrogateBeamSimulator`,
   `run_surrogate_forward`, `ModularMLP`;
-- **data/update pipeline**: `SurrogateTrainingDataset`, `SurrogateUpdater`,
-  `collector.py`, file flat `.pt`.
+- **data pipeline**: `BeamDataset`, `TraceWinDatasetBuilder`, `utility.py`,
+  `SurrogateDatasetUpdater`, `SurrogateEvaluator`, file flat `.pt`.
 
 Le frecce principali sono:
 
@@ -406,9 +478,12 @@ Le frecce principali sono:
 | `TraceWinSimulator` | produce | `BeamSimulationResult` | `source="tracewin"` |
 | `SurrogateBeamSimulator` | produce | `BeamSimulationResult` | `source="surrogate"` |
 | `SurrogateBeamSimulator` | usa | `ModularMLP` | Forward del modello |
-| `SurrogateBeamSimulator` | usa | `SurrogateTrainingDataset` | Campiona `beam0` |
-| `SurrogateUpdater` | aggiorna | `ModularMLP` | Fine-tuning con dati reali |
-| `collector.py` | converte | `BeamSimulationResult` | Crea righe `X/Y/scores` |
+| `SurrogateBeamSimulator` | usa | `BeamDataset` | Campiona `beam0` |
+| `TraceWinDatasetBuilder` | usa | `TraceWinSimulator` | Crea dataset offline |
+| `TraceWinDatasetBuilder` | scrive | `BeamDataset` | Nuovi split train/val/test |
+| `SurrogateDatasetUpdater` | aggiorna | `ModularMLP` | Fine-tuning con dati reali |
+| `utility.py` | converte | `BeamSimulationResult` | Crea righe `X/Y/scores` |
+| `SurrogateEvaluator` | valuta | `ModularMLP` | MSE/RMSE su dataset |
 
 ## Regola Mentale
 
@@ -418,10 +493,13 @@ Se lavori con TraceWin reale, guarda `TraceWinEnv`, `TraceWinSimulator` e
 `pyTraceWin_wrapper`.
 
 Se lavori con il surrogate, guarda `SurrogateEnv`, `SurrogateBeamSimulator`,
-`ModularMLP` e `SurrogateTrainingDataset`.
+`ModularMLP`, `BeamDataset` e `surrogate/evaluator.py`.
+
+Se vuoi creare dataset offline nuovi da TraceWin, guarda
+`env/dataset/tracewin_dataset_builder.py`.
 
 Se lavori su nuovi dati reali per migliorare il surrogate, guarda
-`SurrogateUpdater` e `collector.py`.
+`SurrogateDatasetUpdater`.
 
 Se cambi dimensioni, parametri, marker, action bounds o score, guarda
 `config/adige.py`.

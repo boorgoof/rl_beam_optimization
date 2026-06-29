@@ -191,17 +191,17 @@ def _svg():
 
 check("SVGAgent con ensemble (1 episodio)", _svg)
 
-# ── 5b. SurrogateUpdater ─────────────────────────────────────────────────────
+# ── 5b. SurrogateDatasetUpdater ──────────────────────────────────────────────
 
-print("\n[5b] SurrogateUpdater — bootstrap fine-tuning ensemble")
+print("\n[5b] SurrogateDatasetUpdater — bootstrap fine-tuning ensemble")
 
 def _surrogate_updater():
-    from beam_optimization.env.surrogate_env.surrogate.updater import SurrogateUpdater
+    from beam_optimization.env.surrogate_env.surrogate.updater import SurrogateDatasetUpdater
     from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import SimResult
     from beam_optimization.config.adige import default_params, score
     import numpy as np
 
-    updater = SurrogateUpdater(surrogates, min_samples=5, batch_size=8, epochs=3)
+    updater = SurrogateDatasetUpdater(surrogates, min_samples=5, batch_size=8, epochs=3)
     assert updater.n_samples == 0
 
     for i in range(8):
@@ -230,7 +230,7 @@ def _surrogate_updater():
     assert len(losses) == 4
     print(f"       update OK, losses: {losses}")
 
-check("SurrogateUpdater: add + bootstrap update su 4 surrogati", _surrogate_updater)
+check("SurrogateDatasetUpdater: add + bootstrap update su 4 surrogati", _surrogate_updater)
 
 # ── 6. TraceWin import ────────────────────────────────────────────────────────
 

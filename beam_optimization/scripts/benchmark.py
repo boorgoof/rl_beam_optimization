@@ -13,8 +13,8 @@ Metodi:
 
 Uso:
     python -m beam_optimization benchmark \\
-        --surrogate env/surrogate_env/surrogate/models/base/surrogate_0.pt \\
-        --dataset   env/tracewin_env/dataset/base/dataset_train.pt \\
+        --surrogate env/surrogate_env/surrogate/models/updated/surrogate_0.pt \\
+        --dataset   env/dataset/base/dataset_train.pt \\
         --output    results/benchmark.json \\
         --n-runs    3 \\
         --eval-budget 3000 \\
@@ -43,7 +43,7 @@ from beam_optimization.config.paths import (
     DEFAULT_SURROGATE_MODEL,
 )
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import SurrogateTrainingDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
     N_PARAMS, N_STAGES, BEAM_STATE_DIM,

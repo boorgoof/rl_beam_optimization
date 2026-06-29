@@ -37,7 +37,7 @@ import torch
 
 from beam_optimization.algorithms.utils.replay_buffer import MixedReplayBuffer
 from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator, run_surrogate_forward
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import SurrogateTrainingDataset
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM, N_STAGES,

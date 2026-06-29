@@ -14,7 +14,7 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.env.base_beam_env import ERROR_SCORE
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
-from beam_optimization.env.surrogate_env.surrogate.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import SurrogateTrainingDataset
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 
 
