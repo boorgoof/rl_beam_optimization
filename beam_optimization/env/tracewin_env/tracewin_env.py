@@ -48,11 +48,6 @@ class TraceWinEnv(BaseBeamEnv):
         obs_mode:      'full' (108), 'final' (9), or 'final_with_beam0' (18).
         timeout:       Seconds before aborting a single TraceWin call.
         retries:       Retry attempts on TraceWin failure.
-        use_local_project_cache:
-                      If True, run TraceWin on a local copy of the project
-                      workspace while keeping calc_dir as the output folder.
-        local_project_cache_root:
-                      Root folder for the local project cache.
     """
 
     def __init__(
@@ -65,18 +60,14 @@ class TraceWinEnv(BaseBeamEnv):
         obs_mode: str = "full",
         timeout: float = 120.0,
         retries: int = 2,
-        use_local_project_cache: bool = True,
-        local_project_cache_root: str | None = None,
     ):
-        
+
         # Store the simulator kwargs for later use in _build_simulator() for the TraceWin simulator
         self._simulator_kwargs = {
             "project_file": project_file,
             "calc_dir": calc_dir,
             "timeout": timeout,
             "retries": retries,
-            "use_local_project_cache": use_local_project_cache,
-            "local_project_cache_root": local_project_cache_root,
         }
 
         # Call the base class constructor
