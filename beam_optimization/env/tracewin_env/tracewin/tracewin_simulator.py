@@ -144,9 +144,6 @@ class TraceWinSimulator(BeamSimulator):
         network-mounted). The workspace is made world-writable so `comunian`
         can use it, and any artifact left over from a previous run is removed
         first so TraceWin always starts from a clean state.
-
-        Note that simulation outputs are still written to ``self.calc_dir``
-        correctly because it has comunian permissions.
         """
         source_dir = Path(self._source_project_dir)
         self._make_world_accessible(source_dir)
@@ -173,7 +170,7 @@ class TraceWinSimulator(BeamSimulator):
     def _run_once(self, params: Dict[str, float]) -> BeamSimulationResult:
         """Run one TraceWin simulation and return the results."""
 
-        # Reset the calculation directory and prepare the shared project workspace for TraceWin.
+        # Reset the calculation directory and prepare the project workspace for TraceWin.
         self._reset_calc_dir()
         runtime_project_file = self._prepare_workspace()
 
