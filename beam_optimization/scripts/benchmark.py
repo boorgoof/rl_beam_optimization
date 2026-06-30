@@ -43,7 +43,7 @@ from beam_optimization.config.paths import (
     DEFAULT_SURROGATE_MODEL,
 )
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
     N_PARAMS, N_STAGES, BEAM_STATE_DIM,
@@ -188,7 +188,7 @@ def main():
     surrogate.eval()
 
     print(f"Dataset:   {args.dataset}")
-    dataset = SurrogateTrainingDataset.load(args.dataset)
+    dataset = BeamDataset.load(args.dataset)
 
     results: Dict = {}
 

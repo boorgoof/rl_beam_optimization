@@ -14,7 +14,7 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.env.base_beam_env import ERROR_SCORE
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 
 
@@ -71,7 +71,7 @@ class SurrogateBeamSimulator(BeamSimulator):
     def __init__(
         self,
         model: Union[ModularMLP, List[ModularMLP]],
-        dataset: SurrogateTrainingDataset,
+        dataset: BeamDataset,
         beam0_mode: str = "dataset",
         device: Optional[str] = None,
     ):

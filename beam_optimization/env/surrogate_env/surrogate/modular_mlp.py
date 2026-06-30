@@ -47,6 +47,11 @@ class ModularMLP(nn.Module):
         norm_stats: Optional[dict] = None,
     ):
         super().__init__()
+        self.hidden_sizes = list(hidden_sizes)
+        self.dropout = float(dropout)
+        self.latent_dim = int(latent_dim)
+        self.out_hidden = list(out_hidden)
+        self.out_dropout = float(out_dropout)
         self.single_output = single_output
         self.act = act or nn.ReLU()
         self._norm_stats = norm_stats
@@ -162,8 +167,12 @@ class ModularMLP(nn.Module):
         payload = {
             "model_state_dict": self.state_dict(),
             "model_config": {
-                "hidden_sizes": [m.out_features for m in self.input_net if isinstance(m, nn.Linear)][:-1],
-                "latent_dim": [m.out_features for m in self.input_net if isinstance(m, nn.Linear)][-1],
+                "hidden_sizes": self.hidden_sizes,
+                "dropout": self.dropout,
+                "latent_dim": self.latent_dim,
+                "out_hidden": self.out_hidden,
+                "out_dropout": self.out_dropout,
+                "single_output": self.single_output,
             },
         }
         if extra:
@@ -186,12 +195,20 @@ class ModularMLP(nn.Module):
             auto_kwargs["hidden_sizes"] = cfg["hidden_sizes_stage"]
         elif "hidden_sizes" in cfg:
             auto_kwargs["hidden_sizes"] = cfg["hidden_sizes"]
+        if "dropout" in cfg:
+            auto_kwargs["dropout"] = cfg["dropout"]
         if "latent_size" in cfg:
             auto_kwargs["latent_dim"] = cfg["latent_size"]
         elif "latent_dim" in cfg:
             auto_kwargs["latent_dim"] = cfg["latent_dim"]
         if "out_net_hidden_sizes" in cfg:
             auto_kwargs["out_hidden"] = cfg["out_net_hidden_sizes"]
+        elif "out_hidden" in cfg:
+            auto_kwargs["out_hidden"] = cfg["out_hidden"]
+        if "out_dropout" in cfg:
+            auto_kwargs["out_dropout"] = cfg["out_dropout"]
+        if "single_output" in cfg:
+            auto_kwargs["single_output"] = cfg["single_output"]
 
         auto_kwargs.update(kwargs)           # explicit kwargs override auto
         model = cls(norm_stats=norm, **auto_kwargs)

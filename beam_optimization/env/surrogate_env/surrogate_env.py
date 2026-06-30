@@ -37,7 +37,7 @@ from typing import List, Optional, Union
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 
 
 class SurrogateEnv(BaseBeamEnv):
@@ -45,7 +45,7 @@ class SurrogateEnv(BaseBeamEnv):
 
     Args:
         model:        Trained ModularMLP surrogate (or list for ensemble).
-        dataset:      SurrogateTrainingDataset with initial beam states for episode reset.
+        dataset:      BeamDataset with initial beam states for episode reset.
         action_scale: Multiplier on sensitivity for action bounds.
         max_steps:    Episode length.
         sigma_factor: Gaussian noise scale (x sensitivity) for initial parameters.
@@ -59,7 +59,7 @@ class SurrogateEnv(BaseBeamEnv):
     def __init__(
         self,
         model: Union[ModularMLP, List[ModularMLP]],
-        dataset: SurrogateTrainingDataset,
+        dataset: BeamDataset,
         action_scale: float = 1.0,
         max_steps: int = 50,
         sigma_factor: float = 0.5,

@@ -1,13 +1,13 @@
-"""Build new flat .pt datasets by running TraceWin simulations.
+"""Build flat .pt datasets by running TraceWin simulations.
 
-This module is for offline dataset generation. It creates fresh BeamDataset
-objects in memory and writes new .pt files; it never appends to an existing
-dataset file. If no output directory is provided, datasets are written under
-env/dataset/001, env/dataset/002, ... while env/dataset/base remains the base
-dataset used for beam0 sampling and online updates.
+The main entry point is TraceWinDatasetBuilder. It is designed for expensive
+offline TraceWin generation: it keeps an incremental dataset_all.pt and a
+builder_state.json file so an interrupted run can be resumed until the target
+number of valid samples is reached.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence
 
@@ -58,18 +58,10 @@ def sample_parameter_sets(
     parameter, matching the environment action scaling.
     """
     rng = np.random.default_rng(seed)
-    low_delta, high_delta = action_bounds(action_scale)
-    defaults = default_params()
-
-    param_sets: list[Dict[str, float]] = []
-    for _ in range(int(n_samples)):
-        deltas = rng.uniform(low_delta, high_delta).astype(np.float32)
-        params = {
-            key: float(defaults[key] + delta)
-            for key, delta in zip(PARAM_KEYS, deltas)
-        }
-        param_sets.append(params)
-    return param_sets
+    return [
+        _sample_parameter_set(rng, action_scale=action_scale)
+        for _ in range(int(n_samples))
+    ]
 
 
 def dataset_from_tracewin_results(
@@ -80,9 +72,7 @@ def dataset_from_tracewin_results(
     """Convert TraceWin results into one fresh BeamDataset."""
     dataset = BeamDataset()
     for result in results:
-        if skip_failed and (
-            result.source != "tracewin" or not result.success or result.beam_states is None
-        ):
+        if skip_failed and not _is_valid_tracewin_result(result):
             continue
         x, y, score = tracewin_result_to_flat_sample(result)
         dataset.append_flat_sample(x, y, score)
@@ -171,67 +161,246 @@ def save_dataset_splits(
     return saved
 
 
+class TraceWinDatasetBuilder:
+    """Resumable offline builder for TraceWin-generated BeamDataset files."""
+
+    STATE_FILENAME = "builder_state.json"
+
+    def __init__(
+        self,
+        simulator: BeamSimulator,
+        output_dir: Optional[str | Path] = None,
+        *,
+        target_samples: int,
+        action_scale: float = 1.0,
+        split_ratios: SplitRatios = (0.8, 0.1, 0.1),
+        seed: Optional[int] = 123,
+        save_all: bool = True,
+        prefix: str = "dataset",
+        param_sets: Optional[Sequence[Dict[str, float]]] = None,
+    ):
+        if target_samples is None or int(target_samples) <= 0:
+            raise ValueError("target_samples must be a positive integer")
+
+        self.simulator = simulator
+        self.output_dir = Path(output_dir) if output_dir is not None else next_numbered_dataset_dir()
+        self.target_samples = int(target_samples)
+        self.action_scale = float(action_scale)
+        self.split_ratios = tuple(float(v) for v in split_ratios)
+        self.seed = int(seed) if seed is not None else int(np.random.default_rng().integers(0, 2**31 - 1))
+        self.save_all = bool(save_all)
+        self.prefix = str(prefix)
+        self.param_sets = list(param_sets) if param_sets is not None else None
+
+        if self.param_sets is not None and len(self.param_sets) < self.target_samples:
+            raise ValueError(
+                "param_sets must contain at least target_samples entries when provided: "
+                f"{len(self.param_sets)} < {self.target_samples}"
+            )
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.state_path = self.output_dir / self.STATE_FILENAME
+        self.all_path = self.output_dir / f"{self.prefix}_all.pt"
+
+    def build(self) -> dict:
+        """Run simulations until target_samples valid TraceWin samples exist."""
+        state = self._load_or_create_state()
+        dataset = self._load_dataset_from_state(state)
+
+        if len(dataset) >= self.target_samples:
+            saved_paths = self._save_final_outputs(dataset)
+            self._write_state(state, status="complete", accepted_count=len(dataset))
+            return self._summary(state, dataset, saved_paths)
+
+        while len(dataset) < self.target_samples:
+            attempt_index = int(state["attempt_index"])
+            params = self._params_for_attempt(attempt_index)
+            state["attempt_index"] = attempt_index + 1
+            self._write_state(state, status="running", accepted_count=len(dataset))
+
+            result = self.simulator.simulate(params)
+            if not _is_valid_tracewin_result(result):
+                self._write_state(state, status="running", accepted_count=len(dataset))
+                continue
+
+            x, y, score = tracewin_result_to_flat_sample(result)
+            dataset.append_flat_sample(x, y, score)
+            state["accepted_count"] = len(dataset)
+            dataset.save_flat(self.all_path)
+            self._write_state(state, status="running", accepted_count=len(dataset))
+
+        saved_paths = self._save_final_outputs(dataset)
+        self._write_state(state, status="complete", accepted_count=len(dataset))
+        return self._summary(state, dataset, saved_paths)
+
+    def _load_or_create_state(self) -> dict:
+        expected = self._config_signature()
+        if self.state_path.exists():
+            state = json.loads(self.state_path.read_text(encoding="utf-8"))
+            saved_config = state.get("config", {})
+            if saved_config != expected:
+                raise ValueError(
+                    "Existing builder_state.json does not match the requested build "
+                    f"configuration.\nExisting: {saved_config}\nRequested: {expected}"
+                )
+            return state
+
+        state = {
+            "version": 1,
+            "status": "new",
+            "attempt_index": 0,
+            "accepted_count": 0,
+            "config": expected,
+        }
+        self._write_state(state, status="new", accepted_count=0)
+        return state
+
+    def _load_dataset_from_state(self, state: dict) -> BeamDataset:
+        if self.all_path.exists():
+            dataset = BeamDataset.load(self.all_path)
+            accepted_count = int(state.get("accepted_count", 0))
+            if len(dataset) != accepted_count:
+                raise ValueError(
+                    f"{self.all_path} has {len(dataset)} samples but builder_state.json "
+                    f"declares {accepted_count}. Fix or remove the inconsistent files."
+                )
+            return dataset
+        if int(state.get("accepted_count", 0)) != 0:
+            raise ValueError(
+                f"{self.state_path} declares accepted samples, but {self.all_path} is missing."
+            )
+        return BeamDataset()
+
+    def _save_final_outputs(self, dataset: BeamDataset) -> dict[str, Path]:
+        return save_dataset_splits(
+            dataset,
+            self.output_dir,
+            split=True,
+            ratios=self.split_ratios,
+            save_all=self.save_all,
+            seed=self.seed,
+            prefix=self.prefix,
+        )
+
+    def _params_for_attempt(self, attempt_index: int) -> Dict[str, float]:
+        if self.param_sets is not None:
+            if attempt_index >= len(self.param_sets):
+                raise RuntimeError(
+                    "Ran out of explicit param_sets before reaching target_samples"
+                )
+            return dict(self.param_sets[attempt_index])
+
+        rng = np.random.default_rng(self.seed + int(attempt_index))
+        return _sample_parameter_set(rng, action_scale=self.action_scale)
+
+    def _config_signature(self) -> dict:
+        return {
+            "target_samples": self.target_samples,
+            "action_scale": self.action_scale,
+            "split_ratios": list(self.split_ratios),
+            "seed": self.seed,
+            "save_all": self.save_all,
+            "prefix": self.prefix,
+            "param_sets_count": len(self.param_sets) if self.param_sets is not None else None,
+        }
+
+    def _write_state(
+        self,
+        state: dict,
+        *,
+        status: str,
+        accepted_count: int,
+    ) -> None:
+        state["status"] = status
+        state["accepted_count"] = int(accepted_count)
+        self.state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    def _summary(
+        self,
+        state: dict,
+        dataset: BeamDataset,
+        saved_paths: dict[str, Path],
+    ) -> dict:
+        return {
+            "output_dir": str(self.output_dir),
+            "target_samples": self.target_samples,
+            "n_success": len(dataset),
+            "n_attempted": int(state["attempt_index"]),
+            "n_failed": int(state["attempt_index"]) - len(dataset),
+            "state_path": str(self.state_path),
+            "paths": {name: str(path) for name, path in saved_paths.items()},
+        }
+
+
 def build_tracewin_dataset(
     simulator: BeamSimulator,
     output_dir: Optional[str | Path] = None,
     *,
+    target_samples: Optional[int] = None,
     param_sets: Optional[Sequence[Dict[str, float]]] = None,
     n_samples: Optional[int] = None,
     action_scale: float = 1.0,
     split: bool = True,
     split_ratios: SplitRatios = (0.8, 0.1, 0.1),
-    save_all: bool = False,
+    save_all: bool = True,
     seed: Optional[int] = 123,
     skip_failed: bool = True,
     prefix: str = "dataset",
 ) -> dict:
-    """Run TraceWin and save a fresh dataset.
+    """Run TraceWin and save a fresh/resumable dataset.
 
-    Args:
-        simulator: TraceWinSimulator or any BeamSimulator with simulate(params).
-        output_dir: Destination directory for .pt files. If None, a new
-            numbered directory is created under env/dataset, e.g. 001, 002, ...
-        param_sets: Optional explicit list of parameter dictionaries.
-        n_samples: Number of random parameter sets to generate when param_sets
-            is not provided.
-        action_scale: Sampling range multiplier for generated param_sets.
-        split: If True, save train/val/test files.
-        split_ratios: Train/val/test ratios. Defaults to 80/10/10.
-        save_all: If True, also save dataset_all.pt.
-        seed: Random seed for sampling and splitting.
-        skip_failed: If True, failed TraceWin runs are ignored.
-        prefix: Filename prefix, e.g. "dataset" -> dataset_train.pt.
-
-    Returns:
-        Dictionary with counts and saved file paths.
+    target_samples is the preferred API. n_samples is kept as a compatibility
+    alias and means "target this many valid samples".
     """
-    if param_sets is None:
-        if n_samples is None:
-            raise ValueError("Provide either param_sets or n_samples")
-        param_sets = sample_parameter_sets(
-            n_samples,
-            action_scale=action_scale,
-            seed=seed,
-        )
+    del skip_failed  # Failed TraceWin results are never appended by the builder.
 
-    if output_dir is None:
-        output_dir = next_numbered_dataset_dir()
+    if target_samples is None:
+        if n_samples is not None:
+            target_samples = int(n_samples)
+        elif param_sets is not None:
+            target_samples = len(param_sets)
+        else:
+            raise ValueError("Provide target_samples, n_samples, or param_sets")
 
-    results = [simulator.simulate(params) for params in param_sets]
-    dataset = dataset_from_tracewin_results(results, skip_failed=skip_failed)
-    saved_paths = save_dataset_splits(
-        dataset,
+    builder = TraceWinDatasetBuilder(
+        simulator,
         output_dir,
-        split=split,
-        ratios=split_ratios,
-        save_all=save_all,
+        target_samples=int(target_samples),
+        action_scale=action_scale,
+        split_ratios=split_ratios,
         seed=seed,
+        save_all=save_all or not split,
         prefix=prefix,
+        param_sets=param_sets,
     )
+    summary = builder.build()
 
+    if not split:
+        summary["paths"] = {
+            name: path
+            for name, path in summary["paths"].items()
+            if name == "all"
+        }
+    return summary
+
+
+def _sample_parameter_set(
+    rng: np.random.Generator,
+    *,
+    action_scale: float,
+) -> Dict[str, float]:
+    low_delta, high_delta = action_bounds(action_scale)
+    defaults = default_params()
+    deltas = rng.uniform(low_delta, high_delta).astype(np.float32)
     return {
-        "n_requested": len(param_sets),
-        "n_success": len(dataset),
-        "n_failed": len(param_sets) - len(dataset),
-        "paths": {name: str(path) for name, path in saved_paths.items()},
+        key: float(defaults[key] + delta)
+        for key, delta in zip(PARAM_KEYS, deltas)
     }
+
+
+def _is_valid_tracewin_result(result: BeamSimulationResult) -> bool:
+    return (
+        result.source == "tracewin"
+        and bool(result.success)
+        and result.beam_states is not None
+    )

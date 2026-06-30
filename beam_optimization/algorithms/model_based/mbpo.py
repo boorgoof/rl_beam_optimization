@@ -37,7 +37,7 @@ import torch
 
 from beam_optimization.algorithms.utils.replay_buffer import MixedReplayBuffer
 from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator, run_surrogate_forward
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM, N_STAGES,
@@ -57,7 +57,7 @@ class MBPO:
         surrogates:           Trained ModularMLP or list of ModularMLPs (ensemble).
                               When a list is given, each synthetic rollout picks a
                               surrogate at random, capturing epistemic uncertainty.
-        dataset:              SurrogateTrainingDataset used to sample initial beam states.
+        dataset:              BeamDataset used to sample initial beam states.
         obs_dim:              Observation dimension.
         act_dim:              Action dimension.
         rollout_length:       Steps per synthetic rollout (1=Dyna, >1=MBPO).
@@ -73,7 +73,7 @@ class MBPO:
         self,
         agent,
         surrogates: Union[ModularMLP, List[ModularMLP]],
-        dataset: SurrogateTrainingDataset,
+        dataset: BeamDataset,
         obs_dim: int,
         act_dim: int,
         rollout_length: int = 1,

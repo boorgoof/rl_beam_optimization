@@ -323,7 +323,9 @@ La usano sia il builder offline sia `SurrogateDatasetUpdater`.
 ## Creazione Dataset Offline Da TraceWin
 
 `TraceWinDatasetBuilder` vive in `env/dataset/tracewin_dataset_builder.py`.
-Serve per creare dataset nuovi da zero usando TraceWin reale.
+Serve per creare dataset nuovi da zero usando TraceWin reale. Il builder punta
+a un numero target di campioni validi, non a un numero target di tentativi:
+una simulazione fallita non aumenta il conteggio.
 
 Flusso:
 
@@ -338,7 +340,15 @@ parametri
   -> env/dataset/001/dataset_test.pt
 ```
 
-Di default puo salvare split:
+Durante la generazione salva progressi incrementali:
+
+```text
+dataset_all.pt       campioni validi gia raccolti
+builder_state.json   attempt_index, accepted_count, configurazione
+```
+
+Se viene interrotto e rilanciato nella stessa `output_dir`, ricarica lo stato
+e continua finche `accepted_count == target_samples`. Alla fine salva gli split:
 
 ```text
 train = 80%
@@ -346,10 +356,44 @@ val   = 10%
 test  = 10%
 ```
 
-Il builder non appende a dataset esistenti: ogni chiamata costruisce un nuovo
-`BeamDataset` in memoria e salva nuovi file `.pt`. Se non viene passato un
-`output_dir`, crea automaticamente la prossima cartella numerata sotto
-`env/dataset`, per esempio `001`, `002`, `003`, ignorando `base`.
+Il builder non modifica `env/dataset/base`: i dataset offline nuovi vanno in
+cartelle numerate sotto `env/dataset`, per esempio `001`, `002`, `003`,
+ignorando `base`.
+
+## Training Offline Del Surrogate
+
+`SurrogateTrainer` vive in `env/surrogate_env/surrogate/trainer.py`.
+E il componente che crea un `ModularMLP` da zero usando dataset offline gia
+costruiti.
+
+Flusso:
+
+```text
+dataset_train.pt (+ opzionale dataset_val.pt)
+  -> BeamDataset.load(...)
+  -> compute_normalization_metadata(...)
+  -> ModularMLP(norm_stats=...)
+  -> training MSE sugli output stage
+  -> salvataggio best validation checkpoint
+  -> models/base/surrogate_0.pt
+```
+
+Interfaccia principale:
+
+```python
+train_surrogate(
+    train_dataset_path,
+    val_dataset_path=None,
+    output_dir=DEFAULT_BASE_SURROGATE_DIR,
+    n_models=1,
+    max_epochs=200,
+    batch_size=256,
+)
+```
+
+Di default salva in `models/base`, creando un solo modello e scegliendo il
+primo indice libero (`surrogate_0.pt`, poi `surrogate_1.pt`, ...). Con
+`overwrite=True` puo ricreare da `surrogate_0.pt`.
 
 ## Aggiornamento Del Surrogate
 
@@ -411,7 +455,8 @@ n_samples
 | `SurrogateEnv` | No | Usa modello e dataset in RAM |
 | `SurrogateBeamSimulator` | No | Produce risultati in RAM |
 | `BeamDataset.save_flat` | Si | Dataset `.pt` flat |
-| `TraceWinDatasetBuilder` | Si | Nuovi dataset train/val/test in cartelle numerate |
+| `TraceWinDatasetBuilder` | Si | `dataset_all.pt`, `builder_state.json`, train/val/test |
+| `SurrogateTrainer` | Si | Nuovi checkpoint surrogate offline in `models/base` |
 | `ModularMLP.save` | Si | Checkpoint del modello |
 | `SurrogateDatasetUpdater.save_online_dataset` | Si | Solo nuovi campioni TraceWin |
 | `SurrogateDatasetUpdater.save_merged_dataset` | Si | Dataset offline + online |
@@ -463,7 +508,8 @@ Il diagramma e diviso in blocchi:
 - **surrogate backend**: `SurrogateEnv`, `SurrogateBeamSimulator`,
   `run_surrogate_forward`, `ModularMLP`;
 - **data pipeline**: `BeamDataset`, `TraceWinDatasetBuilder`, `utility.py`,
-  `SurrogateDatasetUpdater`, `SurrogateEvaluator`, file flat `.pt`.
+  `SurrogateTrainer`, `SurrogateDatasetUpdater`, `SurrogateEvaluator`,
+  file flat `.pt`.
 
 Le frecce principali sono:
 
@@ -481,6 +527,8 @@ Le frecce principali sono:
 | `SurrogateBeamSimulator` | usa | `BeamDataset` | Campiona `beam0` |
 | `TraceWinDatasetBuilder` | usa | `TraceWinSimulator` | Crea dataset offline |
 | `TraceWinDatasetBuilder` | scrive | `BeamDataset` | Nuovi split train/val/test |
+| `SurrogateTrainer` | crea | `ModularMLP` | Training offline da zero |
+| `SurrogateTrainer` | legge | `BeamDataset` | Usa train/val dataset |
 | `SurrogateDatasetUpdater` | aggiorna | `ModularMLP` | Fine-tuning con dati reali |
 | `utility.py` | converte | `BeamSimulationResult` | Crea righe `X/Y/scores` |
 | `SurrogateEvaluator` | valuta | `ModularMLP` | MSE/RMSE su dataset |

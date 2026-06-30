@@ -45,7 +45,7 @@ from beam_optimization.config.paths import (
     DEFAULT_TRACEWIN_INI,
 )
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
     N_PARAMS, N_STAGES, BEAM_STATE_DIM,
@@ -432,7 +432,7 @@ def main():
         print(f"Caricato surrogate singolo: {surrogate_path}")
 
     print(f"Carico dataset:   {args.dataset}")
-    dataset = SurrogateTrainingDataset.load(args.dataset)
+    dataset = BeamDataset.load(args.dataset)
 
     scores: Dict[str, float] = {}
 

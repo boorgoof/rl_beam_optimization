@@ -44,7 +44,7 @@ def check(name: str, fn):
 
 print("\n[1/6] Import")
 
-check("SurrogateEnv, ModularMLP, SurrogateTrainingDataset da env.surrogate_env",
+check("SurrogateEnv, ModularMLP, BeamDataset da env.surrogate_env",
       lambda: __import__("beam_optimization.env.surrogate_env",
                           fromlist=["SurrogateEnv", "ModularMLP", "SurrogateTrainingDataset", "BeamDataset"]))
 
@@ -54,7 +54,7 @@ check("TraceWinEnv, TraceWinSimulator, BeamSimulationResult da env.tracewin_env"
 
 check("import breve: from beam_optimization.env import ...", lambda: (
     __import__("beam_optimization.env",
-               fromlist=["SurrogateEnv", "ModularMLP", "SurrogateTrainingDataset",
+               fromlist=["SurrogateEnv", "ModularMLP", "BeamDataset",
                          "TraceWinEnv", "TraceWinSimulator", "BeamSimulationResult"])
 ))
 
@@ -82,9 +82,9 @@ print("\n[2/6] Dataset e surrogati")
 HERE = PROJECT_ROOT
 
 def _load_dataset():
-    from beam_optimization.env.surrogate_env import SurrogateTrainingDataset
+    from beam_optimization.env.surrogate_env import BeamDataset
     global ds
-    ds = SurrogateTrainingDataset.load(str(DEFAULT_DATASET))
+    ds = BeamDataset.load(str(DEFAULT_DATASET))
     assert len(ds) > 0, "Dataset vuoto"
 
 check("Carica dataset_train.pt", _load_dataset)

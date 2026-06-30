@@ -370,7 +370,9 @@ da `beam_optimization.env.dataset`.
 ### `TraceWinDatasetBuilder` e `utility.py`
 
 `env/dataset/tracewin_dataset_builder.py` crea dataset offline nuovi usando
-TraceWin reale. Non appende a file `.pt` esistenti.
+TraceWin reale. Punta a un numero target di campioni validi e salva progressi
+incrementali in `dataset_all.pt` e `builder_state.json`, cosi una run
+interrotta puo ripartire dalla stessa cartella.
 
 Flusso:
 
@@ -393,6 +395,26 @@ dall'updater online.
 `beam0`. Quando MBPO online salva il merged dataset senza override esplicito,
 aggiorna questo stesso file. I dataset offline creati da TraceWin vengono invece
 salvati in cartelle numerate sotto `env/dataset`, come `001`, `002`, ...
+
+### `SurrogateTrainer`
+
+`env/surrogate_env/surrogate/trainer.py` crea uno o piu `ModularMLP` da zero a
+partire da `dataset_train.pt` e opzionalmente `dataset_val.pt`.
+
+Flusso:
+
+```text
+dataset_train.pt / dataset_val.pt
+  -> BeamDataset
+  -> normalizzazione dal train set
+  -> ModularMLP nuovo
+  -> training offline
+  -> models/base/surrogate_*.pt
+```
+
+Di default crea 1 modello, salva in `models/base` e usa il primo indice libero.
+`SurrogateDatasetUpdater` resta invece dedicato al fine-tuning online dei
+checkpoint gia esistenti.
 
 ### `SurrogateDatasetUpdater`
 
@@ -620,7 +642,8 @@ metadata
 Viene letto e scritto da `BeamDataset`; il flusso applicativo di aggiornamento
 passa da `SurrogateDatasetUpdater` e puo aggiornare il dataset base usato per
 `beam0`, mentre la creazione offline da zero passa da `TraceWinDatasetBuilder`
-e usa cartelle numerate.
+e usa cartelle numerate. La creazione offline dei pesi `ModularMLP` passa da
+`SurrogateTrainer`.
 
 ### `surrogate_*.pt`
 
@@ -719,7 +742,18 @@ TraceWinDatasetBuilder
   -> TraceWinSimulator.simulate(params)
   -> utility.tracewin_result_to_flat_sample(result)
   -> BeamDataset
+  -> salva dataset_all.pt + builder_state.json
   -> salva env/dataset/001/dataset_train.pt / dataset_val.pt / dataset_test.pt
+```
+
+### Training Offline Dei Surrogate
+
+```text
+SurrogateTrainer
+  -> carica dataset_train.pt / dataset_val.pt
+  -> calcola normalization_metadata
+  -> crea ModularMLP
+  -> salva models/base/surrogate_*.pt
 ```
 
 ### Evaluation Dei Surrogate

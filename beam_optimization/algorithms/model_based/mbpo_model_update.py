@@ -49,7 +49,7 @@ import numpy as np
 from beam_optimization.algorithms.model_based.mbpo import MBPO
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 from beam_optimization.env.simulation import BeamSimulationResult
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.updater import SurrogateDatasetUpdater
 
 
@@ -59,7 +59,7 @@ class MBPOWithModelUpdate(MBPO):
     Args:
         agent:                SAC or TD3 instance.
         surrogates:           Trained ModularMLP or list (ensemble).
-        dataset:              Seed SurrogateTrainingDataset for beam0 sampling in synthetic rollouts.
+        dataset:              Seed BeamDataset for beam0 sampling in synthetic rollouts.
         obs_dim:              Observation dimension (108).
         act_dim:              Action dimension (16).
         rollout_length:       Steps per synthetic rollout (1=Dyna, >1=MBPO).
@@ -92,7 +92,7 @@ class MBPOWithModelUpdate(MBPO):
         self,
         agent,
         surrogates: Union[ModularMLP, List[ModularMLP]],
-        dataset: SurrogateTrainingDataset,
+        dataset: BeamDataset,
         obs_dim: int,
         act_dim: int,
         rollout_length: int = 1,

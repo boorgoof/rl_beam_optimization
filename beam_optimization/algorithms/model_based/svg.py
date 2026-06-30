@@ -51,7 +51,7 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 
 OBS_DIM = N_STAGES * BEAM_STATE_DIM  # 108
 
@@ -74,7 +74,7 @@ class SVGAgent:
 
     Args:
         surrogate:     Trained ModularMLP (weights frozen during policy training).
-        dataset:       SurrogateTrainingDataset providing initial beam states for resets.
+        dataset:       BeamDataset providing initial beam states for resets.
         obs_dim:       Observation dimension (default: 108 = 12 stages × 9 vars).
         act_dim:       Action dimension (default: 16 parameters).
         action_scale:  Multiplier on sensitivity for action bounds.
@@ -90,7 +90,7 @@ class SVGAgent:
     def __init__(
         self,
         surrogate: Union[ModularMLP, List[ModularMLP]],
-        dataset: SurrogateTrainingDataset,
+        dataset: BeamDataset,
         obs_dim: int = OBS_DIM,
         act_dim: int = N_PARAMS,
         action_scale: float = 1.0,

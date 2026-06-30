@@ -23,7 +23,7 @@ from beam_optimization.config.paths import (
     DEFAULT_TRACEWIN_INI,
 )
 from beam_optimization.env.surrogate_env import SurrogateEnv
-from beam_optimization.env.dataset import SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
 
 
@@ -51,7 +51,7 @@ def make_env(args):
     """Create the selected evaluation environment."""
     if args.env == "surrogate":
         surrogate = load_surrogate(args.surrogate)
-        dataset = SurrogateTrainingDataset.load(args.dataset)
+        dataset = BeamDataset.load(args.dataset)
         return SurrogateEnv(
             model=surrogate,
             dataset=dataset,
