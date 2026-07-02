@@ -63,6 +63,7 @@ I comandi disponibili sono:
 
 ```text
 check
+setup
 train
 evaluate
 benchmark
@@ -70,6 +71,13 @@ benchmark
 
 `main.py` non contiene logica scientifica: fa solo dispatch verso i moduli in
 `scripts/`.
+
+### `scripts.setup`
+
+Crea nuove risorse offline quando viene lanciato esplicitamente. Non controlla
+se quelle esistenti bastano e non aggiorna `env/dataset/base`: ogni run crea un
+nuovo dataset numerato in `env/dataset/001`, `002`, ecc. e aggiunge nuovi
+checkpoint `surrogate_*.pt` in `models/base` usando il primo indice libero.
 
 ### `scripts.train`
 
@@ -86,6 +94,14 @@ Puo creare:
 Il training standard usa `SurrogateEnv`, perche e molto piu veloce di TraceWin.
 Quando serve feedback reale o fine-tuning online del modello, puo usare anche
 `TraceWinEnv`.
+
+La gestione dei surrogate e esplicita:
+
+- model-free e `SB3SAC` usano un singolo checkpoint, di default
+  `models/base/surrogate_0.pt`;
+- `SVGAgent` e `MBPO` usano l'ensemble in `models/base`;
+- `MBPOWithModelUpdate` usa l'ensemble in `models/updated`, inizializzato da
+  `models/base` se vuoto.
 
 ### `scripts.evaluate`
 
@@ -391,14 +407,15 @@ parametri
 `BeamSimulationResult -> x/y/score`, usata sia dal builder offline sia
 dall'updater online.
 
-`env/dataset/base/dataset_train.pt` e il dataset base usato per campionare
-`beam0`. Quando MBPO online salva il merged dataset senza override esplicito,
-aggiorna questo stesso file. I dataset offline creati da TraceWin vengono invece
-salvati in cartelle numerate sotto `env/dataset`, come `001`, `002`, ...
+`env/dataset/base/dataset_base.pt` e il dataset base del progetto: viene usato
+per campionare `beam0` e come dataset offline nel fine-tuning online. Quando
+MBPO online salva il merged dataset senza override esplicito, aggiorna questo
+stesso file. I dataset offline creati da TraceWin vengono invece salvati in
+cartelle numerate sotto `env/dataset`, come `001`, `002`, ...
 
 ### `SurrogateTrainer`
 
-`env/surrogate_env/surrogate/trainer.py` crea uno o piu `ModularMLP` da zero a
+`env/surrogate_env/surrogate/model/trainer.py` crea uno o piu `ModularMLP` da zero a
 partire da `dataset_train.pt` e opzionalmente `dataset_val.pt`.
 
 Flusso:
@@ -434,7 +451,7 @@ file `.pt` flat.
 
 ### `SurrogateEvaluator`
 
-`surrogate/evaluator.py` valuta tutti i checkpoint `surrogate_*.pt` di una
+`model/evaluator.py` valuta tutti i checkpoint `surrogate_*.pt` di una
 cartella su un dataset validation/test.
 
 Calcola:
@@ -652,8 +669,13 @@ Checkpoint dei `ModularMLP`.
 Possono essere:
 
 - `models/base`: surrogate originali conservati come riferimento pulito;
-- `models/updated`: surrogate di lavoro, usati di default se presenti e
-  aggiornati online.
+- `models/updated`: copia di lavoro usata solo da `MBPOWithModelUpdate` e
+  aggiornata online.
+
+La scelta dei surrogate e esplicita per algoritmo: gli algoritmi model-free
+usano `models/base/surrogate_0.pt`, mentre SVG e MBPO usano l'ensemble in
+`models/base`. `MBPOWithModelUpdate` usa solo `models/updated`; se e vuota,
+viene inizializzata copiando i checkpoint da `models/base`.
 
 ### `agent checkpoints`
 
@@ -759,7 +781,7 @@ SurrogateTrainer
 ### Evaluation Dei Surrogate
 
 ```text
-surrogate/evaluator.py
+model/evaluator.py
   -> carica dataset_val.pt o dataset_test.pt
   -> carica tutti i surrogate_*.pt in una cartella
   -> calcola MSE/RMSE aggregati, final stage e per stage

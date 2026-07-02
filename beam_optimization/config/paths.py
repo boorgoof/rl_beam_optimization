@@ -14,35 +14,31 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Root folder for flat BeamDataset files.
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "env/dataset"
 
-# Base dataset used to train the base surrogate and to sample initial beam
-# states during environment resets.
+# Base dataset used by environments/algorithms to sample initial beam states
+# and by online model-update workflows as the offline fine-tuning dataset.
 DEFAULT_BASE_DATASET_DIR = DEFAULT_DATASET_ROOT / "base"
-DEFAULT_DATASET = DEFAULT_BASE_DATASET_DIR / "dataset_train.pt"
+DEFAULT_BASE_DATASET = DEFAULT_BASE_DATASET_DIR / "dataset_base.pt"
 
-# Surrogate checkpoint folders. "base" is kept as the clean reference ensemble.
-# "updated" is the working ensemble used by default and fine-tuned by online
-# TraceWin updates.
-DEFAULT_BASE_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/models/base"
-DEFAULT_UPDATED_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/models/updated"
+# Legacy name kept for CLI scripts that accept a generic "--dataset" argument.
+DEFAULT_DATASET = DEFAULT_BASE_DATASET
 
+# Surrogate checkpoint folders. "base" is kept as the clean offline reference
+# ensemble. "updated" is the working ensemble fine-tuned by online TraceWin
+# updates and is used only when explicitly requested by MBPOWithModelUpdate.
+DEFAULT_BASE_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/trained_models/base"
+DEFAULT_UPDATED_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/trained_models/updated"
 
-def _has_surrogate_checkpoints(path: Path) -> bool:
-    return path.exists() and any(path.glob("surrogate_*.pt"))
+# Default surrogate paths are deliberately anchored to the base ensemble.
+# Algorithms that need the updated ensemble must ask for it explicitly.
+DEFAULT_SURROGATE_DIR = DEFAULT_BASE_SURROGATE_DIR
+DEFAULT_SINGLE_SURROGATE_MODEL = DEFAULT_BASE_SURROGATE_DIR / "surrogate_0.pt"
 
-
-# Use the updated working ensemble by default when it exists; otherwise fall
-# back to the conserved base ensemble.
-DEFAULT_SURROGATE_DIR = (
-    DEFAULT_UPDATED_SURROGATE_DIR
-    if _has_surrogate_checkpoints(DEFAULT_UPDATED_SURROGATE_DIR)
-    else DEFAULT_BASE_SURROGATE_DIR
-)
-
-# Single surrogate checkpoint; used by commands that do not need the full ensemble.
-DEFAULT_SURROGATE_MODEL = DEFAULT_SURROGATE_DIR / "surrogate_0.pt"
+# Legacy name kept for scripts that expect a single default surrogate.
+DEFAULT_SURROGATE_MODEL = DEFAULT_SINGLE_SURROGATE_MODEL
 
 # Root directory where training scripts write RL agent checkpoints and logs.
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "runs/all"
+DEFAULT_SURROGATE_LOG_DIR = PROJECT_ROOT / "runs/surrogate"
 
 # JSON file written by the benchmark command.
 DEFAULT_BENCHMARK_OUTPUT = PROJECT_ROOT / "results/benchmark.json"

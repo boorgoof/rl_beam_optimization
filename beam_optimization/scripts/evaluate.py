@@ -24,7 +24,7 @@ from beam_optimization.config.paths import (
 )
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.env.dataset import BeamDataset
-from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
+from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
 
 ACT_DIM = N_PARAMS
@@ -55,9 +55,7 @@ def make_env(args):
         return SurrogateEnv(
             model=surrogate,
             dataset=dataset,
-            action_scale=args.action_scale,
             max_steps=args.max_ep_steps,
-            obs_mode=args.obs_mode,
         )
 
     from beam_optimization.env.tracewin_env import TraceWinEnv
@@ -67,16 +65,14 @@ def make_env(args):
     return TraceWinEnv(
         project_file=str(project_file),
         calc_dir=str(calc_dir),
-        action_scale=args.action_scale,
         max_steps=args.max_ep_steps,
-        obs_mode=args.obs_mode,
         timeout=args.tracewin_timeout,
     )
 
 
-def make_agent(algo: str, policy_path: str, obs_dim: int, action_scale: float, hidden: list[int], env=None):
+def make_agent(algo: str, policy_path: str, obs_dim: int, hidden: list[int], env=None):
     """Instantiate and load a trained policy."""
-    bounds = action_bounds(action_scale)
+    bounds = action_bounds()
     action_bounds_tuple = (bounds[0].tolist(), bounds[1].tolist())
 
     if algo == "sac":
@@ -231,8 +227,6 @@ def main():
     parser.add_argument("--env", default="surrogate", choices=["surrogate", "tracewin"])
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-ep-steps", type=int, default=20)
-    parser.add_argument("--action-scale", type=float, default=1.0)
-    parser.add_argument("--obs-mode", default="full", choices=["full", "final", "final_with_beam0"])
     parser.add_argument("--hidden", type=int, nargs="+", default=[256, 256])
     parser.add_argument("--seed", type=int, default=42)
 
@@ -258,11 +252,11 @@ def main():
 
     env = make_env(args)
     obs_dim = env.observation_space.shape[0]
-    agent = make_agent(args.algo, args.policy, obs_dim, args.action_scale, args.hidden, env=env)
+    agent = make_agent(args.algo, args.policy, obs_dim, args.hidden, env=env)
 
     print(f"Environment: {args.env}")
     print(f"Policy:      {args.policy}")
-    print(f"Observation: {args.obs_mode} ({obs_dim} dims)")
+    print(f"Observation: configured mask ({obs_dim} dims)")
     if args.render:
         print(f"Render dir:  {args.render_dir}")
 
@@ -275,7 +269,7 @@ def main():
         "algo": args.algo,
         "policy": args.policy,
         "env": args.env,
-        "obs_mode": args.obs_mode,
+        "observation_dim": obs_dim,
         "episodes": results,
         "mean_final_score": float(np.mean([r["final_score"] for r in results])),
         "best_final_score": float(np.max([r["final_score"] for r in results])),

@@ -8,7 +8,7 @@ Reference:
 
 Key idea (SVG-H, full-episode backprop):
     Instead of learning a separate Q-function (as in SAC/TD3), we exploit the
-    fact that the surrogate is differentiable and directly differentiate thema sei sicuro che n
+    fact that the surrogate is differentiable and directly differentiate the
     cumulative reward w.r.t. the policy parameters:
 
         ∂J/∂θ = ∂/∂θ  Σ_t  score(surrogate(beam0, params_t))
@@ -35,38 +35,37 @@ Practical notes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
-from beam_optimization.config.adige import (
-    PARAM_KEYS, N_PARAMS, BEAM_STATE_DIM, N_STAGES,
-    STAGE_PARAM_SIZES,
-    default_params, sensitivity_vec, action_bounds,
-    params_to_vec, vec_to_params, score_tensor,
-)
-from beam_optimization.env.surrogate_env.surrogate_simulator import SurrogateBeamSimulator
-from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
+from beam_optimization.env.surrogate_env import DifferentiableSurrogateEnv
+from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
-
-OBS_DIM = N_STAGES * BEAM_STATE_DIM  # 108
 
 
 @dataclass
 class SVGResult:
-    """Returned by select_action (greedy eval) and optimize_episode (training)."""
+    """Compact training output returned by optimize_episode()."""
+
+    # Scalar loss used for the last policy update.
     episode_loss: float = 0.0
+
+    # Final beam-quality score reached at the end of the rollout.
     final_score: float = 0.0
+
+    # Per-step score trace, useful for logging and debugging convergence.
     score_history: List[float] = field(default_factory=list)
+
+    # Policy gradient norm after clipping.
     grad_norm: float = 0.0
 
 
 class SVGAgent:
-    """Policy optimization through world model — SVG-H variant.
+    """SVG-H variant.
 
     The policy π_θ(obs) → Δparams is trained end-to-end by backpropagating
     the cumulative beam-quality reward through the differentiable surrogate.
@@ -75,14 +74,15 @@ class SVGAgent:
     Args:
         surrogate:     Trained ModularMLP (weights frozen during policy training).
         dataset:       BeamDataset providing initial beam states for resets.
-        obs_dim:       Observation dimension (default: 108 = 12 stages × 9 vars).
-        act_dim:       Action dimension (default: 16 parameters).
-        action_scale:  Multiplier on sensitivity for action bounds.
+        obs_dim:       Observation dimension.
+        act_dim:       Action dimension.
+        action_bounds: Physical action bounds as (low, high).
+        param_keys:    Ordered parameter keys matching the policy action vector.
+        default_params: Initial best-parameter dictionary.
         hidden_dims:   Policy network hidden layer sizes.
         lr:            Policy Adam learning rate.
         alpha:         Entropy coefficient (0.0 = no entropy regularization).
-        H:             Episode horizon (number of steps to unroll).
-        sigma_factor:  Gaussian noise scale for initial parameter sampling.
+        n_step:        Episode horizon (number of steps to unroll).
         max_grad_norm: Gradient clipping norm.
         device:        Torch device.
     """
@@ -91,59 +91,73 @@ class SVGAgent:
         self,
         surrogate: Union[ModularMLP, List[ModularMLP]],
         dataset: BeamDataset,
-        obs_dim: int = OBS_DIM,
-        act_dim: int = N_PARAMS,
-        action_scale: float = 1.0,
+        obs_dim: int,
+        act_dim: int,
+        action_bounds,
+        param_keys: Sequence[str],
+        default_params: Mapping[str, float],
         hidden_dims: Tuple[int, ...] = (256, 256),
         lr: float = 3e-4,
         alpha: float = 0.01,
-        H: int = 20,
-        sigma_factor: float = 0.5,
+        n_step: int = 20,
         max_grad_norm: float = 1.0,
         stage_weights: Optional[List[float]] = None,
-        obs_mode: str = "full",
         device: Optional[str] = None,
     ):
-        self.dataset      = dataset
-        self.H            = H
-        self.alpha        = alpha
-        self.sigma_factor = sigma_factor
+        self.dataset = dataset
+        self.n_step = n_step
+        self.alpha = alpha
         self.max_grad_norm = max_grad_norm
-        self.obs_mode     = obs_mode
+
+        # Use CUDA automatically when available, unless the caller forces a device.
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        # Owns the ensemble + beam0 sampling, shared with SurrogateEnv's simulator.
-        # Surrogate weights are frozen during SVG — only policy is optimized.
-        # We use torch.no_grad() during forward passes instead of permanently
-        # disabling requires_grad, so models can still be fine-tuned externally.
-        self.simulator = SurrogateBeamSimulator(surrogate, dataset, device=self.device)
-
-        act_low, act_high = action_bounds(action_scale)
-        bounds = (act_low.tolist(), act_high.tolist())
-        self.policy    = GaussianPolicyNetwork(obs_dim, bounds, hidden_dims).to(self.device)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
-
-        self._sens     = torch.tensor(sensitivity_vec(), dtype=torch.float32, device=self.device)
-        self._defaults = torch.tensor(
-            params_to_vec(default_params()), dtype=torch.float32, device=self.device
+        # The differentiable environment owns the surrogate simulator and keeps
+        # the torch graph alive from reward -> surrogate -> action -> policy.
+        # Its inherited reset()/step() stay Gym-compatible for normal evaluation.
+        self.env = DifferentiableSurrogateEnv(
+            model=surrogate,
+            dataset=dataset,
+            max_steps=n_step,
+            device=str(self.device),
+            stage_weights=stage_weights,
         )
 
-        if stage_weights is not None:
-            w = torch.tensor(stage_weights, dtype=torch.float32, device=self.device)
-            self._stage_weights = w / w.sum()
-        else:
-            self._stage_weights = None
+        self.obs_dim = int(obs_dim)
+        self.act_dim = int(act_dim)
+        self.param_keys = tuple(param_keys)
+        if len(self.param_keys) != self.act_dim:
+            raise ValueError(
+                f"param_keys length ({len(self.param_keys)}) must match act_dim ({self.act_dim})"
+            )
 
-        self.best_score  = -float("inf")
-        self.best_params = default_params()
+        # action bounds
+        action_min, action_max = action_bounds
+        bounds = (
+            np.asarray(action_min, dtype=np.float32).tolist(),
+            np.asarray(action_max, dtype=np.float32).tolist(),
+        )
+        if len(bounds[0]) != self.act_dim or len(bounds[1]) != self.act_dim:
+            raise ValueError("action_bounds must contain low/high vectors with length act_dim")
+
+        # The policy network outputs a Gaussian distribution over actions, which is reparameterized for low-variance gradients. 
+        self.policy = GaussianPolicyNetwork(self.obs_dim, bounds, hidden_dims).to(self.device)
+        self.policy.action_min = self.policy.action_min.to(self.device)
+        self.policy.action_max = self.policy.action_max.to(self.device)
+
+        # optimizer for the policy network parameters
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+
+        # Track the best score and corresponding parameters for logging and checkpointing.
+        self.best_score = -float("inf")
+        self.best_params = {str(k): float(v) for k, v in default_params.items()}
         self.train_steps = 0
 
     @property
     def surrogate(self):
-        """Active ensemble member (swapped per episode via self.simulator)."""
-        return self.simulator.model
+        """Active ensemble member selected by the differentiable environment."""
+        return self.env.simulator.model
 
-    # ── Public API ─────────────────────────────────────────────────────────────
 
     def optimize_episode(self, beam0: Optional[torch.Tensor] = None) -> SVGResult:
         """Train policy for one episode via SVG-H.
@@ -154,85 +168,58 @@ class SVGAgent:
         Returns:
             SVGResult with loss, final score, per-step history.
         """
-        # Thompson sampling: pick one surrogate from ensemble for this episode
-        self.simulator.set_active_model(self.simulator.sample_model_index())
+
+        # Reset the differentiable environment to the initial beam state. If beam0 is None, a random initial state is sampled from the dataset.
+        # The returned state contains the initial observation and score.
+        state = self.env.reset_torch(beam0=beam0)
 
         # Freeze surrogate params for this episode (gradient flows through, but
         # params don't accumulate grad). Restored after backward.
         for p in self.surrogate.parameters():
             p.requires_grad_(False)
 
-        if beam0 is None:
-            beam0_np = self.simulator.sample_beam0()
-            beam0 = torch.tensor(beam0_np, dtype=torch.float32, device=self.device).unsqueeze(0)
-
-        # Sample initial params with Gaussian noise
-        noise  = torch.randn(N_PARAMS, device=self.device) * self._sens * self.sigma_factor
-        params = (self._defaults + noise).detach()  # no grad on init params
-
-        # First obs: run surrogate with initial params (no grad needed for obs construction)
-        with torch.no_grad():
-            outputs_init = self.simulator.forward_differentiable(
-                self.surrogate, beam0, self._split_params(params)
-            )
-        obs = self._build_obs(beam0, outputs_init)  # (1, 108)
-
-        # Score at t=0 (detached — used only as delta baseline)
-        score_prev = score_tensor(outputs_init[-1]).detach()  # (1,)
-
-        total_loss   = torch.zeros(1, device=self.device)
+        total_loss = torch.zeros(1, device=self.device)
         score_history: List[float] = []
 
         self.policy.train()
         self.optimizer.zero_grad()
 
-        for step in range(self.H):
-            # ── Policy forward (reparameterized sample) ──────────────────────
-            action, logpa, _, _, _ = self.policy.full_pass(obs)
-            # action: (1, 16) — in-graph, gradient flows back to θ_policy
+        for _ in range(self.n_step):
+            # Reparameterized policy sample. Because this is sampled with rsample()
+            # inside GaussianPolicyNetwork, gradients can flow through the action.
+            action, logpa, _, _, _ = self.policy.full_pass(state.obs)
+            # action: (1, act_dim), physical delta applied to machine params.
 
-            # ── Parameter update ──────────────────────────────────────────────
-            params = params + action.squeeze(0)   # (16,) — stays in graph
+            # Differentiable env step. The returned reward keeps the path:
+            # reward -> score -> surrogate -> params -> action -> policy.
+            next_state, reward = self.env.step_torch(state, action)
 
-            # ── Surrogate rollout ─────────────────────────────────────────────
-            # Surrogate weights are frozen, but gradient flows through params → action → θ
-            beam_states = self.simulator.forward_differentiable(
-                self.surrogate, beam0, self._split_params_grad(params)
-            )
-            # beam_states: list of 11 tensors (1, 9), all in graph
-
-            # ── Reward ────────────────────────────────────────────────────────
-            if self._stage_weights is None:
-                score_now = score_tensor(beam_states[-1])  # (1,) — in graph
-            else:
-                scores = torch.stack([score_tensor(s) for s in beam_states])  # (11, 1)
-                score_now = (scores * self._stage_weights.view(-1, 1)).sum(dim=0)
-            reward    = score_now - score_prev          # delta score
-
-            # ── Loss accumulation ─────────────────────────────────────────────
+            # Maximize reward with an entropy bonus:
+            #   objective = reward - alpha * log_prob
+            # so the minimized loss is the negative objective.
             total_loss = total_loss - (reward - self.alpha * logpa)
-            score_history.append(float(score_now.detach()))
+            score_history.append(float(next_state.score.detach()))
 
-            # ── Update obs for next step (detach to avoid TBPTT through time) ─
-            # We use SVG-1 style: backprop only through current step's params→score
-            obs        = self._build_obs_detach(beam0, beam_states)
-            score_prev = score_now.detach()
-            params     = params.detach()   # prevents gradient explosion across steps
+            # Truncate the temporal graph before the next step. This keeps SVG
+            # stable and memory-bounded: each step still differentiates through
+            # the surrogate, but not through the whole previous rollout history.
+            state = next_state.detach_for_next_step()
 
-        # ── Policy gradient step ──────────────────────────────────────────────
+        # Backpropagate through all local surrogate transitions accumulated above.
         total_loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self.policy.parameters(), self.max_grad_norm
         ).item()
         self.optimizer.step()
 
+        # Restore surrogate flags in case other code wants to fine-tune or inspect it.
         for p in self.surrogate.parameters():
             p.requires_grad_(True)
 
         final_score = score_history[-1] if score_history else 0.0
         if final_score > self.best_score:
             self.best_score  = final_score
-            self.best_params = self._params_tensor_to_dict(params)
+            self.best_params = self._params_tensor_to_dict(state.params)
 
         self.train_steps += 1
         return SVGResult(
@@ -243,38 +230,31 @@ class SVGAgent:
         )
 
     def select_action(self, obs: np.ndarray, training: bool = False) -> np.ndarray:
-        """Deterministic (greedy) action for evaluation."""
+        """Return the deterministic policy action used during evaluation."""
         return self.policy.select_greedy_action(obs)
 
     def evaluate(self, n_episodes: int = 20) -> float:
         """Average final score over n_episodes with greedy policy."""
         self.policy.eval()
         scores = []
+
+        # Evaluation uses the same differentiable environment API, but disables
+        # autograd because no policy update is performed here.
         with torch.no_grad():
             for _ in range(n_episodes):
-                self.simulator.set_active_model(self.simulator.sample_model_index())
-                beam0_np = self.simulator.sample_beam0()
-                beam0 = torch.tensor(beam0_np, dtype=torch.float32, device=self.device).unsqueeze(0)
-                noise = torch.randn(N_PARAMS, device=self.device) * self._sens * self.sigma_factor
-                params = self._defaults + noise
-
-                for _ in range(self.H):
-                    outputs = self.simulator.forward_differentiable(
-                        self.surrogate, beam0, self._split_params(params)
-                    )
-                    obs     = self._build_obs_detach(beam0, outputs)
-                    action  = self.policy.select_greedy_action(obs.cpu().numpy())
+                state = self.env.reset_torch()
+                for _ in range(self.n_step):
+                    action  = self.policy.select_greedy_action(state.obs.cpu().numpy())
                     action_t = torch.tensor(action, dtype=torch.float32, device=self.device)
-                    params  = params + action_t
+                    state, _ = self.env.step_torch(state, action_t)
+                    state = state.detach_for_next_step()
 
-                outputs = self.simulator.forward_differentiable(
-                    self.surrogate, beam0, self._split_params(params)
-                )
-                scores.append(float(score_tensor(outputs[-1])))
+                scores.append(float(state.score))
         self.policy.train()
         return float(np.mean(scores))
 
     def save(self, path: str):
+        """Save only the policy-side state; surrogate weights are external."""
         torch.save({
             "policy":    self.policy.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -283,6 +263,7 @@ class SVGAgent:
         }, path)
 
     def load(self, path: str):
+        """Restore a policy checkpoint created by save()."""
         ck = torch.load(path, map_location=self.device)
         self.policy.load_state_dict(ck["policy"])
         self.optimizer.load_state_dict(ck["optimizer"])
@@ -291,43 +272,7 @@ class SVGAgent:
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
-    def _split_params(self, params: torch.Tensor) -> List[torch.Tensor]:
-        """Split detached (16,) param vector into stage tensors for surrogate."""
-        with torch.no_grad():
-            return self._split_params_grad(params.detach())
-
-    def _split_params_grad(self, params: torch.Tensor) -> List[torch.Tensor]:
-        """Split in-graph (16,) param vector into stage tensors for surrogate.
-        Keeps gradient connection: necessary for backprop to flow.
-        """
-        tensors = []
-        offset  = 0
-        for size in STAGE_PARAM_SIZES:
-            tensors.append(params[offset:offset + size].unsqueeze(0))  # (1, size)
-            offset += size
-        return tensors
-
-    def _build_obs(self, beam0: torch.Tensor, outputs: List[torch.Tensor]) -> torch.Tensor:
-        """Build observation tensor according to obs_mode."""
-        if self.obs_mode == "full":
-            stages = [beam0] + outputs
-            return torch.cat([s.squeeze(0) for s in stages]).unsqueeze(0)   # (1, 108)
-        elif self.obs_mode == "final":
-            return outputs[-1]                                                # (1, 9)
-        else:  # "final_with_beam0"
-            return torch.cat([beam0.squeeze(0), outputs[-1].squeeze(0)]).unsqueeze(0)  # (1, 18)
-
-    def _build_obs_detach(self, beam0: torch.Tensor, outputs: List[torch.Tensor]) -> torch.Tensor:
-        """Build observation with detached tensors (used for next-step obs)."""
-        if self.obs_mode == "full":
-            stages = [beam0.detach()] + [o.detach() for o in outputs]
-            return torch.cat([s.squeeze(0) for s in stages]).unsqueeze(0)
-        elif self.obs_mode == "final":
-            return outputs[-1].detach()
-        else:  # "final_with_beam0"
-            return torch.cat([beam0.squeeze(0).detach(),
-                               outputs[-1].squeeze(0).detach()]).unsqueeze(0)
-
     def _params_tensor_to_dict(self, params: torch.Tensor) -> Dict[str, float]:
+        """Convert a parameter tensor back to the configured parameter dictionary."""
         vec = params.detach().cpu().numpy()
-        return {k: float(v) for k, v in zip(PARAM_KEYS, vec)}
+        return {k: float(v) for k, v in zip(self.param_keys, vec)}

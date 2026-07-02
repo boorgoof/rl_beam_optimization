@@ -13,8 +13,8 @@ Metodi:
 
 Uso:
     python -m beam_optimization benchmark \\
-        --surrogate env/surrogate_env/surrogate/models/updated/surrogate_0.pt \\
-        --dataset   env/dataset/base/dataset_train.pt \\
+        --surrogate env/surrogate_env/surrogate/trained_models/updated/surrogate_0.pt \\
+        --dataset   env/dataset/base/dataset_base.pt \\
         --output    results/benchmark.json \\
         --n-runs    3 \\
         --eval-budget 3000 \\
@@ -42,16 +42,26 @@ from beam_optimization.config.paths import (
     DEFAULT_DATASET,
     DEFAULT_SURROGATE_MODEL,
 )
-from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
+from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
-    N_PARAMS, N_STAGES, BEAM_STATE_DIM,
-    action_bounds, params_to_stage_tensors, BEAM_STATE_FEATURES, score,
+    N_PARAMS,
+    PARAM_KEYS,
+    action_bounds,
+    default_params,
+    observation_dim,
+    params_to_stage_tensors,
+    sensitivity_vec,
+    BEAM_STATE_FEATURES,
+    score,
 )
 
-OBS_DIM = N_STAGES * BEAM_STATE_DIM  # 108
+OBS_DIM = observation_dim()
 ACT_DIM = N_PARAMS                               # 16
+DEFAULT_PARAM_VALUES = tuple(default_params()[key] for key in PARAM_KEYS)
+SENSITIVITY_VALUES = tuple(float(v) for v in sensitivity_vec())
+ACTION_BOUNDS = tuple(v.tolist() for v in action_bounds())
 
 STAGE_WEIGHT_CONFIGS = {
     "finale":  None,
@@ -73,7 +83,14 @@ def run_pso(surrogate, dataset, budget, seed) -> Dict:
 
     n_particles  = 30
     n_iterations = max(1, budget // n_particles - 1)
-    result = PSOOptimizer(n_particles=n_particles, n_iterations=n_iterations, seed=seed).optimize(objective)
+    result = PSOOptimizer(
+        n_particles=n_particles,
+        n_iterations=n_iterations,
+        seed=seed,
+        param_keys=PARAM_KEYS,
+        default_values=DEFAULT_PARAM_VALUES,
+        sensitivity_values=SENSITIVITY_VALUES,
+    ).optimize(objective)
     return {"best_score": result.best_score, "history": result.score_history}
 
 
@@ -87,7 +104,13 @@ def run_bo(surrogate, dataset, budget, seed) -> Dict:
             outs = surrogate(params_to_stage_tensors(params), beam0)
             return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
 
-    result = BayesianOptimizer(n_calls=min(budget, 200), seed=seed).optimize(objective)
+    result = BayesianOptimizer(
+        n_calls=min(budget, 200),
+        seed=seed,
+        param_keys=PARAM_KEYS,
+        default_values=DEFAULT_PARAM_VALUES,
+        sensitivity_values=SENSITIVITY_VALUES,
+    ).optimize(objective)
     return {"best_score": result.best_score, "history": result.score_history}
 
 
@@ -96,8 +119,17 @@ def run_svg(surrogate, dataset, n_episodes, horizon, seed, stage_weights) -> Dic
     import random
     torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
 
-    agent = SVGAgent(surrogate=surrogate, dataset=dataset, H=horizon,
-                     stage_weights=stage_weights)
+    agent = SVGAgent(
+        surrogate=surrogate,
+        dataset=dataset,
+        obs_dim=OBS_DIM,
+        act_dim=ACT_DIM,
+        action_bounds=ACTION_BOUNDS,
+        param_keys=PARAM_KEYS,
+        default_params=default_params(),
+        n_step=horizon,
+        stage_weights=stage_weights,
+    )
     history = []
     for ep in range(n_episodes):
         result = agent.optimize_episode()
@@ -109,8 +141,7 @@ def run_svg(surrogate, dataset, n_episodes, horizon, seed, stage_weights) -> Dic
 
 
 def eval_model_free(algo: str, ckpt_path: str, surrogate, dataset, n_eval=20) -> Dict:
-    act_bds = action_bounds(1.0)
-    bounds  = (act_bds[0].tolist(), act_bds[1].tolist())
+    bounds = ACTION_BOUNDS
 
     if algo == "sac":
         from beam_optimization.algorithms.model_free.sac import SAC
@@ -125,7 +156,7 @@ def eval_model_free(algo: str, ckpt_path: str, surrogate, dataset, n_eval=20) ->
         raise ValueError(algo)
 
     agent.load(ckpt_path)
-    env = SurrogateEnv(model=surrogate, dataset=dataset, action_scale=1.0, max_steps=20)
+    env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=20)
 
     scores = []
     for _ in range(n_eval):

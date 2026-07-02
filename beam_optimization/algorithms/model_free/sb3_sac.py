@@ -21,6 +21,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from beam_optimization.algorithms.utils.logger import Logger
+
 try:
     from stable_baselines3 import SAC
     from stable_baselines3.common.callbacks import BaseCallback
@@ -40,17 +42,36 @@ def _check_sb3():
 class _BestScoreCallback(BaseCallback):
     """Traccia il best score dell'env durante il training SB3."""
 
-    def __init__(self):
+    def __init__(self, logger: Optional[Logger] = None, log_every: int = 10_000):
         super().__init__()
         self.best_score = -float("inf")
+        self.metrics_logger = logger
+        self.log_every = max(1, int(log_every))
+        self._episode_reward = 0.0
+        self._episode_count = 0
 
     def _on_step(self) -> bool:
         # SB3 espone env info tramite self.locals
         infos = self.locals.get("infos", [])
+        rewards = self.locals.get("rewards", [])
+        dones = self.locals.get("dones", [])
+        if len(rewards) > 0:
+            self._episode_reward += float(np.asarray(rewards).reshape(-1)[0])
         for info in infos:
             sc = info.get("score")
             if sc is not None and sc > self.best_score:
                 self.best_score = sc
+            if self.metrics_logger is not None and self.num_timesteps % self.log_every == 0:
+                metrics = {
+                    "score": float(sc) if sc is not None else 0.0,
+                    "best_score": self.best_score,
+                    "episode_reward": self._episode_reward,
+                    "episode": float(self._episode_count),
+                }
+                self.metrics_logger.log(metrics, step=self.num_timesteps)
+        if len(dones) > 0 and bool(np.asarray(dones).reshape(-1)[0]):
+            self._episode_count += 1
+            self._episode_reward = 0.0
         return True
 
 
@@ -78,6 +99,7 @@ class SB3SAC:
         tau: float = 0.005,
         gamma: float = 0.99,
         device: str = "auto",
+        tensorboard_log: Optional[str] = None,
     ):
         _check_sb3()
         policy_kwargs = {"net_arch": list(hidden_dims)}
@@ -91,6 +113,7 @@ class SB3SAC:
             gamma=gamma,
             policy_kwargs=policy_kwargs,
             device=device,
+            tensorboard_log=tensorboard_log,
             verbose=0,
         )
         self._env = env
@@ -98,7 +121,8 @@ class SB3SAC:
     # ── Training ──────────────────────────────────────────────────────────────
 
     def train(self, env=None, n_steps: int = 200_000,
-              log_every: int = 10_000) -> float:
+              log_every: int = 10_000,
+              logger: Optional[Logger] = None) -> float:
         """Esegue il training SB3 per n_steps step reali.
 
         Args:
@@ -113,7 +137,7 @@ class SB3SAC:
         if env is not None and env is not self._env:
             self._model.set_env(env)
 
-        cb = _BestScoreCallback()
+        cb = _BestScoreCallback(logger=logger, log_every=log_every)
         self._model.learn(
             total_timesteps=n_steps,
             callback=cb,

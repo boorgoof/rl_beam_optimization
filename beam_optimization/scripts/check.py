@@ -87,7 +87,7 @@ def _load_dataset():
     ds = BeamDataset.load(str(DEFAULT_DATASET))
     assert len(ds) > 0, "Dataset vuoto"
 
-check("Carica dataset_train.pt", _load_dataset)
+check("Carica dataset_base.pt", _load_dataset)
 
 def _load_ensemble():
     from beam_optimization.env.surrogate_env import ModularMLP
@@ -107,37 +107,23 @@ print("\n[3/6] SurrogateEnv — reset + 5 step")
 
 def _beam_env_single():
     from beam_optimization.env.surrogate_env import SurrogateEnv
-    env = SurrogateEnv(model=surrogates[0], dataset=ds, max_steps=5, obs_mode="full")
+    from beam_optimization.config.adige import observation_dim
+    obs_dim = observation_dim()
+    env = SurrogateEnv(model=surrogates[0], dataset=ds, max_steps=5)
     obs, info = env.reset()
-    assert obs.shape == (108,), f"obs shape wrong: {obs.shape}"
+    assert obs.shape == (obs_dim,), f"obs shape wrong: {obs.shape}"
     assert "score" in info
     assert info["sim_result"].source == "surrogate"
     assert info["sim_result"].beam_states.shape == (12, 9)
     for _ in range(5):
         action = env.action_space.sample()
         obs, rew, term, trunc, info = env.step(action)
-        assert obs.shape == (108,)
+        assert obs.shape == (obs_dim,)
         assert info["sim_result"].source == "surrogate"
         assert info["sim_result"].beam_states.shape == (12, 9)
     print(f"       best_score={env.best_score:.4f}")
 
-check("SurrogateEnv singolo surrogate (obs_mode=full)", _beam_env_single)
-
-def _beam_env_final():
-    from beam_optimization.env.surrogate_env import SurrogateEnv
-    env = SurrogateEnv(model=surrogates[0], dataset=ds, max_steps=3, obs_mode="final")
-    obs, _ = env.reset()
-    assert obs.shape == (9,), f"obs shape wrong: {obs.shape}"
-
-check("SurrogateEnv obs_mode=final (9 dim)", _beam_env_final)
-
-def _beam_env_beam0():
-    from beam_optimization.env.surrogate_env import SurrogateEnv
-    env = SurrogateEnv(model=surrogates[0], dataset=ds, max_steps=3, obs_mode="final_with_beam0")
-    obs, _ = env.reset()
-    assert obs.shape == (18,), f"obs shape wrong: {obs.shape}"
-
-check("SurrogateEnv obs_mode=final_with_beam0 (18 dim)", _beam_env_beam0)
+check("SurrogateEnv singolo surrogate (observation mask)", _beam_env_single)
 
 # ── 4. Thompson sampling ensemble ────────────────────────────────────────────
 
@@ -162,9 +148,9 @@ print("\n[5/6] Agenti RL")
 
 def _sac():
     from beam_optimization.algorithms.model_free.sac import SAC
-    from beam_optimization.config.adige import action_bounds
-    bounds = action_bounds(1.0)
-    agent = SAC(108, 16, (bounds[0].tolist(), bounds[1].tolist()))
+    from beam_optimization.config.adige import action_bounds, observation_dim
+    bounds = action_bounds()
+    agent = SAC(observation_dim(), 16, (bounds[0].tolist(), bounds[1].tolist()))
     assert agent is not None
 
 check("SAC istanziabile", _sac)
@@ -173,7 +159,7 @@ def _mbpo():
     from beam_optimization.algorithms.model_based.mbpo import MBPO
     from beam_optimization.algorithms.model_free.sac import SAC
     from beam_optimization.config.adige import action_bounds
-    bounds = action_bounds(1.0)
+    bounds = action_bounds()
     inner = SAC(108, 16, (bounds[0].tolist(), bounds[1].tolist()))
     agent = MBPO(agent=inner, surrogates=surrogates, dataset=ds,
                  obs_dim=108, act_dim=16)
@@ -183,8 +169,24 @@ check("MBPO con ensemble", _mbpo)
 
 def _svg():
     from beam_optimization.algorithms.model_based.svg import SVGAgent
-    agent = SVGAgent(surrogate=surrogates, dataset=ds, obs_dim=108, H=3)
-    assert len(agent._ensemble) == 4
+    from beam_optimization.config.adige import (
+        N_PARAMS,
+        PARAM_KEYS,
+        action_bounds,
+        default_params,
+        observation_dim,
+    )
+    agent = SVGAgent(
+        surrogate=surrogates,
+        dataset=ds,
+        obs_dim=observation_dim(),
+        act_dim=N_PARAMS,
+        action_bounds=tuple(v.tolist() for v in action_bounds()),
+        param_keys=PARAM_KEYS,
+        default_params=default_params(),
+        n_step=3,
+    )
+    assert len(agent.env.simulator.ensemble) == 4
     result = agent.optimize_episode()
     assert result.final_score != 0.0
     print(f"       SVG episode score={result.final_score:.4f}")
@@ -196,7 +198,7 @@ check("SVGAgent con ensemble (1 episodio)", _svg)
 print("\n[5b] SurrogateDatasetUpdater — bootstrap fine-tuning ensemble")
 
 def _surrogate_updater():
-    from beam_optimization.env.surrogate_env.surrogate.updater import SurrogateDatasetUpdater
+    from beam_optimization.env.surrogate_env.surrogate.model.updater import SurrogateDatasetUpdater
     from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import SimResult
     from beam_optimization.config.adige import default_params, score
     import numpy as np

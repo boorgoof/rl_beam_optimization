@@ -4,23 +4,21 @@ TraceWinEnv provides REAL transitions (actual physics, ~30 s/step)
 Shares its reset/step scaffolding with SurrogateEnv via BaseBeamEnv (env/base_env.py).
 
 State / Observation:
-    Beam states flattened into a 1-D vector. Size depends on obs_mode:
-        'full'             — all 12 stages (initial + 11 predicted): 12 x 9 = 108 dim
-        'final'            — final stage only:                         1 x 9 =   9 dim
-        'final_with_beam0' — initial + final stage:                    2 x 9 =  18 dim
+    Beam states selected by OBSERVATION_STAGE_MASK in adige.py and flattened
+    into a 1-D vector.
     Stage 0 is fixed by the .ini project file, not sampled.
 
 Action:
-    Delta on all 16 parameters, bounded by +/-(action_scale x sensitivity).
+    Delta on all 16 parameters, bounded by per-parameter action_step_vec().
 
 Reward:
     score(t+1) - score(t) 
 
 Episode design (consistent with the rest of the project):
     RESET:
-        1. Sample params randomly: param_i ~ N(default_i, sensitivity_i * sigma_factor)
+        1. Sample params randomly: param_i ~ N(default_i, reset_std_i)
         2. Run TraceWin(params) → beam_states at all 12 stages
-        3. obs = flatten(beam_states) = (108,)   ← initial RL state
+        3. obs = selected/flattened beam_states ← initial RL state
     STEP:
         params_{t+1} = params_t + action
         TraceWin(params_{t+1}) → obs_{t+1}
@@ -42,10 +40,8 @@ class TraceWinEnv(BaseBeamEnv):
     Args:
         project_file:  Path to the TraceWin .ini project file.
         calc_dir:      Working directory for TraceWin output files.
-        action_scale:  Multiplier on sensitivity for action bounds.
         max_steps:     Episode length (number of TraceWin calls per episode).
-        sigma_factor:  Gaussian noise scale (× sensitivity) for initial params.
-        obs_mode:      'full' (108), 'final' (9), or 'final_with_beam0' (18).
+        observation:    Selected by OBSERVATION_STAGE_MASK in adige.py.
         timeout:       Seconds before aborting a single TraceWin call.
         retries:       Retry attempts on TraceWin failure.
     """
@@ -54,10 +50,7 @@ class TraceWinEnv(BaseBeamEnv):
         self,
         project_file: str,
         calc_dir: str = "/tmp/tracewin_calc",
-        action_scale: float = 1.0,
         max_steps: int = 20,
-        sigma_factor: float = 0.5,
-        obs_mode: str = "full",
         timeout: float = 120.0,
         retries: int = 2,
     ):
@@ -72,10 +65,7 @@ class TraceWinEnv(BaseBeamEnv):
 
         # Call the base class constructor
         super().__init__(
-            action_scale=action_scale,
             max_steps=max_steps,
-            sigma_factor=sigma_factor,
-            obs_mode=obs_mode,
         )
 
     def _build_simulator(self) -> TraceWinSimulator:

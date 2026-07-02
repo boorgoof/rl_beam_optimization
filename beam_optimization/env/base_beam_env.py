@@ -15,8 +15,10 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from beam_optimization.config.adige import (
-    PARAM_KEYS, BEAM_STATE_DIM, N_STAGES,
-    BEAM_STATE_FEATURES, default_params, action_bounds, sensitivity_vec,
+    PARAM_KEYS, BEAM_STATE_DIM,
+    BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
+    observation_dim, observation_stage_labels, select_observation_stages,
+    clip_params_to_hw,
 )
 
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
@@ -28,10 +30,8 @@ class BaseBeamEnv(gym.Env, ABC):
     """Common reset/step/evaluate_params scaffolding for the two beam envs.
 
     Args:
-        action_scale: Multiplier on sensitivity for action bounds.
         max_steps:    Episode length.
-        sigma_factor: Gaussian noise scale (* sensitivity) for initial parameters.
-        obs_mode:     'full' (108), 'final' (9), or 'final_with_beam0' (18).
+        Observation stages are selected by OBSERVATION_STAGE_MASK in adige.py.
     """
 
     metadata = {"render_modes": ["human"]}
@@ -40,10 +40,7 @@ class BaseBeamEnv(gym.Env, ABC):
     # -------------------------------------------------------------------------
     def __init__(
         self,
-        action_scale: float = 1.0,
         max_steps: int = 20,
-        sigma_factor: float = 0.5,
-        obs_mode: str = "full",
     ):
         super().__init__()
 
@@ -58,30 +55,19 @@ class BaseBeamEnv(gym.Env, ABC):
         # Gym spaces 
         
         # 1) Observation space
-        self.obs_mode = obs_mode
-        if obs_mode == "full":
-            obs_dim = N_STAGES * BEAM_STATE_DIM  # 108
-        elif obs_mode == "final":
-            obs_dim = BEAM_STATE_DIM                              # 9
-        elif obs_mode == "final_with_beam0":
-            obs_dim = 2 * BEAM_STATE_DIM                          # 18
-        else:
-            raise ValueError(f"obs_mode must be 'full', 'final', or 'final_with_beam0', got {obs_mode!r}")
+        obs_dim = observation_dim()
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
         # 2) Action space
-        self.action_scale = float(action_scale)
         self.max_steps = int(max_steps)
-        self.sigma_factor = float(sigma_factor)
-        # Action space is set with bounds based on action_scale and sensitivity vector.  
-        act_low, act_high = action_bounds(action_scale)
+        # Action space is set from per-parameter scales in ParameterSpec.
+        act_low, act_high = action_bounds()
         self.action_space = spaces.Box(low=act_low, high=act_high, dtype=np.float32)
 
-        # we want also a sensitivity vector used for perturbing initial parameters in reset(). 
-        # stddev = sigma_factor * sensitivity is the standard deviation of the Gaussian noise applied to each parameter.
-        self._sens = sensitivity_vec().astype(np.float32)
+        # Per-parameter reset stddevs from ParameterSpec.
+        self._reset_std = reset_std_vec().astype(np.float32)
 
         # Episode state
         self._step_count     = 0
@@ -99,10 +85,11 @@ class BaseBeamEnv(gym.Env, ABC):
         super().reset(seed=seed)
         self._step_count = 0
 
-        # Sample random initial params and perturb them with Gaussian noise scaled by sensitivity.
+        # Sample random initial params and perturb them with per-parameter reset stddevs.
         params = default_params()
-        for key, sens in zip(PARAM_KEYS, self._sens):
-            params[key] += float(self.np_random.normal(0.0, self.sigma_factor * sens))
+        for key, std in zip(PARAM_KEYS, self._reset_std):
+            params[key] += float(self.np_random.normal(0.0, std))
+        params = clip_params_to_hw(params)
         self._current_params = params
 
         # Let the simulator prepare its context to start the episode. 
@@ -132,6 +119,7 @@ class BaseBeamEnv(gym.Env, ABC):
         # modify parameter with deltas to the current parameters. 
         for key, delta in zip(PARAM_KEYS, action):
             self._current_params[key] = float(self._current_params[key]) + float(delta)
+        self._current_params = clip_params_to_hw(self._current_params)
 
         # perform concretely the action (the simulation) and get the new observation and final score.
         prev_score = self._current_score
@@ -171,7 +159,7 @@ class BaseBeamEnv(gym.Env, ABC):
         showing the before and after values of each beam feature (npart_ratio, x0, y0, SizeX, SizeY, ex, ey, x'0, y'0) for each stage, 
         along with the delta compared to the previous observation. 
         
-        The number of stages shown is determined by the selected ``obs_mode``.  
+        The number of stages shown is determined by OBSERVATION_STAGE_MASK.  
         
         If called after ``step()``, the previous observation is shown as dashed reference segments; 
         if called after ``reset()``, the reference is the current observation itself.
@@ -210,7 +198,7 @@ class BaseBeamEnv(gym.Env, ABC):
         fig, axes = plt.subplots(3, 3, figsize=(16, 10.2))
         # Title bar with environment name, obs mode, step count, score, and last reward
         fig.suptitle(
-            f"{type(self).__name__} render | obs_mode={self.obs_mode!r} | "
+            f"{type(self).__name__} render | observation_stages={observation_stage_labels()} | "
             f"step={self._step_count} | score={self._current_score:.6g} | "
             f"last reward={self._last_reward:.6g}",
             fontsize=13,
@@ -254,24 +242,9 @@ class BaseBeamEnv(gym.Env, ABC):
             obs = np.zeros(self.observation_space.shape, dtype=np.float32)
             return obs, ERROR_SCORE, {"sim_result": result}
 
-        # Select the beam stages produced by the simulator to expose as the Gym observation, based on the obs_mode.
-        obs = self._select_beam_stages_for_observation(result.beam_states, self.obs_mode)
+        # Select the beam stages configured in adige.py for the Gym observation.
+        obs = select_observation_stages(result.beam_states)
         return obs, result.score_val, {"sim_result": result}
-
-    @staticmethod
-    def _select_beam_stages_for_observation(stages, obs_mode: str) -> np.ndarray:
-        """Select the beam stages produced by the simulator to be exposed as the concrete Gym observation.
-        for obs_mode='full', return all 12 stages (108 dim array); 
-        for 'final', return only the last stage (9 dim array); 
-        for 'final_with_beam0', return the first and last stages (18 dim array).
-        
-        """
-        if obs_mode == "full":
-            return np.asarray(stages, dtype=np.float32).flatten()
-        elif obs_mode == "final":
-            return np.asarray(stages[-1], dtype=np.float32)
-        else:  # "final_with_beam0"
-            return np.concatenate([stages[0], stages[-1]]).astype(np.float32)
 
     
     # Render helpers
@@ -285,19 +258,10 @@ class BaseBeamEnv(gym.Env, ABC):
 
         obs = np.asarray(obs, dtype=np.float32)
         # Convert the observation into a DataFrame with columns  ["stage", *BEAM_STATE_FEATURES] = ["stage",  "npart_ratio", "x0", "y0", "SizeX", "SizeY", "ex", "ey", "x'0", "y'0"].
-        # the number of stages (the number of rows) shown is determined by the selected ``obs_mode``.
-        if self.obs_mode == "full":
-            df = pd.DataFrame(obs.reshape(-1, BEAM_STATE_DIM), columns=BEAM_STATE_FEATURES)
-            df.insert(0, "stage", np.arange(len(df)))
-            return df
-        if self.obs_mode == "final":
-            df = pd.DataFrame([obs], columns=BEAM_STATE_FEATURES)
-            df.insert(0, "stage", ["final"])
-            return df
-        # self.obs_mode == "final_with_beam0"
-        arr = obs.reshape(2, BEAM_STATE_DIM)
+        labels = observation_stage_labels()
+        arr = obs.reshape(len(labels), BEAM_STATE_DIM)
         df = pd.DataFrame(arr, columns=BEAM_STATE_FEATURES)
-        df.insert(0, "stage", ["beam0", "final"])
+        df.insert(0, "stage", labels)
         return df
 
     @staticmethod

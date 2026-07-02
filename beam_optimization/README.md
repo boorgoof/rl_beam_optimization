@@ -11,6 +11,20 @@ The repository is meant to contain the Python code, documentation, notebooks and
 small configuration files. Large/local TraceWin assets are intentionally not
 stored in normal Git history.
 
+## ADIGE Parameter Scales
+
+The RL action bounds and reset perturbations are defined per parameter in
+`beam_optimization/config/adige.py`. Each `ParameterSpec` contains:
+
+- `sensitivity`: physical parameter change per score-point change;
+- `action_scale_rl`: RL step size in sensitivity units;
+- `reset_scale`: reset perturbation size in sensitivity units.
+
+The effective action bound is `± sensitivity * action_scale_rl`; the reset
+standard deviation is `sensitivity * reset_scale`. The old global
+`--action-scale` / `sigma_factor` knobs are no longer part of the training
+pipeline.
+
 ## 1. Clone And Python Setup
 
 From any folder where you want to keep the project:
@@ -266,22 +280,81 @@ Project check:
 python -m beam_optimization check
 ```
 
-Quick surrogate training:
+Create new offline data from TraceWin and append new base surrogate checkpoints:
+
+```bash
+python -m beam_optimization setup \
+  --target-samples 100 \
+  --n-surrogates 3
+```
+
+`setup` creates a fresh numbered dataset directory under
+`beam_optimization/env/dataset/001`, `002`, etc. It does not overwrite
+`env/dataset/base` by default. New surrogate checkpoints are appended to:
+
+```text
+beam_optimization/env/surrogate_env/surrogate/trained_models/base/
+```
+
+Surrogate training logs TensorBoard events and `metrics.csv` by default under:
+
+```text
+beam_optimization/runs/surrogate/
+```
+
+Quick training smoke run:
 
 ```bash
 python -m beam_optimization train --quick
 ```
 
+Full training uses the explicit surrogate layout:
+
+```bash
+python -m beam_optimization train \
+  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --single-surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
+  --base-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/base \
+  --output beam_optimization/runs/all
+```
+
+Model-free agents and `SB3SAC` use `--single-surrogate`. `SVGAgent` and
+plain `MBPO` use `--base-ensemble`. `MBPOWithModelUpdate` uses
+`--updated-ensemble`; if that folder is empty, it is initialized by copying
+the base ensemble.
+
+RL training logs TensorBoard events and `metrics.csv` by default under the
+selected `--output` directory. Disable training logs with `--no-tensorboard`.
+Open all dashboards with:
+
+```bash
+tensorboard --logdir beam_optimization/runs
+```
+
 Skip expensive algorithms:
 
 ```bash
-python -m beam_optimization train --skip ppo trpo reinforce
+python -m beam_optimization train --skip ppo trpo reinforce svg dyna
 ```
 
 TraceWin + online fine-tuning:
 
 ```bash
-python -m beam_optimization train --tracewin --online-finetune
+python -m beam_optimization train \
+  --tracewin \
+  --online-finetune \
+  --updated-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/updated
+```
+
+By default, online fine-tuning saves the merged offline+online dataset back to
+the file passed with `--dataset`. If you want to keep the base dataset unchanged,
+pass an explicit output path:
+
+```bash
+python -m beam_optimization train \
+  --tracewin \
+  --online-finetune \
+  --update-dataset beam_optimization/runs/all/updated_dataset.pt
 ```
 
 Quick benchmark:
@@ -297,6 +370,8 @@ python -m beam_optimization evaluate \
   --algo sac \
   --policy beam_optimization/runs/all/sac/sac_agent.pt \
   --env surrogate \
+  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
+  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
   --episodes 1 \
   --render
 ```
@@ -318,21 +393,50 @@ surrogate. `evaluate` is for final inspection of one trained policy. With
 For TraceWin, the render also saves the true final particle phase-space images
 from the latest `.dst` file when available.
 
+The RL observation is configured in `beam_optimization/config/adige.py` with
+`OBSERVATION_STAGE_MASK`. The mask has one boolean per `STAGE_MARKERS` entry:
+`True` means that stage is included in the flattened RL observation.
+
+Default:
+
+```python
+OBSERVATION_STAGE_MASK = (
+    True,   # beam0
+    False,  # intermediate stages
+    ...
+    True,   # final
+)
+```
+
 ## 5. Repository Layout
 
 ```text
 beam_optimization/
+├── PROJECT_CLASS_DIAGRAM.drawio
+├── PROJECT_SCHEMA.md
 ├── main.py
+├── __main__.py
 ├── config/
 │   ├── adige.py
 │   └── paths.py
 ├── algorithms/
+│   ├── ALGORITHMS_CLASS_DIAGRAM.drawio
+│   ├── ALGORITHMS_SCHEMA.md
+│   ├── model_free/
+│   ├── model_based/
+│   ├── baselines/
+│   ├── networks/
+│   └── utils/
 ├── env/
+│   ├── ENV_CLASS_DIAGRAM.drawio
+│   ├── ENV_SCHEMA.md
 │   ├── base_beam_env.py
 │   ├── simulation.py
+│   ├── dataset/
 │   ├── surrogate_env/
 │   └── tracewin_env/
 └── scripts/
+    ├── setup.py
     ├── train.py
     ├── benchmark.py
     ├── evaluate.py
@@ -342,6 +446,7 @@ beam_optimization/
 The old numbered scripts are not used. Prefer:
 
 ```bash
+python -m beam_optimization setup
 python -m beam_optimization train
 python -m beam_optimization benchmark
 python -m beam_optimization evaluate
@@ -350,16 +455,31 @@ python -m beam_optimization check
 
 ## 6. More Documentation
 
-TraceWin-specific guide:
+Project overview:
 
 ```text
-beam_optimization/env/tracewin_env/tracewin/TRACEWIN_GUIDE.md
+beam_optimization/PROJECT_SCHEMA.md
+beam_optimization/PROJECT_CLASS_DIAGRAM.drawio
 ```
 
 Environment architecture:
 
 ```text
 beam_optimization/env/ENV_SCHEMA.md
+beam_optimization/env/ENV_CLASS_DIAGRAM.drawio
+```
+
+Algorithm architecture:
+
+```text
+beam_optimization/algorithms/ALGORITHMS_SCHEMA.md
+beam_optimization/algorithms/ALGORITHMS_CLASS_DIAGRAM.drawio
+```
+
+TraceWin-specific guide:
+
+```text
+beam_optimization/env/tracewin_env/tracewin/tracewin_guide.md
 ```
 
 Environment visualization notebook:

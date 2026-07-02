@@ -42,11 +42,17 @@ beam_optimization/env/
 │           └── files.py
 └── surrogate_env/
     ├── surrogate_env.py
+    ├── differentiable_surrogate_env.py
     ├── surrogate_simulator.py
+    ├── model/
+    │   ├── modular_mlp.py
+    │   ├── evaluator.py
+    │   ├── trainer.py
+    │   └── updater.py
     └── surrogate/
-        ├── modular_mlp.py
-        ├── evaluator.py
-        └── updater.py
+        └── models/
+            ├── base/
+            └── updated/
 ```
 
 `config/adige.py` non sta dentro `env`, ma e una dipendenza centrale: definisce
@@ -112,12 +118,13 @@ Gli episodi non hanno uno stato terminale fisico esplicito. Per questo
 `terminated` e sempre `False`, mentre `truncated` diventa `True` quando
 `_step_count >= max_steps`.
 
-Le modalita di osservazione sono:
+L'osservazione RL e configurata in `beam_optimization/config/adige.py` tramite
+`OBSERVATION_STAGE_MASK`, una tupla booleana lunga quanto `STAGE_MARKERS`.
+`True` significa stage visibile, `False` significa stage escluso.
 
 ```text
-obs_mode="full"              -> 12 stage * 9 feature = 108 valori
-obs_mode="final"             -> solo fascio finale = 9 valori
-obs_mode="final_with_beam0"  -> fascio iniziale + finale = 18 valori
+OBSERVATION_STAGE_MASK = (True, False, ..., True)
+obs_dim = sum(OBSERVATION_STAGE_MASK) * BEAM_STATE_DIM
 ```
 
 `BaseBeamEnv` e astratta: non puo essere istanziata da sola. Le sottoclassi
@@ -151,13 +158,18 @@ non sono parte dell'osservazione RL.
 1. riceve un dizionario di parametri;
 2. completa i parametri mancanti con i default;
 3. pulisce e ricrea `calc_dir`;
-4. opzionalmente prepara una copia locale della workspace TraceWin;
+4. prepara la workspace TraceWin originale rendendola accessibile a `comunian`;
 5. crea il wrapper `TraceWin`;
 6. lancia il binario TraceWin tramite il launcher;
 7. legge `partran1.out`;
 8. estrae gli stati del fascio ai marker definiti in `config/adige.py`;
 9. calcola lo score del fascio finale;
 10. restituisce `BeamSimulationResult(source="tracewin")`.
+
+La versione attuale non usa piu una cache locale della workspace: TraceWin
+lavora direttamente sulla cartella del progetto originale. Per evitare che la
+workspace condivisa accumuli file generati, il simulatore rimuove gli artefatti
+TraceWin (`.cal`, `*_new.ini`) prima e dopo ogni simulazione.
 
 Se TraceWin fallisce, il simulatore restituisce comunque un risultato
 strutturato:
@@ -174,7 +186,8 @@ Questo evita che il resto del codice debba gestire eccezioni sparse.
 ### `pyTraceWin_wrapper`
 
 `pyTraceWin_wrapper/tracewin.py` contiene la classe tecnica `TraceWin`.
-Il suo compito e lanciare l'eseguibile e leggere i file prodotti.
+Il suo compito e lanciare il programma TraceWin tramite
+`run_tracewin_with_permissions.sh` e leggere i file prodotti.
 
 Espone:
 
@@ -185,9 +198,13 @@ dst(out=True) -> Dst
 plt() -> Plt
 ```
 
-`files.py` contiene classi di lettura dei formati TraceWin, soprattutto `Dst`
-e `Plt`. Queste classi non sanno nulla di RL, reward o score: servono solo a
-leggere file.
+`files.py` contiene classi di lettura dei formati TraceWin:
+
+- `Dst` legge i file di distribuzione particellare `.dst`;
+- `Plt` legge i file plot `.plt`.
+
+Queste classi non sanno nulla di RL, reward o score: servono solo a leggere i
+file prodotti dal programma TraceWin.
 
 ## Backend Surrogate
 
@@ -278,6 +295,11 @@ ModularMLP.load(path)
 flat usato su disco e li converte al volo nel formato stage-wise richiesto da
 `ModularMLP`.
 
+Tecnicamente estende `torch.utils.data.Dataset`, quindi implementa
+`__len__()` e `__getitem__(idx)` come un dataset PyTorch standard. Questo serve
+per integrarsi con il training Torch, ma non cambia il suo ruolo nel progetto:
+resta un contenitore storage-only.
+
 Formato flat:
 
 ```text
@@ -362,7 +384,7 @@ ignorando `base`.
 
 ## Training Offline Del Surrogate
 
-`SurrogateTrainer` vive in `env/surrogate_env/surrogate/trainer.py`.
+`SurrogateTrainer` vive in `env/surrogate_env/surrogate/model/trainer.py`.
 E il componente che crea un `ModularMLP` da zero usando dataset offline gia
 costruiti.
 
@@ -417,15 +439,15 @@ Quando ci sono abbastanza campioni:
 3. campiona batch bootstrap dal dataset online o da offline+online;
 4. aggiorna ogni surrogate con il proprio ottimizzatore Adam persistente;
 5. puo salvare solo i dati online o il dataset merged offline+online; nel
-   training MBPO online il default e salvare il merged sul dataset base caricato
-   per `beam0`, cioe `env/dataset/base/dataset_train.pt`;
+   training MBPO online il default e salvare il merged sul dataset base caricato,
+   cioe `env/dataset/base/dataset_base.pt`;
 6. puo salvare i pesi aggiornati come `surrogate_0.pt`, `surrogate_1.pt`, ...
 
 `collector.py` non e piu parte del flusso ufficiale.
 
 ## Valutazione Dei Surrogate
 
-`surrogate/evaluator.py` misura la qualita dei checkpoint `surrogate_*.pt` su
+`model/evaluator.py` misura la qualita dei checkpoint `surrogate_*.pt` su
 un dataset flat, tipicamente validation o test.
 
 Espone:
@@ -450,7 +472,7 @@ n_samples
 | --- | --- | --- |
 | `BaseBeamEnv` | No | Stato episodio solo in memoria |
 | `TraceWinSimulator` | Si | Output TraceWin in `calc_dir` |
-| `TraceWinSimulator` | Si, se cache attiva | Copia locale della workspace |
+| `TraceWinSimulator` | Si | Permessi/cleanup della workspace TraceWin originale |
 | `TraceWin` wrapper | Indirettamente | Fa scrivere TraceWin in `calc_dir` |
 | `SurrogateEnv` | No | Usa modello e dataset in RAM |
 | `SurrogateBeamSimulator` | No | Produce risultati in RAM |
@@ -485,7 +507,7 @@ BaseBeamEnv.step(action)
   -> params = params + action
   -> simulator.simulate(params)
   -> BeamSimulationResult
-  -> obs = slice(beam_states, obs_mode)
+  -> obs = select_observation_stages(beam_states)
   -> reward = score_nuovo - score_precedente
   -> aggiorna best_score e best_params
   -> ritorna obs, reward, False, truncated, info
@@ -504,7 +526,7 @@ Il diagramma e diviso in blocchi:
 - **common env contract**: `BaseBeamEnv`, `BeamSimulator`,
   `BeamSimulationResult`, `AdigeConfig`;
 - **TraceWin backend**: `TraceWinEnv`, `TraceWinSimulator`, `TraceWin`,
-  `Dst/Plt`;
+  `TraceWin program`, `Dst`, `Plt`;
 - **surrogate backend**: `SurrogateEnv`, `SurrogateBeamSimulator`,
   `run_surrogate_forward`, `ModularMLP`;
 - **data pipeline**: `BeamDataset`, `TraceWinDatasetBuilder`, `utility.py`,
@@ -541,7 +563,7 @@ Se lavori con TraceWin reale, guarda `TraceWinEnv`, `TraceWinSimulator` e
 `pyTraceWin_wrapper`.
 
 Se lavori con il surrogate, guarda `SurrogateEnv`, `SurrogateBeamSimulator`,
-`ModularMLP`, `BeamDataset` e `surrogate/evaluator.py`.
+`ModularMLP`, `BeamDataset` e `model/evaluator.py`.
 
 Se vuoi creare dataset offline nuovi da TraceWin, guarda
 `env/dataset/tracewin_dataset_builder.py`.

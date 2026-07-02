@@ -130,6 +130,8 @@ class TraceWinSimulator(BeamSimulator):
         """Return the number of simulations run so far."""
         return self._sim_count
 
+    # Internal methods to run TraceWin correctly in the workspace with user comunian.
+    # ---------
     def _reset_calc_dir(self):
         """Delete and recreate calc_dir with open permissions for comunian."""
         if os.path.exists(self.calc_dir):
@@ -207,10 +209,9 @@ class TraceWinSimulator(BeamSimulator):
                 },
             )
         finally:
-            # TraceWin writes generated files (.cal, *_new.ini) straight into
-            # the shared workspace. Remove them now so the workspace is
-            # always left clean, whether the run succeeded or raised.
+            # TraceWin writes generated files (.cal, *_new.ini) straight into the shared workspace. Remove them now so the workspace is always left clean, whether the run succeeded or raised.
             self._clean_runtime_project_artifacts(Path(self._source_project_dir))
+
     # Internal methods for building the BeamSimulationResult from TraceWin output.
     # ------------
     def _extract_beam_states(self, df):

@@ -10,6 +10,7 @@ from typing import Sequence
 COMMAND_MODULES = {
     "check": "beam_optimization.scripts.check",
     "evaluate": "beam_optimization.scripts.evaluate",
+    "setup": "beam_optimization.scripts.setup",
     "train": "beam_optimization.scripts.train",
     "benchmark": "beam_optimization.scripts.benchmark",
 }

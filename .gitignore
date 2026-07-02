@@ -45,6 +45,7 @@ Thumbs.db
 beam_optimization/runs/
 beam_optimization/results/
 beam_optimization/**/calc/
+beam_optimization/**/sensitivity_calc/
 checkpoints/
 *.pt
 *.pth
