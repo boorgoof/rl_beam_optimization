@@ -432,6 +432,10 @@ policy -> action -> parametri -> surrogate -> score -> loss policy
 Usa `stocActor`, campiona `beam0` dal dataset e ottimizza episodi interi o
 semi-troncati attraverso `forward_differentiable()` di `SurrogateBeamSimulator`.
 
+La classe non legge direttamente `config.adige`: dimensione osservazione,
+dimensione azione, bounds fisici, chiavi parametriche e parametri di default
+sono passati dal caller.
+
 Il risultato delle chiamate di training o valutazione e contenuto in
 `SVGResult`, che salva loss, score finale, storico degli score e norma del
 gradiente.
@@ -453,6 +457,9 @@ Mantiene uno swarm di particelle, dove ogni particella e un possibile vettore
 di parametri. Aggiorna velocita e posizione in base al miglior punto personale
 e al miglior punto globale.
 
+Riceve dal caller chiavi parametriche, valori default e sensitivity; non legge
+direttamente la configurazione macchina.
+
 Il risultato viene restituito in `PSOResult`.
 
 ### `BayesianOptimizer`
@@ -462,6 +469,9 @@ obiettivo.
 
 Prova nuovi parametri bilanciando esplorazione e sfruttamento. Il risultato
 viene restituito in `BOResult`.
+
+Come `PSOOptimizer`, riceve dal caller chiavi parametriche, valori default e
+sensitivity usati per costruire lo spazio di ricerca.
 
 ## Flussi Tipici Di Training
 
@@ -517,7 +527,7 @@ Con `MBPOWithModelUpdate`, quando l'ambiente reale e `TraceWinEnv`, i
 ```text
 crea ensemble surrogate
 crea dataset
-crea SVGAgent
+crea SVGAgent passando obs_dim, act_dim, action_bounds, param_keys e default_params
 per ogni episodio:
     campiona beam0
     unroll della policy dentro il surrogate differenziabile
@@ -547,7 +557,7 @@ MBPO -> MixedReplayBuffer
 MBPO -> SurrogateBeamSimulator
 MBPOWithModelUpdate -> MBPO
 SVGAgent -> stocActor
-SVGAgent -> SurrogateBeamSimulator
+SVGAgent -> DifferentiableSurrogateEnv
 ```
 
 Il diagramma usa i nomi `stocActor` e `detActor` per chiarezza concettuale, ma

@@ -1,26 +1,23 @@
-from beam_optimization.env.dataset import BeamDataset, SurrogateTrainingDataset
-from beam_optimization.env.surrogate_env.surrogate.modular_mlp import ModularMLP
-from beam_optimization.env.surrogate_env.surrogate.updater import (
-    SurrogateDatasetUpdater,
-    SurrogateUpdater,
+from beam_optimization.env.surrogate_env.surrogate.surrogate_simulator import (
+    SurrogateBeamSimulator,
 )
-from beam_optimization.env.surrogate_env.surrogate.evaluator import (
+from beam_optimization.env.surrogate_env.surrogate.model import (
+    ModularMLP,
+    SurrogateDatasetUpdater,
+    SurrogateTrainer,
+    SurrogateUpdater,
     evaluate_surrogate,
     evaluate_surrogate_folder,
-)
-from beam_optimization.env.surrogate_env.surrogate.trainer import (
-    SurrogateTrainer,
     train_surrogate,
 )
 
 __all__ = [
+    "SurrogateBeamSimulator",
     "ModularMLP",
-    "SurrogateTrainingDataset",
-    "BeamDataset",
     "SurrogateDatasetUpdater",
     "SurrogateUpdater",
-    "evaluate_surrogate",
-    "evaluate_surrogate_folder",
     "SurrogateTrainer",
     "train_surrogate",
+    "evaluate_surrogate",
+    "evaluate_surrogate_folder",
 ]

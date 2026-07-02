@@ -5,20 +5,21 @@ Pure Python implementation — no external dependency beyond numpy.
 Uses the standard inertia-weight PSO (Kennedy & Eberhart, 1995).
 
 Usage:
-    optimizer = PSOOptimizer(n_particles=30, n_iterations=100)
+    optimizer = PSOOptimizer(
+        n_particles=30,
+        n_iterations=100,
+        param_keys=param_keys,
+        default_values=default_values,
+        sensitivity_values=sensitivity_values,
+    )
     result = optimizer.optimize(objective_fn)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Sequence
 
 import numpy as np
-
-from beam_optimization.config.adige import (
-    PARAMETERS, PARAM_KEYS, N_PARAMS,
-    default_params, params_to_vec, vec_to_params,
-)
 
 
 @dataclass
@@ -30,7 +31,7 @@ class PSOResult:
 
 
 class PSOOptimizer:
-    """Particle Swarm Optimization over the 16 beam parameters.
+    """Particle Swarm Optimization over a configured parameter vector.
 
     Args:
         n_particles:   Swarm size.
@@ -40,6 +41,9 @@ class PSOOptimizer:
         c1:            Cognitive coefficient (personal best attraction).
         c2:            Social coefficient (global best attraction).
         seed:          Random seed.
+        param_keys:    Ordered parameter keys.
+        default_values: Ordered default parameter values.
+        sensitivity_values: Ordered sensitivity values used to build bounds.
     """
 
     def __init__(
@@ -51,6 +55,10 @@ class PSOOptimizer:
         c1: float = 1.494,
         c2: float = 1.494,
         seed: int = 42,
+        *,
+        param_keys: Sequence[str],
+        default_values: Sequence[float],
+        sensitivity_values: Sequence[float],
     ):
         self.n_particles  = n_particles
         self.n_iterations = n_iterations
@@ -59,6 +67,17 @@ class PSOOptimizer:
         self.c1 = c1
         self.c2 = c2
         self.seed = seed
+        self.param_keys = tuple(param_keys)
+        self.default_values = np.asarray(default_values, dtype=np.float64)
+        self.sensitivity_values = np.asarray(sensitivity_values, dtype=np.float64)
+
+        if not self.param_keys:
+            raise ValueError("param_keys must not be empty")
+        if len(self.param_keys) != len(self.default_values):
+            raise ValueError("param_keys and default_values must have the same length")
+        if len(self.param_keys) != len(self.sensitivity_values):
+            raise ValueError("param_keys and sensitivity_values must have the same length")
+        self.n_params = len(self.param_keys)
 
     def optimize(
         self,
@@ -74,15 +93,13 @@ class PSOOptimizer:
         """
         rng = np.random.default_rng(self.seed)
 
-        defaults = np.array([p.default for p in PARAMETERS], dtype=np.float64)
-        sens     = np.array([p.sensitivity for p in PARAMETERS], dtype=np.float64)
-        lo       = defaults - self.bounds_scale * sens
-        hi       = defaults + self.bounds_scale * sens
+        lo = self.default_values - self.bounds_scale * self.sensitivity_values
+        hi = self.default_values + self.bounds_scale * self.sensitivity_values
 
         # Initialize swarm
-        positions  = rng.uniform(lo, hi, size=(self.n_particles, N_PARAMS))
+        positions  = rng.uniform(lo, hi, size=(self.n_particles, self.n_params))
         velocities = rng.uniform(-(hi - lo) * 0.1, (hi - lo) * 0.1,
-                                  size=(self.n_particles, N_PARAMS))
+                                  size=(self.n_particles, self.n_params))
 
         p_best_pos   = positions.copy()
         p_best_score = np.full(self.n_particles, -np.inf)
@@ -95,7 +112,7 @@ class PSOOptimizer:
 
         # Evaluate initial positions
         for i in range(self.n_particles):
-            sc = objective(vec_to_params(positions[i]))
+            sc = objective(self._vec_to_params(positions[i]))
             n_eval += 1
             score_history.append(sc)
             p_best_score[i] = sc
@@ -104,8 +121,8 @@ class PSOOptimizer:
                 g_best_pos   = positions[i].copy()
 
         for iteration in range(self.n_iterations):
-            r1 = rng.uniform(0, 1, size=(self.n_particles, N_PARAMS))
-            r2 = rng.uniform(0, 1, size=(self.n_particles, N_PARAMS))
+            r1 = rng.uniform(0, 1, size=(self.n_particles, self.n_params))
+            r2 = rng.uniform(0, 1, size=(self.n_particles, self.n_params))
 
             velocities = (self.w  * velocities
                          + self.c1 * r1 * (p_best_pos - positions)
@@ -113,7 +130,7 @@ class PSOOptimizer:
             positions  = np.clip(positions + velocities, lo, hi)
 
             for i in range(self.n_particles):
-                sc = objective(vec_to_params(positions[i]))
+                sc = objective(self._vec_to_params(positions[i]))
                 n_eval += 1
                 score_history.append(sc)
                 if sc > p_best_score[i]:
@@ -127,8 +144,11 @@ class PSOOptimizer:
                 print(f"  PSO iter {iteration+1:4d}  best_score={g_best_score:.4f}")
 
         return PSOResult(
-            best_params=vec_to_params(g_best_pos),
+            best_params=self._vec_to_params(g_best_pos),
             best_score=g_best_score,
             score_history=score_history,
             n_evaluations=n_eval,
         )
+
+    def _vec_to_params(self, vec: np.ndarray) -> Dict[str, float]:
+        return {k: float(v) for k, v in zip(self.param_keys, vec)}

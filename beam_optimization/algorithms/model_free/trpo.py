@@ -77,9 +77,9 @@ class TRPO:
         mean, log_std = self.policy_network.forward(states)
         std  = log_std.exp()
         dist = torch.distributions.Normal(mean, std)
-        env_min    = self.policy_network.env_min
-        env_max    = self.policy_network.env_max
-        normalized = (actions - env_min) / (env_max - env_min) * 2 - 1
+        action_min = self.policy_network.action_min
+        action_max = self.policy_network.action_max
+        normalized = (actions - action_min) / (action_max - action_min) * 2 - 1
         normalized = normalized.clamp(-1 + 1e-6, 1 - 1e-6)
         pre_tanh   = torch.atanh(normalized)
         log_prob   = dist.log_prob(pre_tanh)

@@ -61,8 +61,8 @@ class PPO:
         mean, log_std = self.policy.forward(states)
         std   = log_std.exp()
         dist  = torch.distributions.Normal(mean, std)
-        lo    = self.policy.env_min
-        hi    = self.policy.env_max
+        lo    = self.policy.action_min
+        hi    = self.policy.action_max
         norm  = (actions - lo) / (hi - lo) * 2 - 1
         norm  = norm.clamp(-1 + 1e-6, 1 - 1e-6)
         pt    = torch.atanh(norm)

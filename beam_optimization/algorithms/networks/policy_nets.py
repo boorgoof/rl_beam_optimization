@@ -12,9 +12,9 @@ class DeterministicPolicyNetwork(nn.Module):
     def __init__(self, obs_dim, act_dim, action_bounds, hidden_dims=(256, 256), activation_fc=F.relu):
         super().__init__()
         self.activation_fc = activation_fc
-        self.env_min = torch.tensor(action_bounds[0], dtype=torch.float32)
-        self.env_max = torch.tensor(action_bounds[1], dtype=torch.float32)
-        self.rescale_fn = lambda x: (((x + 1) / 2) * (self.env_max - self.env_min) + self.env_min)
+        self.action_min = torch.tensor(action_bounds[0], dtype=torch.float32)
+        self.action_max = torch.tensor(action_bounds[1], dtype=torch.float32)
+        self.rescale_fn = lambda x: (((x + 1) / 2) * (self.action_max - self.action_min) + self.action_min)
         self.input_layer   = nn.Linear(obs_dim, hidden_dims[0])
         self.hidden_layers = nn.ModuleList(
             nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1))
@@ -47,12 +47,12 @@ class GaussianPolicyNetwork(nn.Module):
         self.activation_fc = activation_fc
         self.log_std_min   = log_std_min
         self.log_std_max   = log_std_max
-        self.env_min = torch.tensor(action_bounds[0], dtype=torch.float32)
-        self.env_max = torch.tensor(action_bounds[1], dtype=torch.float32)
-        self.rescale_fn = lambda x: (((x + 1) / 2) * (self.env_max - self.env_min) + self.env_min)
-        self.target_entropy = -np.prod(self.env_max.shape)
+        self.action_min = torch.tensor(action_bounds[0], dtype=torch.float32)
+        self.action_max = torch.tensor(action_bounds[1], dtype=torch.float32)
+        self.rescale_fn = lambda x: (((x + 1) / 2) * (self.action_max - self.action_min) + self.action_min)
+        self.target_entropy = -np.prod(self.action_max.shape)
         self.logalpha = nn.Parameter(torch.zeros(1))
-        act_dim = len(self.env_max)
+        act_dim = len(self.action_max)
         self.input_layer   = nn.Linear(obs_dim, hidden_dims[0])
         self.hidden_layers = nn.ModuleList(
             nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1))
