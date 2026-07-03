@@ -153,12 +153,6 @@ class SVGAgent:
         self.best_params = {str(k): float(v) for k, v in default_params.items()}
         self.train_steps = 0
 
-    @property
-    def surrogate(self):
-        """Active ensemble member selected by the differentiable environment."""
-        return self.env.simulator.model
-
-
     def optimize_episode(self, beam0: Optional[torch.Tensor] = None) -> SVGResult:
         """Train policy for one episode via SVG-H.
 
@@ -173,55 +167,52 @@ class SVGAgent:
         # The returned state contains the initial observation and score.
         state = self.env.reset_torch(beam0=beam0)
 
-        # Freeze surrogate params for this episode (gradient flows through, but
-        # params don't accumulate grad). Restored after backward.
-        for p in self.surrogate.parameters():
-            p.requires_grad_(False)
-
         total_loss = torch.zeros(1, device=self.device)
         score_history: List[float] = []
 
         self.policy.train()
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad() # clear previous gradients before starting the episode
 
-        for _ in range(self.n_step):
-            # Reparameterized policy sample. Because this is sampled with rsample()
-            # inside GaussianPolicyNetwork, gradients can flow through the action.
-            action, logpa, _, _, _ = self.policy.full_pass(state.obs)
-            # action: (1, act_dim), physical delta applied to machine params.
+        # Freeze only the active surrogate weights. The differentiable env still
+        # lets gradients flow through the surrogate outputs to action -> policy.
+        with self.env.frozen_surrogate_weights():
+            for _ in range(self.n_step):
 
-            # Differentiable env step. The returned reward keeps the path:
-            # reward -> score -> surrogate -> params -> action -> policy.
-            next_state, reward = self.env.step_torch(state, action)
+                # policy chooses an action
+                action, logpa, _, _, _ = self.policy.full_pass(state.obs)
+                # action: (1, act_dim), physical delta applied to machine params.
 
-            # Maximize reward with an entropy bonus:
-            #   objective = reward - alpha * log_prob
-            # so the minimized loss is the negative objective.
-            total_loss = total_loss - (reward - self.alpha * logpa)
-            score_history.append(float(next_state.score.detach()))
+                # Differentiable env step. The returned reward keeps the path:
+                # reward -> score -> surrogate -> params -> action -> policy.
+                next_state, reward = self.env.step_torch(state, action)
 
-            # Truncate the temporal graph before the next step. This keeps SVG
-            # stable and memory-bounded: each step still differentiates through
-            # the surrogate, but not through the whole previous rollout history.
-            state = next_state.detach_for_next_step()
+                # Maximize reward with an entropy bonus:
+                #   objective = reward - alpha * log_prob
+                # so the minimized loss is the negative objective.
+                total_loss = total_loss - (reward - self.alpha * logpa)
+                score_history.append(float(next_state.score.detach()))
 
-        # Backpropagate through all local surrogate transitions accumulated above.
-        total_loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.policy.parameters(), self.max_grad_norm
-        ).item()
-        self.optimizer.step()
+                # detach the next state to avoid accumulating gradients through time.
+                # we only want to backpropagate through the current step's computation graph.
+                state = next_state.detach_for_next_step()
 
-        # Restore surrogate flags in case other code wants to fine-tune or inspect it.
-        for p in self.surrogate.parameters():
-            p.requires_grad_(True)
+            # Backpropagate through all local surrogate transitions accumulated above.
+            total_loss.backward()
+            # Clip gradients to avoid exploding gradients due to long unrolls through the surrogate.
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.policy.parameters(), self.max_grad_norm
+            ).item()
+            # Update the policy parameters using the optimizer.
+            self.optimizer.step()
 
+        # Update best score and parameters if this episode achieved a new high score.
         final_score = score_history[-1] if score_history else 0.0
         if final_score > self.best_score:
             self.best_score  = final_score
             self.best_params = self._params_tensor_to_dict(state.params)
 
         self.train_steps += 1
+
         return SVGResult(
             episode_loss=float(total_loss.detach()),
             final_score=final_score,
@@ -229,9 +220,6 @@ class SVGAgent:
             grad_norm=grad_norm,
         )
 
-    def select_action(self, obs: np.ndarray, training: bool = False) -> np.ndarray:
-        """Return the deterministic policy action used during evaluation."""
-        return self.policy.select_greedy_action(obs)
 
     def evaluate(self, n_episodes: int = 20) -> float:
         """Average final score over n_episodes with greedy policy."""
@@ -270,8 +258,7 @@ class SVGAgent:
         self.best_score  = ck.get("best_score", -float("inf"))
         self.train_steps = ck.get("train_steps", 0)
 
-    # ── Internal helpers ───────────────────────────────────────────────────────
-
+    #Internal helper 
     def _params_tensor_to_dict(self, params: torch.Tensor) -> Dict[str, float]:
         """Convert a parameter tensor back to the configured parameter dictionary."""
         vec = params.detach().cpu().numpy()

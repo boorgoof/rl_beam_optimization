@@ -201,6 +201,8 @@ def main():
     parser.add_argument("--eval-budget",  type=int, default=3000)
     parser.add_argument("--svg-episodes", type=int, default=500)
     parser.add_argument("--svg-horizon",  type=int, default=20)
+    parser.add_argument("--eval-episodes", type=int, default=20,
+                         help="Episodes per SAC/TD3/PPO checkpoint evaluation (default: 20)")
     parser.add_argument("--quick",        action="store_true")
     parser.add_argument("--sac",          default=None, metavar="CKPT")
     parser.add_argument("--td3",          default=None, metavar="CKPT")
@@ -208,9 +210,10 @@ def main():
     args = parser.parse_args()
 
     if args.quick:
-        args.eval_budget  = 30
-        args.svg_episodes = 1
-        args.n_runs       = 1
+        args.eval_budget    = 30
+        args.svg_episodes   = 1
+        args.n_runs         = 1
+        args.eval_episodes  = 2
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
@@ -248,7 +251,7 @@ def main():
         for algo, ckpt in [("sac", args.sac), ("td3", args.td3), ("ppo", args.ppo)]:
             if ckpt and Path(ckpt).exists():
                 print(f"{algo.upper()} (checkpoint)...")
-                r = eval_model_free(algo, ckpt, surrogate, dataset)
+                r = eval_model_free(algo, ckpt, surrogate, dataset, n_eval=args.eval_episodes)
                 results.setdefault(algo, []).append(r)
                 print(f"  best={r['best_score']:.3f}")
             elif ckpt:

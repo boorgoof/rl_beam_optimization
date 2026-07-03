@@ -5,7 +5,9 @@ adds a torch-only API for algorithms that need autograd through the surrogate.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+from collections.abc import Iterator
 from typing import List, Optional, Union
 
 import numpy as np
@@ -40,7 +42,7 @@ class DifferentiableBeamState:
     model_index: int
 
     def detach_for_next_step(self) -> "DifferentiableBeamState":
-        """Detach recurrent state while keeping the rollout values available."""
+        """copy the state and detach all tensors from the current autograd graph"""
         return DifferentiableBeamState(
             beam0=self.beam0.detach(),
             params=self.params.detach(),
@@ -84,6 +86,25 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             params_to_vec(default_params()), dtype=torch.float32, device=self.device
         )
         self._stage_weights_t = self._build_stage_weights(stage_weights)
+
+    @contextmanager
+    def frozen_surrogate_weights(self) -> Iterator[None]:
+        """Temporarily freeze active surrogate weights while preserving input gradients.
+
+        SVG needs gradients through the surrogate forward pass back to the
+        action/policy, but it must not accumulate gradients on the surrogate
+        weights themselves. This context manager changes only parameter
+        requires_grad flags; it does not use torch.no_grad().
+        """
+        params = list(self.simulator.model.parameters())
+        previous_flags = [param.requires_grad for param in params]
+        try:
+            for param in params:
+                param.requires_grad_(False)
+            yield
+        finally:
+            for param, requires_grad in zip(params, previous_flags):
+                param.requires_grad_(requires_grad)
 
     def reset_torch(
         self,

@@ -266,21 +266,48 @@ If your licensed TraceWin binary is valid for a different Linux user, use that
 user instead of `comunian` in the SSH setup, the permission checks, and
 `run_tracewin_with_permissions.sh`.
 
-## 4. Main Commands
+## 4. Commands
 
-CLI entrypoint:
+All user-facing commands go through the package entrypoint:
+
+```bash
+python -m beam_optimization <command> [options]
+```
+
+Available commands:
+
+```text
+check       quick project health check, no real TraceWin run
+setup       generate a new TraceWin dataset and train base surrogates
+train       train RL agents on SurrogateEnv, optionally with TraceWin MBPO
+evaluate    run one trained policy step by step and optionally render figures
+benchmark   compare PSO, Bayesian optimization, SVG, and optional RL checkpoints
+```
+
+Help is available at both levels:
 
 ```bash
 python -m beam_optimization --help
+python -m beam_optimization train --help
+python -m beam_optimization evaluate --help
 ```
 
-Project check:
+### `check`
+
+Use this after setup or after pulling changes:
 
 ```bash
 python -m beam_optimization check
 ```
 
-Create new offline data from TraceWin and append new base surrogate checkpoints:
+It checks imports, dataset/surrogate loading, `SurrogateEnv`, SVG, MBPO, updater
+logic, and TraceWin object construction. It does not launch a real TraceWin
+simulation. It takes no options besides `--help`.
+
+### `setup`
+
+Use `setup` when you want to create new offline TraceWin data and train new
+base surrogate checkpoints:
 
 ```bash
 python -m beam_optimization setup \
@@ -288,27 +315,59 @@ python -m beam_optimization setup \
   --n-surrogates 3
 ```
 
-`setup` creates a fresh numbered dataset directory under
-`beam_optimization/env/dataset/001`, `002`, etc. It does not overwrite
-`env/dataset/base` by default. New surrogate checkpoints are appended to:
+All options:
+
+```text
+--target-samples N      required, number of valid TraceWin samples to collect
+--n-surrogates N        number of new surrogate checkpoints to add (default: 1)
+--tracewin INI          TraceWin project file (default: DEFAULT_TRACEWIN_INI)
+--dataset-root PATH     root for numbered dataset folders (default: DEFAULT_DATASET_ROOT)
+--model-dir PATH        output directory for surrogate_*.pt checkpoints
+                        (default: DEFAULT_BASE_SURROGATE_DIR)
+--calc-dir PATH         TraceWin calc directory (default: "tracewin_calc" inside the
+                        newly created numbered dataset directory)
+--seed N                random seed (default: 123)
+--max-epochs N          surrogate training epochs (default: 200)
+--batch-size N          surrogate training batch size (default: 256)
+--lr FLOAT              surrogate learning rate (default: 1e-3)
+--weight-decay FLOAT    surrogate weight decay (default: 0.0)
+--device DEVICE         torch device, e.g. cpu/cuda (default: auto-detect)
+--log-dir PATH          TensorBoard/CSV log root for surrogate training
+                        (default: DEFAULT_SURROGATE_LOG_DIR)
+--no-tensorboard        disable surrogate TensorBoard/metrics.csv logging
+--timeout FLOAT         TraceWin timeout per simulation, seconds (default: 180.0)
+--retries N             retries per failed TraceWin simulation (default: 2)
+--retry-sleep FLOAT     sleep between retries, seconds (default: 5.0)
+--no-kill-stale         do not kill stale TraceWin processes before each simulation
+```
+
+`setup` creates a fresh numbered dataset directory under:
+
+```text
+beam_optimization/env/dataset/
+```
+
+and appends new checkpoints to:
 
 ```text
 beam_optimization/env/surrogate_env/surrogate/trained_models/base/
 ```
 
-Surrogate training logs TensorBoard events and `metrics.csv` by default under:
+Surrogate logs are written by default under:
 
 ```text
 beam_optimization/runs/surrogate/
 ```
 
-Quick training smoke run:
+### `train`
+
+Quick smoke run:
 
 ```bash
 python -m beam_optimization train --quick
 ```
 
-Full training uses the explicit surrogate layout:
+Typical full surrogate training run:
 
 ```bash
 python -m beam_optimization train \
@@ -318,26 +377,65 @@ python -m beam_optimization train \
   --output beam_optimization/runs/all
 ```
 
-Model-free agents and `SB3SAC` use `--single-surrogate`. `SVGAgent` and
-plain `MBPO` use `--base-ensemble`. `MBPOWithModelUpdate` uses
-`--updated-ensemble`; if that folder is empty, it is initialized by copying
-the base ensemble.
+Surrogate usage during training:
 
-RL training logs TensorBoard events and `metrics.csv` by default under the
-selected `--output` directory. Disable training logs with `--no-tensorboard`.
-Open all dashboards with:
-
-```bash
-tensorboard --logdir beam_optimization/runs
+```text
+--single-surrogate    used by SAC, TD3, PPO, DDPG, A2C, REINFORCE, TRPO, SB3-SAC
+--base-ensemble       used by SVG and MBPO
+--updated-ensemble    working ensemble used by MBPOWithModelUpdate
 ```
 
-Skip expensive algorithms:
+There is no `--only` flag. To run a subset, skip everything else. For example,
+to run only custom SAC and Stable-Baselines3 SAC:
 
 ```bash
-python -m beam_optimization train --skip ppo trpo reinforce svg dyna
+python -m beam_optimization train \
+  --skip td3 ppo ddpg a2c reinforce trpo dyna svg_finale svg_uniform \
+  --output beam_optimization/runs/sac_compare
 ```
 
-TraceWin + online fine-tuning:
+Useful `--skip` names:
+
+```text
+sac td3 ppo ddpg a2c reinforce trpo sb3_sac dyna svg svg_finale svg_uniform
+```
+
+All options:
+
+```text
+--surrogate PATH          legacy alias: a .pt file maps to --single-surrogate,
+                          a folder maps to --base-ensemble
+--single-surrogate PATH   surrogate used by SAC/TD3/PPO/DDPG/A2C/REINFORCE/TRPO/SB3-SAC
+                          (default: DEFAULT_SINGLE_SURROGATE_MODEL)
+--base-ensemble PATH      folder with surrogate_*.pt used by SVG and MBPO
+                          (default: DEFAULT_BASE_SURROGATE_DIR)
+--updated-ensemble PATH   working ensemble used only by MBPOWithModelUpdate; if empty,
+                          it is initialized by copying --base-ensemble
+                          (default: DEFAULT_UPDATED_SURROGATE_DIR)
+--dataset PATH            offline BeamDataset (default: DEFAULT_DATASET)
+--output PATH             root directory for checkpoints/logs (default: DEFAULT_OUTPUT_DIR)
+--rl-steps N              env steps for model-free algorithms and MBPO (default: 200000)
+--svg-episodes N          episodes for SVGAgent (default: 1000)
+--svg-horizon N           SVGAgent rollout horizon (default: 20)
+--rollout-length N        MBPO synthetic rollout length, 1=Dyna, >1=MBPO (default: 1)
+--max-ep-steps N          max steps per episode (default: 20)
+--hidden N [N ...]        hidden layer sizes for all networks (default: 256 256)
+--quick                   reduced budget for a fast smoke test
+--no-tensorboard          disable TensorBoard/metrics.csv logging
+--skip NAME [NAME ...]    algorithms to skip (see list above)
+--tracewin [INI]          use TraceWin as the real MBPO env; without a value, uses the
+                          project default path (default: disabled, i.e. None)
+--online-finetune         fine-tune the surrogate ensemble on real data during training
+                          (MBPOWithModelUpdate); requires --tracewin
+--online-mix-ratio FLOAT  target share (0-1) of each fine-tuning batch taken from online
+                          data collected in this run; the rest comes from the offline
+                          dataset (default: 0.5)
+--update-dataset PATH     where to save the merged offline+online dataset from
+                          MBPOWithModelUpdate (default: same path as --dataset)
+--update-surrogates PATH  legacy alias for --updated-ensemble
+```
+
+TraceWin + online surrogate fine-tuning:
 
 ```bash
 python -m beam_optimization train \
@@ -347,8 +445,7 @@ python -m beam_optimization train \
 ```
 
 By default, online fine-tuning saves the merged offline+online dataset back to
-the file passed with `--dataset`. If you want to keep the base dataset unchanged,
-pass an explicit output path:
+the file passed with `--dataset`. To keep the base dataset unchanged, pass:
 
 ```bash
 python -m beam_optimization train \
@@ -357,13 +454,57 @@ python -m beam_optimization train \
   --update-dataset beam_optimization/runs/all/updated_dataset.pt
 ```
 
-Quick benchmark:
+RL training writes TensorBoard events and `metrics.csv` under `--output` by
+default. Disable this with:
 
 ```bash
-python -m beam_optimization benchmark --quick
+python -m beam_optimization train --no-tensorboard
 ```
 
-Evaluate one trained policy on the surrogate and save render images:
+### TensorBoard
+
+Training results are already saved on disk as TensorBoard event files under
+`beam_optimization/runs` or under the directory passed with `--output`.
+
+TensorBoard is not another training step. It is a local web viewer: it reads
+those saved event files and shows the curves in the browser. To start the
+viewer, run one of the commands below from the repository root.
+
+If `tensorboard` is available on your `PATH`:
+
+```bash
+tensorboard --logdir beam_optimization/runs
+```
+
+If you are using the project virtual environment created from
+`beam_optimization/requirements.txt`, TensorBoard is already installed there:
+
+```bash
+beam_optimization/.venv/bin/python -m tensorboard.main \
+  --logdir beam_optimization/runs
+```
+
+Keep that terminal open, then open this page in the browser:
+
+```text
+http://localhost:6006/
+```
+
+In short: the files in `beam_optimization/runs` are the saved results; the
+command above only starts the graphical interface used to inspect them.
+
+If the project is running on a remote machine over SSH, forward the TensorBoard
+port from your local machine before opening the browser:
+
+```bash
+ssh -L 6006:localhost:6006 USER@HOST
+```
+
+### `evaluate`
+
+Use `evaluate` to inspect one trained policy step by step.
+
+Evaluate on the surrogate:
 
 ```bash
 python -m beam_optimization evaluate \
@@ -376,7 +517,7 @@ python -m beam_optimization evaluate \
   --render
 ```
 
-Evaluate the same kind of policy on real TraceWin:
+Evaluate on real TraceWin:
 
 ```bash
 python -m beam_optimization evaluate \
@@ -387,11 +528,105 @@ python -m beam_optimization evaluate \
   --render
 ```
 
-`benchmark` is for numerical comparison between methods, normally on the fast
-surrogate. `evaluate` is for final inspection of one trained policy. With
-`--render`, it saves step-by-step figures under `beam_optimization/runs/all/renders/`.
-For TraceWin, the render also saves the true final particle phase-space images
-from the latest `.dst` file when available.
+Supported `--algo` values:
+
+```text
+sac td3 ppo ddpg a2c reinforce trpo sb3_sac
+```
+
+All options:
+
+```text
+--algo NAME              required, one of the values above
+--policy PATH            required, path to the trained policy checkpoint
+--env {surrogate,tracewin}  evaluation environment (default: surrogate)
+--episodes N             number of episodes to run (default: 1)
+--max-ep-steps N         max steps per episode (default: 20)
+--hidden N [N ...]       hidden layer sizes, must match the trained policy
+                        (default: 256 256)
+--seed N                 base episode seed (default: 42)
+--surrogate PATH         surrogate model or ensemble folder, used when --env surrogate
+                        (default: DEFAULT_SURROGATE_DIR)
+--dataset PATH           offline BeamDataset, used when --env surrogate
+                        (default: DEFAULT_DATASET)
+--tracewin-project INI   TraceWin project file, used when --env tracewin
+                        (default: DEFAULT_TRACEWIN_INI)
+--calc-dir PATH          TraceWin calc directory, used when --env tracewin
+                        (default: alongside the project file, in a "calc" folder)
+--tracewin-timeout FLOAT TraceWin timeout per simulation, seconds (default: 120.0)
+--output PATH            JSON summary output path
+                        (default: DEFAULT_OUTPUT_DIR/evaluation.json)
+--render                 save render PNG files during evaluation
+--render-dir PATH        directory for render PNGs (default: DEFAULT_OUTPUT_DIR/renders)
+--render-every N         render every N steps, plus the last step (default: 1)
+--dpi N                  render image resolution (default: 130)
+--no-tracewin-phase-space  skip saving true final phase-space images from .dst files
+                        (default: enabled, TraceWin env only)
+--max-particles N       max particles plotted in phase-space images (default: 40000)
+--bins N                 histogram bins in phase-space images (default: 150)
+```
+
+With `--render`, figures are saved under:
+
+```text
+beam_optimization/runs/all/renders/
+```
+
+For TraceWin, rendering can also save final particle phase-space images from the
+latest `.dst` file when available.
+
+### `benchmark`
+
+Use `benchmark` for numerical comparison on the fast surrogate:
+
+```bash
+python -m beam_optimization benchmark --quick
+```
+
+Typical benchmark:
+
+```bash
+python -m beam_optimization benchmark \
+  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
+  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --output beam_optimization/runs/benchmark.json \
+  --n-runs 3 \
+  --eval-budget 3000 \
+  --svg-episodes 500
+```
+
+Optionally compare trained model-free checkpoints too:
+
+```bash
+python -m beam_optimization benchmark \
+  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --td3 beam_optimization/runs/all/td3/td3_agent.pt \
+  --ppo beam_optimization/runs/all/ppo/ppo_agent.pt
+```
+
+`benchmark` compares methods numerically. `evaluate` is for inspecting one
+trained policy trajectory.
+
+All options:
+
+```text
+--surrogate PATH     single surrogate .pt file used by every method
+                     (default: DEFAULT_SURROGATE_MODEL)
+--dataset PATH       offline BeamDataset used to sample initial beam0 states
+                     (default: DEFAULT_DATASET)
+--output PATH        JSON results output path (default: DEFAULT_BENCHMARK_OUTPUT)
+--n-runs N           repeated runs per method, different seeds (default: 3)
+--eval-budget N      evaluation budget for PSO/Bayesian optimization (default: 3000)
+--svg-episodes N     episodes for each SVGAgent variant (default: 500)
+--svg-horizon N      SVGAgent rollout horizon (default: 20)
+--eval-episodes N    episodes per SAC/TD3/PPO checkpoint evaluation (default: 20)
+--quick              reduced budget for a fast smoke test
+--sac CKPT           optional trained SAC checkpoint to include in the comparison
+--td3 CKPT           optional trained TD3 checkpoint to include in the comparison
+--ppo CKPT           optional trained PPO checkpoint to include in the comparison
+```
+
+### Observation Configuration
 
 The RL observation is configured in `beam_optimization/config/adige.py` with
 `OBSERVATION_STAGE_MASK`. The mask has one boolean per `STAGE_MARKERS` entry:

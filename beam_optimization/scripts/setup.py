@@ -5,28 +5,31 @@ import argparse
 import json
 from pathlib import Path
 
+# if you want to modify the default paths, you can do so in beam_optimization/config/paths.py
+# here are the default paths for the surrogate model checkpoints, dataset root, surrogate training logs (tensorboard/csv), tracewin project .ini and tracewin calculation directory
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
     DEFAULT_DATASET_ROOT,
     DEFAULT_SURROGATE_LOG_DIR,
     DEFAULT_TRACEWIN_INI,
+    default_tracewin_calc_dir,
 )
 from beam_optimization.env.dataset import TraceWinDatasetBuilder, next_numbered_dataset_dir
 from beam_optimization.env.surrogate_env.surrogate.model.trainer import train_surrogate
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
 
 
-def _default_calc_dir(dataset_dir: Path) -> Path:
-    return dataset_dir / "tracewin_calc"
-
-
 def main() -> None:
+    
+    # create the argument parser 
     parser = argparse.ArgumentParser(
         description=(
             "Create a fresh numbered TraceWin dataset and train new base "
             "surrogate checkpoints from it."
         )
     )
+
+    # add the command line arguments 
     parser.add_argument(
         "--target-samples",
         type=int,
@@ -95,7 +98,7 @@ def main() -> None:
 
     dataset_root = Path(args.dataset_root)
     dataset_dir = next_numbered_dataset_dir(dataset_root)
-    calc_dir = Path(args.calc_dir) if args.calc_dir else _default_calc_dir(dataset_dir)
+    calc_dir = Path(args.calc_dir) if args.calc_dir else default_tracewin_calc_dir(dataset_dir)
 
     simulator = TraceWinSimulator(
         project_file=args.tracewin,

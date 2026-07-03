@@ -1,11 +1,11 @@
 <mxfile host="65bd71144e">
     <diagram id="env-class-diagram" name="ENV class diagram">
-        <mxGraphModel dx="4375" dy="3221" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3900" pageHeight="2600" math="0" shadow="0">
+        <mxGraphModel dx="6019" dy="3747" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3900" pageHeight="2600" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
                 <mxCell id="7" value="" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;opacity=40;spacing=0;shadow=0;glass=1;fillColor=#0050ef;fontColor=#ffffff;strokeColor=#001DBC;" parent="1" vertex="1" connectable="0">
-                    <mxGeometry x="80" y="980" width="530" height="1080" as="geometry"/>
+                    <mxGeometry x="90" y="980" width="530" height="1080" as="geometry"/>
                 </mxCell>
                 <mxCell id="title" value="beam_optimization/env - UML class diagram" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="130" y="-1020" width="760" height="40" as="geometry"/>

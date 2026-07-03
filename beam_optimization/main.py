@@ -6,7 +6,7 @@ import runpy
 import sys
 from typing import Sequence
 
-
+# associate commands with their module names so that we can run them with runpy
 COMMAND_MODULES = {
     "check": "beam_optimization.scripts.check",
     "evaluate": "beam_optimization.scripts.evaluate",
@@ -18,11 +18,16 @@ COMMAND_MODULES = {
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-
+    
+    # create the parser 
     parser = argparse.ArgumentParser(
         prog="python -m beam_optimization",
         description="Beam optimization command line tools.",
     )
+    # add the command argument and the remaining arguments
+    # for example if the user runs `python -m beam_optimization train --episodes 100`, 
+    # then `train` is the command 
+    # and `--episodes 100` are the remaining arguments
     parser.add_argument(
         "command",
         nargs="?",
@@ -35,18 +40,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Arguments passed to the selected command.",
     )
 
+    # if no command is provided, print help and exit
     if not argv:
         parser.print_help()
         return 0
 
-    ns = parser.parse_args(argv[:1])
-    if ns.command is None:
+    # parse the command and run the corresponding module
+    parsed_command = parser.parse_args(argv[:1])
+    if parsed_command.command is None:
         parser.print_help()
         return 0
 
+    # run the selected command module with the remaining arguments
     command_args = argv[1:]
-    sys.argv = [f"python -m beam_optimization {ns.command}", *command_args]
-    runpy.run_module(COMMAND_MODULES[ns.command], run_name="__main__")
+    sys.argv = [f"python -m beam_optimization {parsed_command.command}", *command_args]
+    runpy.run_module(COMMAND_MODULES[parsed_command.command], run_name="__main__")
     return 0
 
 

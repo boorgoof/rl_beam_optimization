@@ -48,3 +48,22 @@ DEFAULT_TRACEWIN_INI = (
     PROJECT_ROOT
     / "env/tracewin_env/tracewin/TraceWin_workspace/condensed.ini"
 )
+
+# Folder name used for TraceWin calculation files created during dataset setup.
+DEFAULT_TRACEWIN_CALC_DIR_NAME = "tracewin_calc"
+
+
+def default_tracewin_calc_dir(dataset_dir: Path) -> Path:
+    """Return the default TraceWin calc directory for a generated dataset."""
+    return dataset_dir / DEFAULT_TRACEWIN_CALC_DIR_NAME
+
+
+def default_eval_calc_dir(project_file: Path) -> Path:
+    """Return the default TraceWin calc directory for `scripts/evaluate.py`."""
+    return project_file.parent / "calc"
+
+
+
+# Calc directory and results checkpoint for config/utility/sensitivity.py.
+DEFAULT_SENSITIVITY_CALC_DIR = PROJECT_ROOT / "env/tracewin_env/tracewin/sensitivity_calc"
+DEFAULT_SENSITIVITY_CHECKPOINT = DEFAULT_SENSITIVITY_CALC_DIR / "sensitivity_results.json"

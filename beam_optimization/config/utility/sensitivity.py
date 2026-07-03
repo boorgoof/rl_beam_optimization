@@ -354,7 +354,11 @@ def print_sensitivity_report(
 if __name__ == "__main__":
     import argparse
 
-    from beam_optimization.config.paths import DEFAULT_TRACEWIN_INI, PROJECT_ROOT
+    from beam_optimization.config.paths import (
+        DEFAULT_SENSITIVITY_CALC_DIR,
+        DEFAULT_SENSITIVITY_CHECKPOINT,
+        DEFAULT_TRACEWIN_INI,
+    )
     from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import (
         TraceWinSimulator,
     )
@@ -372,7 +376,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--calc-dir",
-        default=str(PROJECT_ROOT / "env/tracewin_env/tracewin/sensitivity_calc"),
+        default=str(DEFAULT_SENSITIVITY_CALC_DIR),
         help="Temporary calculation directory for TraceWin outputs",
     )
     parser.add_argument(
@@ -424,7 +428,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--checkpoint",
-        default=str(PROJECT_ROOT / "env/tracewin_env/tracewin/sensitivity_calc/sensitivity_results.json"),
+        default=str(DEFAULT_SENSITIVITY_CHECKPOINT),
         help=(
             "JSON checkpoint updated after each completed parameter/scale "
             "(default: %(default)s)"

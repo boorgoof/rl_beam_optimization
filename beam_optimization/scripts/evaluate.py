@@ -21,6 +21,7 @@ from beam_optimization.config.paths import (
     DEFAULT_OUTPUT_DIR,
     DEFAULT_SURROGATE_DIR,
     DEFAULT_TRACEWIN_INI,
+    default_eval_calc_dir,
 )
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.env.dataset import BeamDataset
@@ -61,7 +62,7 @@ def make_env(args):
     from beam_optimization.env.tracewin_env import TraceWinEnv
 
     project_file = Path(args.tracewin_project)
-    calc_dir = Path(args.calc_dir) if args.calc_dir else project_file.parent / "calc"
+    calc_dir = Path(args.calc_dir) if args.calc_dir else default_eval_calc_dir(project_file)
     return TraceWinEnv(
         project_file=str(project_file),
         calc_dir=str(calc_dir),
