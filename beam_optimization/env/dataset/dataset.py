@@ -150,45 +150,20 @@ class BeamDataset(TorchDataset):
 
     @classmethod
     def load(cls, path: str | Path) -> "BeamDataset":
-        """Load a flat .pt dataset, with support for the legacy modular format."""
+        """Load a flat .pt dataset (keys X, Y and optionally scores)."""
         raw = torch.load(str(path), map_location="cpu", weights_only=False)
+        if "X" not in raw or "Y" not in raw:
+            raise ValueError(f"Unknown .pt dataset format in {path}. Expected keys 'X'/'Y'.")
+
         ds = cls()
-
-        if "X" in raw and "Y" in raw:
-            ds._X = raw["X"].float()
-            ds._Y = raw["Y"].float()
-            n_samples = ds._X.shape[0]
-            if "scores" in raw:
-                ds._scores = raw["scores"].float().reshape(-1)
-            else:
-                ds._scores = torch.tensor(
-                    [score_from_vec(ds._Y[i, -9:].numpy()) for i in range(n_samples)],
-                    dtype=torch.float32,
-                )
-        elif "parameter_stage_tensors" in raw:
-            stage_tensors = raw["parameter_stage_tensors"]
-            beam_tensors = raw["beam_state_stage_tensors"]
-            n_samples = int(raw.get("num_samples", stage_tensors[0].shape[0]))
-
-            beam0 = beam_tensors[0].float()
-            params_flat = torch.cat([tensor.float() for tensor in stage_tensors], dim=1)
-            ds._X = torch.cat([beam0, params_flat], dim=1)
-            ds._Y = torch.cat(
-                [beam_tensors[j].float() for j in range(1, 12)],
-                dim=1,
-            )
-
-            if "scores" in raw:
-                ds._scores = raw["scores"].float().reshape(-1)
-            else:
-                ds._scores = torch.tensor(
-                    [score_from_vec(ds._Y[i, -9:].numpy()) for i in range(n_samples)],
-                    dtype=torch.float32,
-                )
+        ds._X = raw["X"].float()
+        ds._Y = raw["Y"].float()
+        if "scores" in raw:
+            ds._scores = raw["scores"].float().reshape(-1)
         else:
-            raise ValueError(
-                f"Unknown .pt dataset format in {path}. Expected keys 'X'/'Y' "
-                "or legacy key 'parameter_stage_tensors'."
+            ds._scores = torch.tensor(
+                [score_from_vec(ds._Y[i, -9:].numpy()) for i in range(len(ds._X))],
+                dtype=torch.float32,
             )
 
         print(f"[BeamDataset] {len(ds):,} samples loaded from {path}")
@@ -219,6 +194,3 @@ class BeamDataset(TorchDataset):
             str(path),
         )
         print(f"[BeamDataset] {len(self):,} samples saved to {path}")
-
-
-SurrogateTrainingDataset = BeamDataset

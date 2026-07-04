@@ -9,13 +9,11 @@ from beam_optimization.env.surrogate_env.surrogate.model.trainer import (
 )
 from beam_optimization.env.surrogate_env.surrogate.model.updater import (
     SurrogateDatasetUpdater,
-    SurrogateUpdater,
 )
 
 __all__ = [
     "ModularMLP",
     "SurrogateDatasetUpdater",
-    "SurrogateUpdater",
     "SurrogateTrainer",
     "train_surrogate",
     "evaluate_surrogate",

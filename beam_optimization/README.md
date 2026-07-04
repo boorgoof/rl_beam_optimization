@@ -280,7 +280,7 @@ Available commands:
 check       quick project health check, no real TraceWin run
 setup       generate a new TraceWin dataset and train base surrogates
 train       train RL agents on SurrogateEnv, optionally with TraceWin MBPO
-evaluate    run one trained policy step by step and optionally render figures
+test        run one trained policy for one qualitative episode
 benchmark   compare PSO, Bayesian optimization, SVG, and optional RL checkpoints
 ```
 
@@ -289,7 +289,7 @@ Help is available at both levels:
 ```bash
 python -m beam_optimization --help
 python -m beam_optimization train --help
-python -m beam_optimization evaluate --help
+python -m beam_optimization test --help
 ```
 
 ### `check`
@@ -377,6 +377,28 @@ python -m beam_optimization train \
   --output beam_optimization/runs/all
 ```
 
+During training, the current policy is periodically evaluated without updating
+network weights. By default this happens every 1000 environment steps with 5
+test episodes. Each algorithm directory receives:
+
+```text
+learning_curve.csv
+learning_curve.png
+```
+
+The output root also receives an aggregate comparison plot:
+
+```text
+learning_curves.png
+```
+
+The learning curve plots `eval_mean_score` against environment steps. Higher
+score is better. The CSV also contains evaluation reward statistics.
+Evaluation uses a separate environment from training. Model-free agents and
+MBPO without `--tracewin` are evaluated on `SurrogateEnv`; MBPO with
+`--tracewin` is evaluated on `TraceWinEnv`, which is slower but measures the
+real simulator.
+
 Surrogate usage during training:
 
 ```text
@@ -421,6 +443,10 @@ All options:
 --max-ep-steps N          max steps per episode (default: 20)
 --hidden N [N ...]        hidden layer sizes for all networks (default: 256 256)
 --quick                   reduced budget for a fast smoke test
+--eval-every N            env steps between policy evaluations for learning curves
+                          (default: 1000)
+--eval-episodes N         test episodes per policy evaluation (default: 5)
+--no-learning-curve       disable periodic evaluation and learning curve plots
 --no-tensorboard          disable TensorBoard/metrics.csv logging
 --skip NAME [NAME ...]    algorithms to skip (see list above)
 --tracewin [INI]          use TraceWin as the real MBPO env; without a value, uses the
@@ -500,32 +526,41 @@ port from your local machine before opening the browser:
 ssh -L 6006:localhost:6006 USER@HOST
 ```
 
-### `evaluate`
+### `test`
 
-Use `evaluate` to inspect one trained policy step by step.
+Use `test` to inspect one trained policy on one qualitative episode.
+For quantitative multi-episode comparisons, use `benchmark`.
 
-Evaluate on the surrogate:
+Test on the surrogate without rendering:
 
 ```bash
-python -m beam_optimization evaluate \
+python -m beam_optimization test \
   --algo sac \
   --policy beam_optimization/runs/all/sac/sac_agent.pt \
   --env surrogate \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
-  --episodes 1 \
+  --dataset beam_optimization/env/dataset/base/dataset_base.pt
+```
+
+Test on the surrogate with render images:
+
+```bash
+python -m beam_optimization test \
+  --algo sac \
+  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --env surrogate \
   --render
 ```
 
-Evaluate on real TraceWin:
+Test on real TraceWin with rendering:
 
 ```bash
-python -m beam_optimization evaluate \
+python -m beam_optimization test \
   --algo sac \
   --policy beam_optimization/runs/all/sac/sac_agent.pt \
   --env tracewin \
-  --episodes 1 \
-  --render
+  --render \
+  --episode-video
 ```
 
 Supported `--algo` values:
@@ -539,8 +574,7 @@ All options:
 ```text
 --algo NAME              required, one of the values above
 --policy PATH            required, path to the trained policy checkpoint
---env {surrogate,tracewin}  evaluation environment (default: surrogate)
---episodes N             number of episodes to run (default: 1)
+--env {surrogate,tracewin}  test environment (default: surrogate)
 --max-ep-steps N         max steps per episode (default: 20)
 --hidden N [N ...]       hidden layer sizes, must match the trained policy
                         (default: 256 256)
@@ -555,8 +589,8 @@ All options:
                         (default: alongside the project file, in a "calc" folder)
 --tracewin-timeout FLOAT TraceWin timeout per simulation, seconds (default: 120.0)
 --output PATH            JSON summary output path
-                        (default: DEFAULT_OUTPUT_DIR/evaluation.json)
---render                 save render PNG files during evaluation
+                        (default: DEFAULT_OUTPUT_DIR/test.json)
+--render                 save render PNG files during the test episode
 --render-dir PATH        directory for render PNGs (default: DEFAULT_OUTPUT_DIR/renders)
 --render-every N         render every N steps, plus the last step (default: 1)
 --dpi N                  render image resolution (default: 130)
@@ -564,6 +598,10 @@ All options:
                         (default: enabled, TraceWin env only)
 --max-particles N       max particles plotted in phase-space images (default: 40000)
 --bins N                 histogram bins in phase-space images (default: 150)
+--episode-video          save parameter/state/score trend GIFs for the test episode into
+                        --render-dir; for --env tracewin with phase-space enabled,
+                        also saves a phase-space (x-y, x-x', y-y') episode GIF
+--episode-video-fps N    frame rate for --episode-video GIFs (default: 2)
 ```
 
 With `--render`, figures are saved under:
@@ -577,7 +615,7 @@ latest `.dst` file when available.
 
 ### `benchmark`
 
-Use `benchmark` for numerical comparison on the fast surrogate:
+Use `benchmark` for numerical comparison on `SurrogateEnv`:
 
 ```bash
 python -m beam_optimization benchmark --quick
@@ -595,17 +633,30 @@ python -m beam_optimization benchmark \
   --svg-episodes 500
 ```
 
-Optionally compare trained model-free checkpoints too:
+Optionally benchmark trained policies too:
 
 ```bash
 python -m beam_optimization benchmark \
+  --policy-episodes 50 \
   --sac beam_optimization/runs/all/sac/sac_agent.pt \
   --td3 beam_optimization/runs/all/td3/td3_agent.pt \
   --ppo beam_optimization/runs/all/ppo/ppo_agent.pt
 ```
 
-`benchmark` compares methods numerically. `evaluate` is for inspecting one
-trained policy trajectory.
+When checkpoint paths are provided, `benchmark` also runs a final policy
+stability benchmark on independent `SurrogateEnv` episodes. It records total
+reward, final score, final emittance `(ex + ey) / 2`, and final particle ratio
+for each episode, then writes mean/std summaries plus bar and box plots:
+
+```text
+benchmark_policy_episodes.csv
+benchmark_policy_summary.csv
+benchmark_policy_bars.png
+benchmark_policy_boxplots.png
+```
+
+The main JSON contains both `optimization_results` and `policy_evaluation`.
+`test` is for inspecting one trained policy trajectory in detail.
 
 All options:
 
@@ -620,10 +671,23 @@ All options:
 --svg-episodes N     episodes for each SVGAgent variant (default: 500)
 --svg-horizon N      SVGAgent rollout horizon (default: 20)
 --eval-episodes N    episodes per SAC/TD3/PPO checkpoint evaluation (default: 20)
+--policy-episodes N  independent episodes per trained policy benchmark (default: 50)
+--max-ep-steps N     max steps per policy benchmark episode (default: 20)
+--policy-seed N      base seed for policy benchmark episodes (default: 42)
+--hidden N [N ...]   hidden layer sizes used to load custom policy checkpoints
+--no-policy-plots    disable policy bar plot and boxplot generation
 --quick              reduced budget for a fast smoke test
---sac CKPT           optional trained SAC checkpoint to include in the comparison
---td3 CKPT           optional trained TD3 checkpoint to include in the comparison
---ppo CKPT           optional trained PPO checkpoint to include in the comparison
+--sac CKPT           optional trained SAC checkpoint
+--td3 CKPT           optional trained TD3 checkpoint
+--ppo CKPT           optional trained PPO checkpoint
+--ddpg CKPT          optional trained DDPG checkpoint
+--a2c CKPT           optional trained A2C checkpoint
+--reinforce CKPT     optional trained REINFORCE checkpoint
+--trpo CKPT          optional trained TRPO checkpoint
+--sb3-sac CKPT       optional trained Stable-Baselines3 SAC checkpoint
+--mbpo CKPT          optional trained MBPO/Dyna inner SAC checkpoint
+--svg-finale CKPT    optional trained SVG final-stage checkpoint
+--svg-uniform CKPT   optional trained SVG uniform-stage checkpoint
 ```
 
 ### Observation Configuration
@@ -674,7 +738,7 @@ beam_optimization/
     ├── setup.py
     ├── train.py
     ├── benchmark.py
-    ├── evaluate.py
+    ├── test.py
     └── check.py
 ```
 
@@ -684,7 +748,7 @@ The old numbered scripts are not used. Prefer:
 python -m beam_optimization setup
 python -m beam_optimization train
 python -m beam_optimization benchmark
-python -m beam_optimization evaluate
+python -m beam_optimization test
 python -m beam_optimization check
 ```
 

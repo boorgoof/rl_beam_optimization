@@ -57,18 +57,6 @@ class PPO:
     def store(self, state, action, reward, value, logpa, done):
         self.buffer.store(state, action, reward, value, logpa, done)
 
-    def _eval_logpa(self, states, actions):
-        mean, log_std = self.policy.forward(states)
-        std   = log_std.exp()
-        dist  = torch.distributions.Normal(mean, std)
-        lo    = self.policy.action_min
-        hi    = self.policy.action_max
-        norm  = (actions - lo) / (hi - lo) * 2 - 1
-        norm  = norm.clamp(-1 + 1e-6, 1 - 1e-6)
-        pt    = torch.atanh(norm)
-        lp    = dist.log_prob(pt) - torch.log((1 - norm.pow(2)) + 1e-6)
-        return lp.sum(dim=-1, keepdim=True)
-
     def optimize(self, last_value: float = 0.0):
         states, actions, returns, gaes, logpas = self.buffer.get(last_value)
         n      = len(actions)
@@ -80,19 +68,18 @@ class PPO:
             idx = np.random.choice(n, bs, replace=False)
             sb, ab, gb, lb = states[idx], actions[idx], gaes[idx], logpas[idx]
 
-            _, nlp, _, _, _ = self.policy.full_pass(sb)
-            plp = self._eval_logpa(sb, ab)
+            plp = self.policy.log_prob(sb, ab)
             ratios = (plp - lb.unsqueeze(1)).exp()
             pi_obj = gb.unsqueeze(1) * ratios
             pi_clp = gb.unsqueeze(1) * ratios.clamp(1 - self.clip_range, 1 + self.clip_range)
-            p_loss = -torch.min(pi_obj, pi_clp).mean() - self.entropy_coef * (-nlp).mean()
+            p_loss = -torch.min(pi_obj, pi_clp).mean() - self.entropy_coef * (-plp).mean()
 
             self.p_opt.zero_grad(); p_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.p_opt.step()
 
             with torch.no_grad():
-                kl = (logpas.unsqueeze(1) - self._eval_logpa(states, actions)).mean()
+                kl = (logpas.unsqueeze(1) - self.policy.log_prob(states, actions)).mean()
             if kl.item() > self.stop_kl:
                 break
 

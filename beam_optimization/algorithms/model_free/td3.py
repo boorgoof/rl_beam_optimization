@@ -38,7 +38,7 @@ class TD3:
         self.policy_noise      = policy_noise
         self.noise_clip        = noise_clip
         self.policy_frequency  = policy_frequency
-        self.total_steps       = 0
+        self.update_count      = 0
 
         self.action_low  = torch.tensor(action_bounds[0], dtype=torch.float32)
         self.action_high = torch.tensor(action_bounds[1], dtype=torch.float32)
@@ -61,7 +61,6 @@ class TD3:
 
     def store(self, s, a, r, ns, done):
         self.replay.store(s, a, r, ns, float(done))
-        self.total_steps += 1
 
     def optimize(self):
         if len(self.replay) < max(self.batch_size, self.warmup_steps):
@@ -78,24 +77,27 @@ class TD3:
         cl = F.mse_loss(q1, tq) + F.mse_loss(q2, tq)
         self.critic_opt.zero_grad(); cl.backward(); self.critic_opt.step()
 
-        al = None
-        if self.total_steps % self.policy_frequency == 0:
-            al = -self.critic.Q1(s, self.actor.forward(s)).mean()
-            self.actor_opt.zero_grad(); al.backward(); self.actor_opt.step()
+        # Counting critic updates (not env steps) keeps the delayed policy
+        # update working regardless of who fills the replay buffer (e.g. MBPO).
+        self.update_count += 1
+        al = 0.0
+        if self.update_count % self.policy_frequency == 0:
+            actor_loss = -self.critic.Q1(s, self.actor.forward(s)).mean()
+            self.actor_opt.zero_grad(); actor_loss.backward(); self.actor_opt.step()
             for tp, sp in zip(self.target_actor.parameters(), self.actor.parameters()):
                 tp.data.copy_(self.tau * sp.data + (1 - self.tau) * tp.data)
             for tp, sp in zip(self.target_critic.parameters(), self.critic.parameters()):
                 tp.data.copy_(self.tau * sp.data + (1 - self.tau) * tp.data)
-            al = al.item()
+            al = actor_loss.item()
 
-        return cl.item(), al or 0.0, None
+        return cl.item(), al, None
 
     def save(self, path: str):
         torch.save({
             "actor": self.actor.state_dict(), "critic": self.critic.state_dict(),
             "ta": self.target_actor.state_dict(), "tc": self.target_critic.state_dict(),
             "ao": self.actor_opt.state_dict(), "co": self.critic_opt.state_dict(),
-            "steps": self.total_steps,
+            "steps": self.update_count,
         }, path)
 
     def load(self, path: str):
@@ -103,4 +105,4 @@ class TD3:
         self.actor.load_state_dict(ck["actor"]); self.critic.load_state_dict(ck["critic"])
         self.target_actor.load_state_dict(ck["ta"]); self.target_critic.load_state_dict(ck["tc"])
         self.actor_opt.load_state_dict(ck["ao"]); self.critic_opt.load_state_dict(ck["co"])
-        self.total_steps = ck["steps"]
+        self.update_count = ck["steps"]

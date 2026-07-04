@@ -1,7 +1,7 @@
 """
-Surrogate ensemble provides SYNTHETIC transitions (cheap, ~1 ms/step, backgroud planning)
+Surrogate ensemble provides SYNTHETIC transitions (cheap, ~1 ms/step, background planning)
 
-Shares its reset/step scaffolding with TraceWinEnv via BaseBeamEnv (env/base_env.py).
+Shares its reset/step scaffolding with TraceWinEnv via BaseBeamEnv (env/base_beam_env.py).
 The actual ModularMLP forward pass lives in SurrogateBeamSimulator.
 
 State / Observation:
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Union
 
+from beam_optimization.config.adige import MAX_STEPS
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.surrogate_env.surrogate.surrogate_simulator import (
     SurrogateBeamSimulator,
@@ -58,7 +59,7 @@ class SurrogateEnv(BaseBeamEnv):
         self,
         model: Union[ModularMLP, List[ModularMLP]],
         dataset: BeamDataset,
-        max_steps: int = 50,
+        max_steps: int = MAX_STEPS,
         beam0_mode: str = "dataset",
         device: Optional[str] = None,
     ):

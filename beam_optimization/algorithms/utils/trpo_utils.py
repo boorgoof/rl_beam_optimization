@@ -94,7 +94,7 @@ def get_flat_grad(loss: torch.Tensor, model: nn.Module,
 
 
 def _surrogate(policy, states, actions, advantages, old_log_probs):
-    _, log_probs, _, _, _ = policy.full_pass(states)
+    log_probs = policy.log_prob(states, actions)
     ratios = (log_probs - old_log_probs).exp()
     return (ratios * advantages.unsqueeze(1)).mean()
 

@@ -9,8 +9,8 @@ from typing import Sequence
 # associate commands with their module names so that we can run them with runpy
 COMMAND_MODULES = {
     "check": "beam_optimization.scripts.check",
-    "evaluate": "beam_optimization.scripts.evaluate",
     "setup": "beam_optimization.scripts.setup",
+    "test": "beam_optimization.scripts.test",
     "train": "beam_optimization.scripts.train",
     "benchmark": "beam_optimization.scripts.benchmark",
 }

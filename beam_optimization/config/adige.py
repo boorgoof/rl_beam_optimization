@@ -104,6 +104,23 @@ OBSERVATION_STAGE_MASK: Tuple[bool, ...] = (
 # number of particles in the initial beam state (used to compute npart_ratio)
 INITIAL_NPART: int = 10_000
 
+# Episode horizon: env steps before truncation (used by all beam envs).
+MAX_STEPS: int = 20
+
+# Score assigned when a simulation fails (TraceWin error, invalid output).
+# Large and negative so the agent learns to avoid failure regions.
+ERROR_SCORE: float = -99.0
+
+# Beam-quality score weights, shared by score(), score_from_vec() and
+# score_tensor(). Change the reward shaping here and nowhere else.
+SCORE_WEIGHTS: Dict[str, float] = {
+    "npart_ratio": 100.0,  # reward for keeping particles
+    "emittance":    20.0,  # penalise transverse emittance growth (ex + ey)
+    "offset":       10.0,  # penalise centroid offset (|x0| + |y0|)
+    "angle":        10.0,  # penalise angular centroid offset (|x'0| + |y'0|)
+    "size":          0.1,  # penalise beam size (SizeX + SizeY)
+}
+
 
 def _build_stage_layout() -> Tuple[Tuple[Tuple[str, ...], ...], Tuple[int, ...]]:
     '''
@@ -395,30 +412,16 @@ def score(beam_state: Dict[str, float]) -> float:
     
     {"npart_ratio": 1.0, "x0": 0.20, "y0": -0.07, "SizeX": 11.8,"SizeY": 11.8, "ex": 0.089,"ey": 0.089,"x'0": 0.56,"y'0": -0.16} → 95.3
 
-    score formula:
-        +100 * (npart_ratio)       reward for keeping particles
-        \- 20 * (ex + ey)          penalise transverse emittance growth
-        \- 10 * (|x0| + |y0|)      penalise centroid offset
-        \- 10 * (|x'0| + |y'0|)    penalise angular centroid offset
-        \- 0.1 * (SizeX + SizeY)   penalise beam size
- 
-    A well-tuned beam (npart_ratio≈1, ex/ey≈0.05, offsets≈0) scores around 95.
-    Failed simulations return a large negative sentinel (e.g. -999.0)
+    Weights come from SCORE_WEIGHTS. A well-tuned beam (npart_ratio≈1,
+    ex/ey≈0.05, offsets≈0) scores around 95. Failed simulations get
+    ERROR_SCORE instead of calling this function.
     """
-    r     = beam_state["npart_ratio"]
-    ex    = beam_state["ex"]
-    ey    = beam_state["ey"]
-    x0    = beam_state["x0"]
-    y0    = beam_state["y0"]
-    SizeX = beam_state["SizeX"]
-    SizeY = beam_state["SizeY"]
-    xp0   = beam_state["x'0"]
-    yp0   = beam_state["y'0"]
-    return (100.0 * r
-            - 20.0 * ex - 20.0 * ey
-            - 10.0 * abs(x0) - 10.0 * abs(y0)
-            - 10.0 * abs(xp0) - 10.0 * abs(yp0)
-            - 0.1 * SizeX - 0.1 * SizeY)
+    w = SCORE_WEIGHTS
+    return (w["npart_ratio"] * beam_state["npart_ratio"]
+            - w["emittance"] * (beam_state["ex"] + beam_state["ey"])
+            - w["offset"]    * (abs(beam_state["x0"]) + abs(beam_state["y0"]))
+            - w["angle"]     * (abs(beam_state["x'0"]) + abs(beam_state["y'0"]))
+            - w["size"]      * (beam_state["SizeX"] + beam_state["SizeY"]))
 
 
 def score_from_vec(beam_vec: np.ndarray) -> float:
@@ -432,24 +435,18 @@ def score_from_vec(beam_vec: np.ndarray) -> float:
 
 
 def score_tensor(beam_state: torch.Tensor) -> torch.Tensor:
-    """Differentiable score from a (batch, 9) tensor. Used by gradient_opt.py.
-    
+    """Differentiable score from a (batch, 9) tensor.
+    Used by DifferentiableSurrogateEnv (SVG). Same weights as score().
+
     Example:
 
         tensor([ [1.0, 0.20, -0.07, 11.8, 11.8, 0.089, 0.089, 0.56, -0.16],
                    [0.99, 0.15,  0.02, 10.5, 10.2, 0.081, 0.084, 0.40, -0.10]]) → tensor([95.3, 96.8])
     """
-    r     = beam_state[:, _BS_IDX["npart_ratio"]]
-    ex    = beam_state[:, _BS_IDX["ex"]]
-    ey    = beam_state[:, _BS_IDX["ey"]]
-    x0    = beam_state[:, _BS_IDX["x0"]]
-    y0    = beam_state[:, _BS_IDX["y0"]]
-    SizeX = beam_state[:, _BS_IDX["SizeX"]]
-    SizeY = beam_state[:, _BS_IDX["SizeY"]]
-    xp0   = beam_state[:, _BS_IDX["x'0"]]
-    yp0   = beam_state[:, _BS_IDX["y'0"]]
-    return (100.0 * r
-            - 20.0 * ex - 20.0 * ey
-            - 10.0 * torch.abs(x0) - 10.0 * torch.abs(y0)
-            - 10.0 * torch.abs(xp0) - 10.0 * torch.abs(yp0)
-            - 0.1 * SizeX - 0.1 * SizeY)
+    w = SCORE_WEIGHTS
+    col = lambda name: beam_state[:, _BS_IDX[name]]
+    return (w["npart_ratio"] * col("npart_ratio")
+            - w["emittance"] * (col("ex") + col("ey"))
+            - w["offset"]    * (torch.abs(col("x0")) + torch.abs(col("y0")))
+            - w["angle"]     * (torch.abs(col("x'0")) + torch.abs(col("y'0")))
+            - w["size"]      * (col("SizeX") + col("SizeY")))

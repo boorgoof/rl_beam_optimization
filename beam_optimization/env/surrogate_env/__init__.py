@@ -6,11 +6,10 @@ from beam_optimization.env.surrogate_env.differentiable_surrogate_env import (
 from beam_optimization.env.surrogate_env.surrogate.surrogate_simulator import (
     SurrogateBeamSimulator,
 )
-from beam_optimization.env.dataset import BeamDataset, SurrogateTrainingDataset
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.surrogate_env.surrogate.model.updater import (
     SurrogateDatasetUpdater,
-    SurrogateUpdater,
 )
 from beam_optimization.env.surrogate_env.surrogate.model.trainer import (
     SurrogateTrainer,
@@ -23,10 +22,8 @@ __all__ = [
     "DifferentiableSurrogateEnv",
     "SurrogateBeamSimulator",
     "ModularMLP",
-    "SurrogateTrainingDataset",
     "BeamDataset",
     "SurrogateDatasetUpdater",
-    "SurrogateUpdater",
     "SurrogateTrainer",
     "train_surrogate",
 ]

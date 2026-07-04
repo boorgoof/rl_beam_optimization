@@ -59,17 +59,18 @@ class REINFORCE:
         self.episode_buffer.store(state, action, reward, value, logpa, done)
 
     def optimize(self, last_value: float = 0.0):
-        states, actions, returns, _, logpas = self.episode_buffer.get(last_value=0.0)
+        # Monte Carlo: no bootstrap, last_value intentionally ignored.
+        states, actions, returns, _, _ = self.episode_buffer.get(last_value=0.0)
         T = len(returns)
 
         discounts = torch.tensor(
             np.logspace(0, T, num=T, base=self.gamma, endpoint=False),
             dtype=torch.float32)
 
-        _, new_logpas, _, _, _ = self.policy_network.full_pass(states)
-        entropy_loss = new_logpas.mean()
+        log_probs    = self.policy_network.log_prob(states, actions).squeeze(-1)
+        entropy_loss = log_probs.mean()
 
-        policy_loss = -(discounts * returns * logpas).mean()
+        policy_loss = -(discounts * returns * log_probs).mean()
         loss        = policy_loss + self.entropy_loss_weight * entropy_loss
 
         self.optimizer.zero_grad()

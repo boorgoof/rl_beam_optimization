@@ -14,9 +14,11 @@ import numpy as np
 import torch
 
 from beam_optimization.config.adige import (
+    MAX_STEPS,
     N_OUTPUT_STAGES,
     N_PARAMS,
     STAGE_PARAM_SIZES,
+    action_step_vec,
     clip_param_tensor_to_hw,
     default_params,
     params_to_vec,
@@ -66,7 +68,7 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         self,
         model: Union[ModularMLP, List[ModularMLP]],
         dataset: BeamDataset,
-        max_steps: int = 50,
+        max_steps: int = MAX_STEPS,
         beam0_mode: str = "dataset",
         device: Optional[str] = None,
         stage_weights: Optional[List[float]] = None,
@@ -81,6 +83,9 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         self.device = self.simulator.device
         self._reset_std_t = torch.tensor(
             reset_std_vec(), dtype=torch.float32, device=self.device
+        )
+        self._action_step_t = torch.tensor(
+            action_step_vec(), dtype=torch.float32, device=self.device
         )
         self._defaults_t = torch.tensor(
             params_to_vec(default_params()), dtype=torch.float32, device=self.device
@@ -148,6 +153,9 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         if action.shape != (N_PARAMS,):
             raise ValueError(f"SVG torch action must have shape ({N_PARAMS},), got {tuple(action.shape)}")
 
+        # Same action-box clip as BaseBeamEnv.step (differentiable clamp; the
+        # tanh policy already respects the bounds, so this rarely binds).
+        action = torch.clamp(action, -self._action_step_t, self._action_step_t)
         params_next = clip_param_tensor_to_hw(state.params + action)
         beam_states = self._forward(params_next, state.beam0)
         score_next = self._score_beam_states(beam_states)

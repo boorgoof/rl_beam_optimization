@@ -5,9 +5,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from beam_optimization.algorithms.networks.policy_nets import format_input
+
 
 class ValueNetwork(nn.Module):
-    """State-value V(s) → scalar. Used by PPO."""
+    """State-value V(s) → scalar. Used by A2C, PPO and TRPO."""
     def __init__(self, obs_dim, hidden_dims=(256, 256), activation_fc=F.relu):
         super().__init__()
         self.activation_fc = activation_fc
@@ -16,15 +18,8 @@ class ValueNetwork(nn.Module):
             nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1))
         self.output_layer  = nn.Linear(hidden_dims[-1], 1)
 
-    def _fmt(self, x):
-        if not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, dtype=torch.float32)
-            if x.dim() == 1:
-                x = x.unsqueeze(0)
-        return x
-
     def forward(self, state):
-        x = self._fmt(state)
+        x = format_input(state)
         x = self.activation_fc(self.input_layer(x))
         for h in self.hidden_layers:
             x = self.activation_fc(h(x))
@@ -32,7 +27,7 @@ class ValueNetwork(nn.Module):
 
 
 class QNetwork(nn.Module):
-    """State-action value Q(s,a) → scalar. Used by SAC."""
+    """State-action value Q(s,a) → scalar. Used by DDPG and SAC."""
     def __init__(self, obs_dim, act_dim, hidden_dims=(256, 256), activation_fc=F.relu):
         super().__init__()
         self.activation_fc = activation_fc
@@ -41,18 +36,8 @@ class QNetwork(nn.Module):
             nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1))
         self.output_layer  = nn.Linear(hidden_dims[-1], 1)
 
-    def _fmt(self, s, a):
-        def _t(x):
-            if not isinstance(x, torch.Tensor):
-                x = torch.tensor(x, dtype=torch.float32)
-                if x.dim() == 1:
-                    x = x.unsqueeze(0)
-            return x
-        return _t(s), _t(a)
-
     def forward(self, state, action):
-        x, u = self._fmt(state, action)
-        x = torch.cat((x, u), dim=1)
+        x = torch.cat((format_input(state), format_input(action)), dim=1)
         x = self.activation_fc(self.input_layer(x))
         for h in self.hidden_layers:
             x = self.activation_fc(h(x))
@@ -60,45 +45,14 @@ class QNetwork(nn.Module):
 
 
 class TwinQNetwork(nn.Module):
-    """Twin Q-networks for overestimation reduction. Used by TD3 and SAC."""
+    """Two independent Q-networks for overestimation reduction. Used by TD3."""
     def __init__(self, obs_dim, act_dim, hidden_dims=(256, 256), activation_fc=F.relu):
         super().__init__()
-        self.activation_fc = activation_fc
-        self.input_a  = nn.Linear(obs_dim + act_dim, hidden_dims[0])
-        self.hidden_a = nn.ModuleList(
-            nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1))
-        self.output_a = nn.Linear(hidden_dims[-1], 1)
-        self.input_b  = nn.Linear(obs_dim + act_dim, hidden_dims[0])
-        self.hidden_b = nn.ModuleList(
-            nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1))
-        self.output_b = nn.Linear(hidden_dims[-1], 1)
-
-    def _fmt(self, s, a):
-        def _t(x):
-            if not isinstance(x, torch.Tensor):
-                x = torch.tensor(x, dtype=torch.float32)
-                if x.dim() == 1:
-                    x = x.unsqueeze(0)
-            return x
-        return _t(s), _t(a)
+        self.q1 = QNetwork(obs_dim, act_dim, hidden_dims, activation_fc)
+        self.q2 = QNetwork(obs_dim, act_dim, hidden_dims, activation_fc)
 
     def forward(self, state, action):
-        x, u = self._fmt(state, action)
-        xu = torch.cat((x, u), dim=1)
-        xa = self.activation_fc(self.input_a(xu))
-        for h in self.hidden_a:
-            xa = self.activation_fc(h(xa))
-        q1 = self.output_a(xa)
-        xb = self.activation_fc(self.input_b(xu))
-        for h in self.hidden_b:
-            xb = self.activation_fc(h(xb))
-        q2 = self.output_b(xb)
-        return q1, q2
+        return self.q1(state, action), self.q2(state, action)
 
     def Q1(self, state, action):
-        x, u = self._fmt(state, action)
-        xu = torch.cat((x, u), dim=1)
-        xa = self.activation_fc(self.input_a(xu))
-        for h in self.hidden_a:
-            xa = self.activation_fc(h(xa))
-        return self.output_a(xa)
+        return self.q1(state, action)

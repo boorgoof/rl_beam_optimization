@@ -1,14 +1,14 @@
 """
-Train — allena tutti gli algoritmi in sequenza sul surrogate.
+Train — trains all algorithms in sequence on the surrogate environment.
 
-Algoritmi allenati:
-  model-free      SAC, TD3, PPO, DDPG, A2C, REINFORCE, TRPO
-  model-based     SVGAgent, DynaMBPO (con SAC interno)
+Algorithms:
+  model-free      SAC, TD3, PPO, DDPG, A2C, REINFORCE, TRPO (+ SB3-SAC baseline)
+  model-based     SVGAgent, MBPO (with inner SAC)
 
-Uso rapido (test, pochi step):
+Quick smoke test (few steps):
     python -m beam_optimization train --quick
 
-Uso completo:
+Full run:
     python -m beam_optimization train \\
         --dataset   env/dataset/base/dataset_base.pt \\
         --single-surrogate env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \\
@@ -17,42 +17,40 @@ Uso completo:
         --rl-steps  300000 \\
         --svg-episodes 2000
 
-I checkpoint vengono salvati in:
-    runs/all/sac/sac_agent.pt
-    runs/all/td3/td3_agent.pt
-    runs/all/ppo/ppo_agent.pt
-    runs/all/ddpg/ddpg_agent.pt
-    runs/all/a2c/a2c_agent.pt
-    runs/all/reinforce/reinforce_agent.pt
-    runs/all/trpo/trpo_agent.pt
-    runs/all/svg_finale/svg_agent.pt
-    runs/all/svg_uniform/svg_agent.pt
-    runs/all/dyna/dyna_agent.pt
+Checkpoints are saved as:
+    runs/all/<algo>/<algo>_agent.pt          (model-free)
+    runs/all/sb3_sac/sb3_sac_agent.zip
+    runs/all/svg_finale/svg_agent.pt, runs/all/svg_uniform/svg_agent.pt
+    runs/all/dyna/dyna_agent.pt              (MBPO inner SAC)
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
-import torch
 
+from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, is_on_policy, make_agent
 from beam_optimization.algorithms.utils.logger import Logger
 from beam_optimization.config.paths import (
+    DEFAULT_BASE_DATASET,
     DEFAULT_BASE_SURROGATE_DIR,
-    DEFAULT_DATASET,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_SINGLE_SURROGATE_MODEL,
     DEFAULT_TRACEWIN_INI,
     DEFAULT_UPDATED_SURROGATE_DIR,
+    configure_matplotlib_cache,
 )
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
+from beam_optimization.scripts.common import evaluate_policy
 from beam_optimization.config.adige import (
+    MAX_STEPS,
     N_PARAMS,
     PARAM_KEYS,
     action_bounds,
@@ -90,7 +88,7 @@ def load_single_surrogate(path: str | Path):
         raise FileNotFoundError(_missing_surrogate_message(path))
     model = ModularMLP.load(str(path))
     model.eval()
-    print(f"Caricato surrogate singolo per model-free: {path}")
+    print(f"Loaded single surrogate for model-free algorithms: {path}")
     return model
 
 
@@ -100,14 +98,14 @@ def load_surrogate_ensemble(folder: str | Path, *, label: str):
     model_files = _surrogate_files(folder)
     if not model_files:
         raise FileNotFoundError(
-            f"Nessun surrogate_*.pt trovato in {folder}\n"
+            f"No surrogate_*.pt found in {folder}\n"
             "Create base surrogates with:\n"
             "  python -m beam_optimization setup --target-samples N"
         )
     ensemble = [ModularMLP.load(str(path)) for path in model_files]
     for model in ensemble:
         model.eval()
-    print(f"Caricati {len(ensemble)} surrogate per {label}: {folder}")
+    print(f"Loaded {len(ensemble)} surrogates for {label}: {folder}")
     return ensemble
 
 
@@ -129,25 +127,9 @@ def initialize_updated_ensemble_from_base(base_dir: str | Path, updated_dir: str
     for source in base_files:
         shutil.copy2(source, updated_dir / source.name)
     print(
-        f"Inizializzato ensemble updated copiando {len(base_files)} surrogate "
-        f"da {base_dir} a {updated_dir}"
+        f"Initialized updated ensemble by copying {len(base_files)} surrogates "
+        f"from {base_dir} to {updated_dir}"
     )
-
-
-def apply_legacy_surrogate_arg(args) -> None:
-    """Map the legacy --surrogate argument onto the explicit new arguments."""
-    if args.surrogate is None:
-        return
-
-    legacy_path = Path(args.surrogate)
-    print(
-        "WARNING: --surrogate è legacy. Usa --single-surrogate per model-free "
-        "oppure --base-ensemble per SVG/MBPO."
-    )
-    if legacy_path.suffix == ".pt":
-        args.single_surrogate = str(legacy_path)
-    else:
-        args.base_ensemble = str(legacy_path)
 
 
 def _make_logger(out_dir: Path, algorithm: str, enable_tensorboard: bool):
@@ -176,42 +158,153 @@ def _loss_metrics(algo: str, losses) -> dict[str, float]:
     }
 
 
+class LearningCurveRecorder:
+    """Collect periodic policy evaluations and save CSV/PNG learning curves."""
+
+    fieldnames = [
+        "step",
+        "episode",
+        "eval_mean_reward",
+        "eval_mean_score",
+        "eval_std_score",
+        "eval_best_score",
+        "eval_episodes",
+    ]
+
+    def __init__(self, out_dir: Path, algorithm: str):
+        self.out_dir = Path(out_dir)
+        self.algorithm = algorithm
+        self.rows: list[dict[str, float]] = []
+
+    def add(self, *, step: int, episode: int, metrics: dict[str, float]) -> None:
+        row = {
+            "step": int(step),
+            "episode": int(episode),
+            "eval_mean_reward": float(metrics["mean_reward"]),
+            "eval_mean_score": float(metrics["mean_score"]),
+            "eval_std_score": float(metrics["std_score"]),
+            "eval_best_score": float(metrics["best_score"]),
+            "eval_episodes": int(metrics["episodes"]),
+        }
+        self.rows.append(row)
+        self.save_csv()
+        self.save_plot()
+
+    def save_csv(self) -> Path:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        path = self.out_dir / "learning_curve.csv"
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.fieldnames)
+            writer.writeheader()
+            writer.writerows(self.rows)
+        return path
+
+    def save_plot(self) -> Optional[Path]:
+        if not self.rows:
+            return None
+        configure_matplotlib_cache()
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        steps = [row["step"] for row in self.rows]
+        scores = [row["eval_mean_score"] for row in self.rows]
+        stds = [row["eval_std_score"] for row in self.rows]
+
+        fig, ax = plt.subplots(figsize=(7.2, 4.2))
+        ax.plot(steps, scores, marker="o", linewidth=1.8, label=self.algorithm)
+        if len(steps) > 1:
+            lower = np.asarray(scores) - np.asarray(stds)
+            upper = np.asarray(scores) + np.asarray(stds)
+            ax.fill_between(steps, lower, upper, alpha=0.18)
+        ax.set_title(f"{self.algorithm} learning curve")
+        ax.set_xlabel("Environment steps")
+        ax.set_ylabel("Mean evaluation score")
+        ax.grid(alpha=0.25)
+        ax.legend()
+        fig.tight_layout()
+
+        path = self.out_dir / "learning_curve.png"
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        return path
+
+
+def log_learning_curve_eval(
+    *,
+    recorder: Optional[LearningCurveRecorder],
+    logger,
+    step: int,
+    episode: int,
+    metrics: dict[str, float],
+) -> None:
+    if recorder is not None:
+        recorder.add(step=step, episode=episode, metrics=metrics)
+    if logger is not None:
+        logger.log(
+            {
+                "eval/mean_reward": float(metrics["mean_reward"]),
+                "eval/mean_score": float(metrics["mean_score"]),
+                "eval/std_score": float(metrics["std_score"]),
+                "eval/best_score": float(metrics["best_score"]),
+                "eval/episodes": float(metrics["episodes"]),
+            },
+            step=step,
+        )
+    print(
+        f"  eval step={step:>7d}  mean_reward={metrics['mean_reward']:.2f}  "
+        f"mean_score={metrics['mean_score']:.3f}  best_eval={metrics['best_score']:.3f}"
+    )
+
+
+def save_all_learning_curves_plot(curves: Dict[str, list[dict]], out_root: Path) -> Optional[Path]:
+    curves = {name: rows for name, rows in curves.items() if rows}
+    if not curves:
+        return None
+
+    configure_matplotlib_cache()
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8.4, 5.0))
+    for name, rows in sorted(curves.items()):
+        steps = [row["step"] for row in rows]
+        scores = [row["eval_mean_score"] for row in rows]
+        ax.plot(steps, scores, marker="o", linewidth=1.8, label=name)
+    ax.set_title("Learning curves")
+    ax.set_xlabel("Environment steps")
+    ax.set_ylabel("Mean evaluation score")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+
+    path = out_root / "learning_curves.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
 # ── Training loops ────────────────────────────────────────────────────────────
 
 def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
              hidden, out_dir: Path,
-             enable_tensorboard: bool = True) -> float:
-    """Allena un algoritmo model-free nell'ambiente surrogate."""
+             enable_tensorboard: bool = True,
+             eval_every: int = 1000,
+             eval_episodes: int = 5,
+             enable_learning_curve: bool = True,
+             learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
+    """Train one custom model-free algorithm on the surrogate environment."""
     # Create env first so obs_dim is known before building the agent
     env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
     obs_dim = env.observation_space.shape[0]
 
     act_bds = action_bounds()
     bounds  = (act_bds[0].tolist(), act_bds[1].tolist())
-
-    if algo == "sac":
-        from beam_optimization.algorithms.model_free.sac import SAC
-        agent = SAC(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
-    elif algo == "td3":
-        from beam_optimization.algorithms.model_free.td3 import TD3
-        agent = TD3(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
-    elif algo == "ppo":
-        from beam_optimization.algorithms.model_free.ppo import PPO
-        agent = PPO(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
-    elif algo == "ddpg":
-        from beam_optimization.algorithms.model_free.ddpg import DDPG
-        agent = DDPG(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
-    elif algo == "a2c":
-        from beam_optimization.algorithms.model_free.a2c import A2C
-        agent = A2C(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
-    elif algo == "reinforce":
-        from beam_optimization.algorithms.model_free.reinforce import REINFORCE
-        agent = REINFORCE(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
-    elif algo == "trpo":
-        from beam_optimization.algorithms.model_free.trpo import TRPO
-        agent = TRPO(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
-    else:
-        raise ValueError(algo)
+    agent   = make_agent(algo, obs_dim, ACT_DIM, bounds, hidden_dims=hidden)
 
     obs, _     = env.reset()
     best_score = -np.inf
@@ -219,10 +312,26 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     ep_count   = 0
     log_every  = max(1, n_steps // 20)
     logger = _make_logger(out_dir, algo, enable_tensorboard)
+    recorder = (
+        LearningCurveRecorder(out_dir, algo)
+        if enable_learning_curve and eval_episodes > 0
+        else None
+    )
 
-    on_policy = algo in ("ppo", "a2c", "trpo", "reinforce")
+    on_policy = is_on_policy(algo)
+    make_eval_env = lambda: SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
 
     try:
+        if recorder is not None:
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+            log_learning_curve_eval(
+                recorder=recorder,
+                logger=logger,
+                step=0,
+                episode=0,
+                metrics=metrics,
+            )
+
         for step in range(1, n_steps + 1):
             if on_policy:
                 action, logpa, value = agent.select_action(obs, training=True)
@@ -242,7 +351,8 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
                 if done:
                     last_val = 0.0
                     if not terminated:
-                        _, _, last_val = agent.select_action(obs, training=True)
+                        # Bootstrap truncated episodes with V(s_{t+1}).
+                        _, _, last_val = agent.select_action(next_obs, training=True)
                     optimize_result = agent.optimize(last_value=float(last_val))
             else:
                 optimize_result = agent.optimize()
@@ -279,9 +389,31 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
                 obs, _ = env.reset()
                 ep_reward = 0.0
 
+            if recorder is not None and step % max(1, eval_every) == 0:
+                metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+                log_learning_curve_eval(
+                    recorder=recorder,
+                    logger=logger,
+                    step=step,
+                    episode=ep_count,
+                    metrics=metrics,
+                )
+
+        if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != n_steps):
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+            log_learning_curve_eval(
+                recorder=recorder,
+                logger=logger,
+                step=n_steps,
+                episode=ep_count,
+                metrics=metrics,
+            )
+        if learning_curves is not None and recorder is not None:
+            learning_curves[algo] = list(recorder.rows)
+
         out_dir.mkdir(parents=True, exist_ok=True)
         agent.save(str(out_dir / f"{algo}_agent.pt"))
-        print(f"  Salvato → {out_dir / f'{algo}_agent.pt'}")
+        print(f"  Saved → {out_dir / f'{algo}_agent.pt'}")
         return best_score
     finally:
         if logger is not None:
@@ -290,13 +422,23 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
 
 def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
                   hidden, out_dir: Path,
-                  enable_tensorboard: bool = True) -> float:
-    """Allena SAC di Stable Baselines 3 sull'ambiente surrogate."""
+                  enable_tensorboard: bool = True,
+                  eval_every: int = 1000,
+                  eval_episodes: int = 5,
+                  enable_learning_curve: bool = True,
+                  learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
+    """Train Stable Baselines 3 SAC on the surrogate environment (sanity baseline)."""
     from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
 
     env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
 
     logger = _make_logger(out_dir, "sb3_sac", enable_tensorboard)
+    recorder = (
+        LearningCurveRecorder(out_dir, "sb3_sac")
+        if enable_learning_curve and eval_episodes > 0
+        else None
+    )
+    make_eval_env = lambda: SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
     agent = SB3SAC(
         env,
         hidden_dims=tuple(hidden),
@@ -308,20 +450,52 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
             n_steps=n_steps,
             log_every=max(1, n_steps // 20),
             logger=logger,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_fn=(lambda current_agent, n: evaluate_policy(current_agent, make_eval_env, n))
+            if recorder is not None
+            else None,
+            eval_logger=(
+                lambda step, metrics: log_learning_curve_eval(
+                    recorder=recorder,
+                    logger=logger,
+                    step=step,
+                    episode=0,
+                    metrics=metrics,
+                )
+            )
+            if recorder is not None
+            else None,
         )
+        if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != n_steps):
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+            log_learning_curve_eval(
+                recorder=recorder,
+                logger=logger,
+                step=n_steps,
+                episode=0,
+                metrics=metrics,
+            )
+        if learning_curves is not None and recorder is not None:
+            learning_curves["sb3_sac"] = list(recorder.rows)
     finally:
         if logger is not None:
             logger.close()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     agent.save(str(out_dir / "sb3_sac_agent"))
-    print(f"  Salvato → {out_dir / 'sb3_sac_agent.zip'}")
+    print(f"  Saved → {out_dir / 'sb3_sac_agent.zip'}")
     return best_score
 
 
 def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
               stage_weights, out_dir: Path,
-              enable_tensorboard: bool = True) -> float:
+              enable_tensorboard: bool = True,
+              eval_every: int = 1000,
+              eval_episodes: int = 5,
+              enable_learning_curve: bool = True,
+              learning_curves: Optional[Dict[str, list[dict]]] = None,
+              curve_label: str = "svg") -> float:
     from beam_optimization.algorithms.model_based.svg import SVGAgent
 
     agent = SVGAgent(
@@ -340,8 +514,24 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
     best_score = -np.inf
     log_every  = max(1, n_episodes // 20)
     logger = _make_logger(out_dir, "svg", enable_tensorboard)
+    recorder = (
+        LearningCurveRecorder(out_dir, curve_label)
+        if enable_learning_curve and eval_episodes > 0
+        else None
+    )
+    eval_every_episodes = max(1, max(1, eval_every) // max(1, horizon))
 
     try:
+        if recorder is not None:
+            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes)
+            log_learning_curve_eval(
+                recorder=recorder,
+                logger=logger,
+                step=0,
+                episode=0,
+                metrics=metrics,
+            )
+
         for ep in range(1, n_episodes + 1):
             result     = agent.optimize_episode()
             best_score = max(best_score, result.final_score)
@@ -359,10 +549,33 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
             if ep % log_every == 0:
                 print(f"  ep={ep:>5d}  loss={result.episode_loss:.4f}  "
                       f"score={result.final_score:.3f}  best={best_score:.3f}")
+            if recorder is not None and ep % eval_every_episodes == 0:
+                step = ep * horizon
+                metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes)
+                log_learning_curve_eval(
+                    recorder=recorder,
+                    logger=logger,
+                    step=step,
+                    episode=ep,
+                    metrics=metrics,
+                )
+
+        final_step = n_episodes * horizon
+        if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != final_step):
+            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes)
+            log_learning_curve_eval(
+                recorder=recorder,
+                logger=logger,
+                step=final_step,
+                episode=n_episodes,
+                metrics=metrics,
+            )
+        if learning_curves is not None and recorder is not None:
+            learning_curves[curve_label] = list(recorder.rows)
 
         out_dir.mkdir(parents=True, exist_ok=True)
         agent.save(str(out_dir / "svg_agent.pt"))
-        print(f"  Salvato → {out_dir / 'svg_agent.pt'}")
+        print(f"  Saved → {out_dir / 'svg_agent.pt'}")
         return best_score
     finally:
         if logger is not None:
@@ -378,25 +591,30 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                surrogate_path: Optional[Path] = None,
                dataset_path: Optional[Path] = None,
                update_surrogates_path: Optional[str] = None,
-               enable_tensorboard: bool = True) -> float:
+               enable_tensorboard: bool = True,
+               eval_every: int = 1000,
+               eval_episodes: int = 5,
+               enable_learning_curve: bool = True,
+               learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
     """
-    Allena MBPO con surrogato ensemble per i rollout sintetici.
+    Train MBPO with the surrogate ensemble for synthetic rollouts.
 
-    Se tracewin_project è fornito, l'ambiente REALE usa TraceWin (fisica vera,
-    ~30 s/step). I rollout SINTETICI usano sempre il surrogato (veloce).
-    Senza tracewin_project, sia l'env reale che i rollout usano il surrogato.
+    If tracewin_project is given, the REAL environment uses TraceWin (true
+    physics, ~30 s/step). SYNTHETIC rollouts always use the surrogate (fast).
+    Without tracewin_project both the real env and the rollouts use the
+    surrogate.
 
-    Se online_finetune=True (richiede tracewin_project), usa MBPOWithModelUpdate
-    che affina il surrogato ad ogni model_train_freq step reali mescolando dati
-    offline (dataset originale) e online (TraceWin raccolto in questa run, quota
-    online_mix_ratio). In questo caso:
-      - i pesi fine-tunati vengono salvati in models/updated. Se parti da
-        models/base, base resta conservato; se parti da models/updated, la run
-        aggiorna la working copy in-place. Override con update_surrogates_path;
-      - il dataset aggiornato (offline+online unito) viene salvato di default
-        nello stesso file passato con --dataset. Per default questo e
-        env/dataset/base/dataset_base.pt, quindi il dataset base cresce run
-        dopo run. Puoi usare update_dataset_path per salvarlo altrove.
+    If online_finetune=True (requires tracewin_project), MBPOWithModelUpdate
+    fine-tunes the surrogate every model_train_freq real steps on a mix of
+    offline (original dataset) and online (TraceWin data from this run,
+    fraction online_mix_ratio) samples. In that case:
+      - fine-tuned weights go to models/updated: starting from models/base
+        preserves base; starting from models/updated updates the working copy
+        in-place. Override with update_surrogates_path;
+      - the merged offline+online dataset is saved by default to the same file
+        passed with --dataset (env/dataset/base/dataset_base.pt by default, so
+        the base dataset grows run after run). Use update_dataset_path to save
+        elsewhere.
     """
     from beam_optimization.algorithms.model_free.sac import SAC
 
@@ -416,10 +634,10 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             max_steps=max_ep_steps,
         )
         label = "MBPOWithModelUpdate" if use_model_update else "MBPO"
-        print(f"  Env reale: TraceWin  ({tracewin_project})  [{label}]")
+        print(f"  Real env: TraceWin  ({tracewin_project})  [{label}]")
     else:
         env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
-        print("  Env reale: surrogato (SurrogateEnv)  [MBPO]")
+        print("  Real env: surrogate (SurrogateEnv)  [MBPO]")
 
     obs_dim = env.observation_space.shape[0]
     act_bds = action_bounds()
@@ -468,8 +686,29 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
     ep_count   = 0
     log_every  = max(1, n_steps // 20)
     logger = _make_logger(out_dir, "mbpo", enable_tensorboard)
+    recorder = (
+        LearningCurveRecorder(out_dir, "mbpo")
+        if enable_learning_curve and eval_episodes > 0
+        else None
+    )
+
+    def make_eval_env():
+        if tracewin_project:
+            from beam_optimization.env.tracewin_env import TraceWinEnv
+            return TraceWinEnv(project_file=tracewin_project, max_steps=max_ep_steps)
+        return SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
 
     try:
+        if recorder is not None:
+            metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes)
+            log_learning_curve_eval(
+                recorder=recorder,
+                logger=logger,
+                step=0,
+                episode=0,
+                metrics=metrics,
+            )
+
         for step in range(1, n_steps + 1):
             action   = mbpo.select_action(obs, training=True)
             next_obs, reward, terminated, truncated, info = env.step(action)
@@ -526,12 +765,34 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                 obs, _ = env.reset()
                 ep_reward = 0.0
 
+            if recorder is not None and step % max(1, eval_every) == 0:
+                metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes)
+                log_learning_curve_eval(
+                    recorder=recorder,
+                    logger=logger,
+                    step=step,
+                    episode=ep_count,
+                    metrics=metrics,
+                )
+
+        if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != n_steps):
+            metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes)
+            log_learning_curve_eval(
+                recorder=recorder,
+                logger=logger,
+                step=n_steps,
+                episode=ep_count,
+                metrics=metrics,
+            )
+        if learning_curves is not None and recorder is not None:
+            learning_curves["mbpo"] = list(recorder.rows)
+
         out_dir.mkdir(parents=True, exist_ok=True)
         inner.save(str(out_dir / "dyna_agent.pt"))
-        print(f"  Salvato → {out_dir / 'dyna_agent.pt'}")
+        print(f"  Saved → {out_dir / 'dyna_agent.pt'}")
 
         if use_model_update:
-            # flush finale, anche fuori dal periodo model_train_freq
+            # final flush, even outside the model_train_freq period
             mbpo.save_surrogates()
             mbpo.save_dataset()
 
@@ -541,12 +802,12 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             logger.close()
 
 
-# ── Tabella finale ────────────────────────────────────────────────────────────
+# ── Final summary ─────────────────────────────────────────────────────────────
 
 def print_summary(scores: Dict[str, float]):
     print(f"\n{'='*50}")
-    print("RIEPILOGO TRAINING")
-    print(f"{'Algoritmo':<35}  {'Best Score':>10}")
+    print("TRAINING SUMMARY")
+    print(f"{'Algorithm':<35}  {'Best Score':>10}")
     print("-" * 50)
     for name, sc in sorted(scores.items()):
         print(f"{name:<35}  {sc:>10.3f}")
@@ -556,88 +817,87 @@ def print_summary(scores: Dict[str, float]):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Allena tutti gli algoritmi")
-    parser.add_argument("--surrogate",      default=None,
-                        help="Legacy alias: file .pt -> --single-surrogate; "
-                             "cartella -> --base-ensemble.")
+    configure_matplotlib_cache()
+
+    parser = argparse.ArgumentParser(description="Train all algorithms")
     parser.add_argument("--single-surrogate", default=str(DEFAULT_SINGLE_SURROGATE_MODEL),
                         metavar="PATH",
-                        help="Surrogate singolo usato da SAC/PPO/TD3/DDPG/A2C/"
+                        help="Single surrogate used by SAC/PPO/TD3/DDPG/A2C/"
                              "REINFORCE/TRPO/SB3-SAC. Default: "
                              f"{DEFAULT_SINGLE_SURROGATE_MODEL}")
     parser.add_argument("--base-ensemble", default=str(DEFAULT_BASE_SURROGATE_DIR),
                         metavar="PATH",
-                        help="Cartella con surrogate_*.pt usata da SVG e MBPO. "
+                        help="Folder with surrogate_*.pt used by SVG and MBPO. "
                              f"Default: {DEFAULT_BASE_SURROGATE_DIR}")
     parser.add_argument("--updated-ensemble", default=str(DEFAULT_UPDATED_SURROGATE_DIR),
                         metavar="PATH",
-                        help="Cartella working usata solo da MBPOWithModelUpdate. "
-                             "Se vuota viene inizializzata copiando --base-ensemble. "
+                        help="Working folder used only by MBPOWithModelUpdate. "
+                             "If empty it is initialized by copying --base-ensemble. "
                              f"Default: {DEFAULT_UPDATED_SURROGATE_DIR}")
-    parser.add_argument("--dataset",        default=str(DEFAULT_DATASET))
+    parser.add_argument("--dataset",        default=str(DEFAULT_BASE_DATASET))
     parser.add_argument("--output",         default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--rl-steps",       type=int, default=200_000)
     parser.add_argument("--svg-episodes",   type=int, default=1000)
-    parser.add_argument("--svg-horizon",    type=int, default=20)
+    parser.add_argument("--svg-horizon",    type=int, default=MAX_STEPS)
     parser.add_argument("--rollout-length", type=int, default=1,
-                        help="Rollout length DynaMBPO (1=Dyna, >1=MBPO)")
-    parser.add_argument("--max-ep-steps",   type=int, default=20)
+                        help="MBPO synthetic rollout length (1=Dyna, >1=MBPO)")
+    parser.add_argument("--max-ep-steps",   type=int, default=MAX_STEPS)
     parser.add_argument("--hidden",         type=int, nargs="+", default=[256, 256])
     parser.add_argument("--quick",          action="store_true",
-                        help="Budget ridotto per test rapido")
+                        help="Reduced budget for a quick smoke test")
+    parser.add_argument("--eval-every",     type=int, default=1000,
+                        help="Evaluate the current policy for the learning curve "
+                             "every N environment steps. Default: 1000.")
+    parser.add_argument("--eval-episodes",  type=int, default=5,
+                        help="Test episodes per learning-curve evaluation. "
+                             "Default: 5.")
+    parser.add_argument("--no-learning-curve", action="store_true",
+                        help="Disable periodic evaluation and learning-curve plots.")
     parser.add_argument("--no-tensorboard", action="store_true",
-                        help="Disabilita logging TensorBoard e metrics.csv.")
+                        help="Disable TensorBoard and metrics.csv logging.")
     parser.add_argument("--skip",           nargs="*", default=[],
-                        help="Algoritmi da saltare (es: --skip dyna ppo)")
+                        help="Algorithms to skip (e.g.: --skip dyna ppo)")
     parser.add_argument("--tracewin",       default=None, metavar="INI",
                         nargs="?", const=str(DEFAULT_TRACEWIN_INI),
-                        help="Usa TraceWin come env reale per MBPO. "
-                             "Senza argomento usa il path default del progetto.")
+                        help="Use TraceWin as the real env for MBPO. "
+                             "Without a value, uses the project default path.")
     parser.add_argument("--online-finetune", action="store_true",
-                        help="Fine-tuna il surrogate ensemble sui dati reali "
-                             "durante il training (MBPOWithModelUpdate). "
-                             "Richiede --tracewin.")
+                        help="Fine-tune the surrogate ensemble on real data "
+                             "during training (MBPOWithModelUpdate). "
+                             "Requires --tracewin.")
     parser.add_argument("--online-mix-ratio", type=float, default=0.5, metavar="FLOAT",
-                        help="Quota target (0-1) di ogni batch di fine-tuning presa dai "
-                             "dati online raccolti in questa run; il resto viene dal "
-                             "dataset offline originale (evita di scordare la "
-                             "distribuzione originale). Default: 0.5.")
+                        help="Target fraction (0-1) of each fine-tuning batch drawn "
+                             "from online data collected in this run; the rest comes "
+                             "from the original offline dataset (avoids forgetting "
+                             "the original distribution). Default: 0.5.")
     parser.add_argument("--update-dataset",  default=None, metavar="PATH",
-                        help="Path .pt dove salvare il dataset aggiornato (offline+online "
-                             "uniti) raccolto da MBPOWithModelUpdate. Default: stesso "
-                             "path di --dataset, quindi dataset_base.pt cresce run dopo "
-                             "run. Richiede --online-finetune.")
-    parser.add_argument("--update-surrogates", default=None, metavar="PATH",
-                        help="Cartella dove salvare i surrogate_*.pt fine-tunati da "
-                             "MBPOWithModelUpdate. Legacy alias di --updated-ensemble.")
+                        help=".pt path for the merged offline+online dataset collected "
+                             "by MBPOWithModelUpdate. Default: same path as --dataset, "
+                             "so dataset_base.pt grows run after run. Requires "
+                             "--online-finetune.")
     args = parser.parse_args()
 
     if args.quick:
         args.rl_steps     = 200
         args.svg_episodes = 5
 
-    apply_legacy_surrogate_arg(args)
-    if args.update_surrogates is not None:
-        print("WARNING: --update-surrogates è legacy. Usa --updated-ensemble.")
-        args.updated_ensemble = args.update_surrogates
     if args.online_finetune and not args.tracewin:
-        parser.error("--online-finetune richiede --tracewin")
+        parser.error("--online-finetune requires --tracewin")
 
     out_root = Path(args.output)
     skip     = set(args.skip)
     enable_tensorboard = not args.no_tensorboard
+    enable_learning_curve = not args.no_learning_curve
 
     single_surrogate_path = Path(args.single_surrogate)
     base_ensemble_path = Path(args.base_ensemble)
     updated_ensemble_path = Path(args.updated_ensemble)
 
-    model_free_algos = ["sac", "td3", "ppo", "ddpg", "a2c", "reinforce", "trpo"]
-    run_model_free = any(algo not in skip for algo in model_free_algos)
+    run_model_free = any(algo not in skip for algo in MODEL_FREE_ALGORITHMS)
     run_sb3_sac = "sb3_sac" not in skip
     run_dyna = "dyna" not in skip
-    run_svg = any(
-        f"svg_{name}" not in skip and "svg" not in skip
-        for name in STAGE_WEIGHT_CONFIGS
+    run_svg = "svg" not in skip and any(
+        f"svg_{name}" not in skip for name in STAGE_WEIGHT_CONFIGS
     )
     use_model_update = args.online_finetune and bool(args.tracewin)
 
@@ -657,13 +917,14 @@ def main():
             label="updated ensemble",
         )
 
-    print(f"Carico dataset:   {args.dataset}")
+    print(f"Loading dataset:  {args.dataset}")
     dataset = BeamDataset.load(args.dataset)
 
     scores: Dict[str, float] = {}
+    learning_curves: Dict[str, list[dict]] = {}
 
     # ── Model-free RL ─────────────────────────────────────────────────────────
-    for algo in ["sac", "td3", "ppo", "ddpg", "a2c", "reinforce", "trpo"]:
+    for algo in MODEL_FREE_ALGORITHMS:
         if algo in skip:
             print(f"\n[SKIP] {algo.upper()}")
             continue
@@ -673,6 +934,10 @@ def main():
             args.max_ep_steps, args.hidden,
             out_root / algo,
             enable_tensorboard=enable_tensorboard,
+            eval_every=args.eval_every,
+            eval_episodes=args.eval_episodes,
+            enable_learning_curve=enable_learning_curve,
+            learning_curves=learning_curves,
         )
 
     # ── SB3-SAC ───────────────────────────────────────────────────────────────
@@ -683,6 +948,10 @@ def main():
             args.max_ep_steps, args.hidden,
             out_root / "sb3_sac",
             enable_tensorboard=enable_tensorboard,
+            eval_every=args.eval_every,
+            eval_episodes=args.eval_episodes,
+            enable_learning_curve=enable_learning_curve,
+            learning_curves=learning_curves,
         )
 
     # ── MBPO ──────────────────────────────────────────────────────────────────
@@ -706,6 +975,10 @@ def main():
             dataset_path=Path(args.dataset),
             update_surrogates_path=str(updated_ensemble_path) if use_mu else None,
             enable_tensorboard=enable_tensorboard,
+            eval_every=args.eval_every,
+            eval_episodes=args.eval_episodes,
+            enable_learning_curve=enable_learning_curve,
+            learning_curves=learning_curves,
         )
 
     # ── SVGAgent ─────────────────────────────────────────────────────────────
@@ -714,21 +987,30 @@ def main():
         if label in skip or "svg" in skip:
             print(f"\n[SKIP] {label}")
             continue
-        print(f"\n{'='*50}\nTraining SVGAgent [{name}]  ({args.svg_episodes} episodi)\n{'='*50}")
+        print(f"\n{'='*50}\nTraining SVGAgent [{name}]  ({args.svg_episodes} episodes)\n{'='*50}")
         scores[label] = train_svg(
             base_ensemble, dataset, args.svg_episodes, args.svg_horizon,
             args.hidden, weights,
             out_root / label,
             enable_tensorboard=enable_tensorboard,
+            eval_every=args.eval_every,
+            eval_episodes=args.eval_episodes,
+            enable_learning_curve=enable_learning_curve,
+            learning_curves=learning_curves,
+            curve_label=label,
         )
 
     print_summary(scores)
+
+    curve_path = save_all_learning_curves_plot(learning_curves, out_root)
+    if curve_path is not None:
+        print(f"Learning curves saved → {curve_path}")
 
     summary_path = out_root / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w") as f:
         json.dump(scores, f, indent=2)
-    print(f"\nRiepilogo salvato → {summary_path}")
+    print(f"\nSummary saved → {summary_path}")
 
 
 if __name__ == "__main__":

@@ -20,15 +20,9 @@ from .pyTraceWin_wrapper import TraceWin
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 
 from beam_optimization.config.adige import (
-    BEAM_STATE_FEATURES, STAGE_MARKERS, INITIAL_NPART,
+    BEAM_STATE_FEATURES, ERROR_SCORE, STAGE_MARKERS, INITIAL_NPART,
     default_params, score,
 )
-
-ERROR_SCORE = -999.0
-
-
-# Legacy name kept for compatibility with existing imports.
-SimResult = BeamSimulationResult
 
 
 

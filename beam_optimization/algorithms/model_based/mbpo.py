@@ -10,7 +10,8 @@ Algorithm structure:
     1. Store real transitions in the real buffer.
     2. Generate short synthetic rollouts with the surrogate ensemble and store
        them in the synthetic buffer.
-    3. Train the inner policy on mixed batches:
+    3. Train the inner policy with n_grad_updates gradient steps per real step
+       (the paper uses 20-40) on mixed batches:
        real_ratio * real + (1 - real_ratio) * synthetic.
 
 Project-specific difference from standard MBPO:
@@ -48,6 +49,9 @@ class MBPO:
         act_dim:              Action dimension.
         rollout_length:       Steps per synthetic rollout (1=Dyna, >1=MBPO).
         n_synthetic_per_step: Synthetic rollouts generated per real step.
+        n_grad_updates:       Policy gradient updates per real step (paper: 20-40).
+        min_real_samples:     Real transitions required before synthetic
+                              generation starts.
         real_ratio:           Real data fraction in each training batch.
         real_buffer_size:     Max real transitions.
         synth_buffer_size:    Max synthetic transitions.
@@ -62,7 +66,9 @@ class MBPO:
         obs_dim: int,
         act_dim: int,
         rollout_length: int = 1,
-        n_synthetic_per_step: int = 400,
+        n_synthetic_per_step: int = 40,
+        n_grad_updates: int = 20,
+        min_real_samples: int = 256,
         real_ratio: float = 0.05,
         real_buffer_size: int = int(1e5),
         synth_buffer_size: int = int(1e6),
@@ -71,6 +77,8 @@ class MBPO:
         self.agent            = agent
         self.rollout_length   = int(rollout_length)
         self.n_synthetic_per_step = int(n_synthetic_per_step)
+        self.n_grad_updates   = int(n_grad_updates)
+        self.min_real_samples = int(min_real_samples)
 
         # MBPO owns a surrogate environment for synthetic rollouts.
         # SurrogateEnv owns the simulator and surrogate ensemble.
@@ -107,14 +115,19 @@ class MBPO:
             done:     Episode done flag.
 
         Returns:
-            Loss tuple from agent.optimize() or None if buffer not ready.
+            Loss tuple from the last agent.optimize() or None if buffer not ready.
         """
         self.mixed_buffer.store_real(obs, action, reward, next_obs, float(done))
 
-        if self.mixed_buffer.size >= 256:
+        if self.mixed_buffer.size >= self.min_real_samples:
             self._generate_synthetic()
 
-        return self.agent.optimize()
+        losses = None
+        for _ in range(self.n_grad_updates):
+            losses = self.agent.optimize()
+            if losses is None:  # buffer not ready yet
+                break
+        return losses
 
     def select_action(self, state, training: bool = True):
         return self.agent.select_action(state, training=training)

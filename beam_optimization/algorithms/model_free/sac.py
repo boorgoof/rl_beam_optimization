@@ -5,6 +5,7 @@ Adapted from reinforcement_learning_2/rl/algorithms/continuous/sac.py.
 """
 import copy
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
@@ -38,11 +39,13 @@ class SAC:
         self.tc1 = copy.deepcopy(self.critic1); [p.requires_grad_(False) for p in self.tc1.parameters()]
         self.tc2 = copy.deepcopy(self.critic2); [p.requires_grad_(False) for p in self.tc2.parameters()]
 
+        self.logalpha       = nn.Parameter(torch.zeros(1))
+        self.target_entropy = -float(act_dim)
+
         self.actor_opt  = optim.Adam(self.policy.parameters(),  lr=actor_lr)
         self.critic1_opt = optim.Adam(self.critic1.parameters(), lr=critic_lr)
         self.critic2_opt = optim.Adam(self.critic2.parameters(), lr=critic_lr)
-        self.alpha_opt   = optim.Adam([self.policy.logalpha],    lr=alpha_lr)
-        self.target_entropy = self.policy.target_entropy
+        self.alpha_opt   = optim.Adam([self.logalpha],           lr=alpha_lr)
         self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size)
 
     def select_action(self, state, training: bool = True):
@@ -56,7 +59,7 @@ class SAC:
         if len(self.replay) < max(self.batch_size, self.warmup_steps):
             return None
         s, a, r, ns, d = self.replay.sample(self.batch_size)
-        alpha = self.policy.logalpha.exp().detach()
+        alpha = self.logalpha.exp().detach()
 
         with torch.no_grad():
             na, nlp, _, _, _ = self.policy.full_pass(ns)
@@ -71,7 +74,7 @@ class SAC:
         al = (alpha * nlp - torch.min(self.critic1(s, na), self.critic2(s, na))).mean()
         self.actor_opt.zero_grad(); al.backward(); self.actor_opt.step()
 
-        ent_loss = -(self.policy.logalpha.exp() * (nlp + self.target_entropy).detach()).mean()
+        ent_loss = -(self.logalpha.exp() * (nlp + self.target_entropy).detach()).mean()
         self.alpha_opt.zero_grad(); ent_loss.backward(); self.alpha_opt.step()
 
         for tp, sp in zip(self.tc1.parameters(), self.critic1.parameters()):
@@ -86,6 +89,7 @@ class SAC:
             "policy": self.policy.state_dict(),
             "c1": self.critic1.state_dict(), "c2": self.critic2.state_dict(),
             "tc1": self.tc1.state_dict(),    "tc2": self.tc2.state_dict(),
+            "logalpha": self.logalpha.detach(),
             "a_opt": self.actor_opt.state_dict(),
             "c1_opt": self.critic1_opt.state_dict(), "c2_opt": self.critic2_opt.state_dict(),
             "al_opt": self.alpha_opt.state_dict(),
@@ -96,6 +100,7 @@ class SAC:
         self.policy.load_state_dict(ck["policy"])
         self.critic1.load_state_dict(ck["c1"]); self.critic2.load_state_dict(ck["c2"])
         self.tc1.load_state_dict(ck["tc1"]);    self.tc2.load_state_dict(ck["tc2"])
+        self.logalpha.data.copy_(ck["logalpha"])
         self.actor_opt.load_state_dict(ck["a_opt"])
         self.critic1_opt.load_state_dict(ck["c1_opt"]); self.critic2_opt.load_state_dict(ck["c2_opt"])
         self.alpha_opt.load_state_dict(ck["al_opt"])

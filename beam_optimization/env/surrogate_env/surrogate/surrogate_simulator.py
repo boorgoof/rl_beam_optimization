@@ -9,10 +9,9 @@ import numpy as np
 import torch
 
 from beam_optimization.config.adige import (
-    BEAM_STATE_DIM, BEAM_STATE_FEATURES,
+    BEAM_STATE_DIM, BEAM_STATE_FEATURES, ERROR_SCORE,
     params_to_stage_tensors, score,
 )
-from beam_optimization.env.base_beam_env import ERROR_SCORE
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP

@@ -48,13 +48,11 @@ class TRPO:
                  max_kl: float = 0.01,
                  cg_steps: int = 10,
                  cg_damping: float = 0.1,
-                 value_epochs: int = 5,
-                 max_grad_norm: float = float("inf")):
+                 value_epochs: int = 5):
         self.max_kl       = max_kl
         self.cg_steps     = cg_steps
         self.cg_damping   = cg_damping
         self.value_epochs = value_epochs
-        self.max_grad_norm = max_grad_norm
 
         self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims)
         self.value_network  = ValueNetwork(obs_dim, hidden_dims)
@@ -73,19 +71,6 @@ class TRPO:
     def store(self, state, action, reward, value, logpa, done):
         self.episode_buffer.store(state, action, reward, value, logpa, done)
 
-    def _compute_log_prob(self, states, actions):
-        mean, log_std = self.policy_network.forward(states)
-        std  = log_std.exp()
-        dist = torch.distributions.Normal(mean, std)
-        action_min = self.policy_network.action_min
-        action_max = self.policy_network.action_max
-        normalized = (actions - action_min) / (action_max - action_min) * 2 - 1
-        normalized = normalized.clamp(-1 + 1e-6, 1 - 1e-6)
-        pre_tanh   = torch.atanh(normalized)
-        log_prob   = dist.log_prob(pre_tanh)
-        log_prob  -= torch.log((1 - normalized.pow(2)) + 1e-6)
-        return log_prob.sum(dim=-1, keepdim=True)
-
     def optimize(self, last_value: float = 0.0):
         states, actions, returns, gaes, old_logpas = self.episode_buffer.get(last_value)
         gaes = (gaes - gaes.mean()) / (gaes.std() + 1e-8)
@@ -96,7 +81,7 @@ class TRPO:
             log_std_old = log_std_old.detach()
         old_dist_params = (mean_old, log_std_old)
 
-        log_probs   = self._compute_log_prob(states, actions)
+        log_probs   = self.policy_network.log_prob(states, actions)
         surr_loss   = -(gaes.unsqueeze(1) * (log_probs - old_logpas.unsqueeze(1)).exp()).mean()
         policy_grad = get_flat_grad(surr_loss, self.policy_network, retain_graph=True)
 
@@ -123,9 +108,6 @@ class TRPO:
             value_loss  = (values_pred - returns.unsqueeze(1)).pow(2).mul(0.5).mean()
             self.value_optimizer.zero_grad()
             value_loss.backward()
-            if self.max_grad_norm < float("inf"):
-                torch.nn.utils.clip_grad_norm_(
-                    self.value_network.parameters(), self.max_grad_norm)
             self.value_optimizer.step()
             value_loss_val = value_loss.item()
 

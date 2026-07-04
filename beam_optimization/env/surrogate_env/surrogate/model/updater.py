@@ -54,7 +54,6 @@ class SurrogateDatasetUpdater:
         device: Optional[str] = None,
         online_dataset_save_path: Optional[str | Path] = None,
         merged_dataset_save_path: Optional[str | Path] = None,
-        flat_save_path: Optional[str | Path] = None,
     ):
         self.surrogates = surrogates if isinstance(surrogates, list) else [surrogates]
         self._offline_dataset = offline_dataset
@@ -67,11 +66,9 @@ class SurrogateDatasetUpdater:
         self.online_mix_ratio = min(max(float(online_mix_ratio), 0.0), 1.0)
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        # Backward-compatible flat_save_path means "save the newly collected
-        # online samples", matching the old updater's internal dataset behavior.
-        self.online_dataset_save_path = Path(
-            online_dataset_save_path or flat_save_path
-        ) if (online_dataset_save_path or flat_save_path) else None
+        self.online_dataset_save_path = (
+            Path(online_dataset_save_path) if online_dataset_save_path else None
+        )
         self.merged_dataset_save_path = (
             Path(merged_dataset_save_path) if merged_dataset_save_path else None
         )
@@ -102,11 +99,6 @@ class SurrogateDatasetUpdater:
         """Number of new TraceWin samples collected in this run."""
         return len(self._online_dataset)
 
-    @property
-    def n_samples(self) -> int:
-        """Backward-compatible alias for n_online_samples."""
-        return self.n_online_samples
-
     # ── TraceWin ingestion ────────────────────────────────────────────────────
 
     def add_tracewin_result(self, result: BeamSimulationResult) -> bool:
@@ -122,13 +114,6 @@ class SurrogateDatasetUpdater:
         """Add many TraceWin results and return how many were accepted."""
         return sum(1 for result in results if self.add_tracewin_result(result))
 
-    # Legacy names kept for older scripts/tests.
-    def add(self, result: BeamSimulationResult) -> bool:
-        return self.add_tracewin_result(result)
-
-    def add_many(self, results: List[BeamSimulationResult]) -> int:
-        return self.add_many_tracewin_results(results)
-
     # ── Fine-tuning ───────────────────────────────────────────────────────────
 
     def update(self) -> Optional[dict]:
@@ -136,7 +121,7 @@ class SurrogateDatasetUpdater:
         if self.n_online_samples < self.min_samples:
             print(
                 f"[SurrogateDatasetUpdater] skip: {self.n_online_samples} "
-                f"< {self.min_samples} campioni online minimi"
+                f"< {self.min_samples} minimum online samples"
             )
             return None
 
@@ -191,7 +176,7 @@ class SurrogateDatasetUpdater:
         """Save only the newly collected online TraceWin samples."""
         save_path = Path(path) if path is not None else self.online_dataset_save_path
         if save_path is None:
-            raise ValueError("Specifica un path per save_online_dataset()")
+            raise ValueError("Provide a path for save_online_dataset()")
         self._online_dataset.save_flat(save_path)
         return len(self._online_dataset)
 
@@ -199,7 +184,7 @@ class SurrogateDatasetUpdater:
         """Save offline + online samples as one flat dataset."""
         save_path = Path(path) if path is not None else self.merged_dataset_save_path
         if save_path is None:
-            raise ValueError("Specifica un path per save_merged_dataset()")
+            raise ValueError("Provide a path for save_merged_dataset()")
 
         merged = self._online_dataset
         if self._offline_dataset is not None:
@@ -211,7 +196,7 @@ class SurrogateDatasetUpdater:
         """Save fine-tuned surrogate weights as surrogate_0.pt ... surrogate_N.pt."""
         save_dir = Path(model_dir) if model_dir is not None else self.model_dir
         if save_dir is None:
-            raise ValueError("Specifica model_dir nel costruttore o in save_surrogates()")
+            raise ValueError("Provide model_dir in the constructor or in save_surrogates()")
         save_dir.mkdir(parents=True, exist_ok=True)
 
         for i, surrogate in enumerate(self.surrogates):
@@ -224,16 +209,9 @@ class SurrogateDatasetUpdater:
                 },
             )
         print(
-            f"[SurrogateDatasetUpdater] salvati {len(self.surrogates)} "
-            f"surrogati fine-tunati in {save_dir}"
+            f"[SurrogateDatasetUpdater] saved {len(self.surrogates)} "
+            f"fine-tuned surrogates to {save_dir}"
         )
-
-    # Legacy names kept for older scripts/tests.
-    def export_flat(self, path: str | Path) -> int:
-        return self.save_online_dataset(path)
-
-    def save(self, model_dir: Optional[str | Path] = None) -> None:
-        self.save_surrogates(model_dir)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -272,7 +250,3 @@ class SurrogateDatasetUpdater:
         stage_t = [tensor.to(self.device) for tensor in stage]
         beam_all = [tensor.to(self.device) for tensor in beam]
         return stage_t, beam_all[0], beam_all[1:]
-
-
-# Legacy alias kept so older imports and scripts continue to work.
-SurrogateUpdater = SurrogateDatasetUpdater

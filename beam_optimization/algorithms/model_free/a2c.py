@@ -34,11 +34,9 @@ class A2C:
                  gamma: float = 0.99,
                  tau: float = 0.95,
                  entropy_loss_weight: float = 0.001,
-                 policy_max_grad_norm: float = 1.0,
-                 value_max_grad_norm: float = float("inf")):
+                 policy_max_grad_norm: float = 1.0):
         self.entropy_loss_weight  = entropy_loss_weight
         self.policy_max_grad_norm = policy_max_grad_norm
-        self.value_max_grad_norm  = value_max_grad_norm
 
         self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims)
         self.value_network  = ValueNetwork(obs_dim, hidden_dims)
@@ -64,18 +62,8 @@ class A2C:
         states, actions, returns, gaes, logpas = self.episode_buffer.get(last_value)
         gaes = (gaes - gaes.mean()) / (gaes.std() + 1e-8)
 
-        mean, log_std = self.policy_network.forward(states)
-        std  = log_std.exp()
-        dist = torch.distributions.Normal(mean, std)
-        action_min = self.policy_network.action_min
-        action_max = self.policy_network.action_max
-        normalized = (actions - action_min) / (action_max - action_min) * 2 - 1
-        normalized = normalized.clamp(-1 + 1e-6, 1 - 1e-6)
-        pre_tanh   = torch.atanh(normalized)
-        log_prob   = dist.log_prob(pre_tanh)
-        log_prob  -= torch.log((1 - normalized.pow(2)) + 1e-6)
-        log_prob   = log_prob.sum(dim=-1, keepdim=True)
-        entropy    = -log_prob
+        log_prob = self.policy_network.log_prob(states, actions)
+        entropy  = -log_prob
 
         policy_loss = -(gaes.unsqueeze(1) * log_prob).mean()
         actor_loss  = policy_loss - self.entropy_loss_weight * entropy.mean()
@@ -91,8 +79,6 @@ class A2C:
 
         self.value_optimizer.zero_grad()
         value_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            self.value_network.parameters(), self.value_max_grad_norm)
         self.value_optimizer.step()
 
         return value_loss.item(), policy_loss.item()

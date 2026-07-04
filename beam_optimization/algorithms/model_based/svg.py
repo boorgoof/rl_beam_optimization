@@ -6,31 +6,26 @@ Reference:
     Heess N. et al., "Learning Continuous Control Policies by Stochastic Value
     Gradients", NeurIPS 2015. https://arxiv.org/abs/1510.09142
 
-Key idea (SVG-H, full-episode backprop):
+Key idea (SVG(∞): full-horizon backprop through the model, no value function):
     Instead of learning a separate Q-function (as in SAC/TD3), we exploit the
     fact that the surrogate is differentiable and directly differentiate the
     cumulative reward w.r.t. the policy parameters:
 
         ∂J/∂θ = ∂/∂θ  Σ_t  score(surrogate(beam0, params_t))
 
-    The computational graph is:
-        θ_policy → action_t (rsample) → params_t → surrogate → beam_states_t → score_t
+    The computational graph is kept alive across the whole episode:
+        θ_policy → action_t → params_t → surrogate → obs_{t+1} → action_{t+1} → …
 
-    This collapses the need for a critic: the surrogate *is* the critic.
-
-Difference from GradientOptimizer (also in this repo):
-    GradientOptimizer optimizes the parameter vector directly for a fixed beam0.
-    SVGAgent optimizes a POLICY π(obs)→Δparams that generalizes across all
-    initial beam states sampled from the dataset — it learns *how to tune*,
-    not just *what the optimal tune is*.
+    so the gradient of each step's reward flows back through all previous
+    actions (backprop-through-time). No critic is needed: the surrogate *is*
+    the critic. With reward = score_t − score_{t−1} the sum telescopes, so the
+    objective is the final score reached from the initial state.
 
 Practical notes:
     - Uses reparameterization trick (rsample) for low-variance gradients.
     - Entropy bonus (like SAC) encourages exploration; α=0.0 disables it.
     - Gradient clipping is essential: unrolling through many surrogate steps
-      can produce large gradients.
-    - For stability, score at previous step is detached from the graph
-      (only the delta matters for the policy, and we avoid double-counting).
+      can produce large gradients (max_grad_norm).
 """
 from __future__ import annotations
 
@@ -65,11 +60,11 @@ class SVGResult:
 
 
 class SVGAgent:
-    """SVG-H variant.
+    """SVG(∞) variant (Heess et al. 2015): model-based, no value function.
 
     The policy π_θ(obs) → Δparams is trained end-to-end by backpropagating
-    the cumulative beam-quality reward through the differentiable surrogate.
-    No critic network is needed.
+    the cumulative beam-quality reward through the differentiable surrogate
+    over the full episode horizon. No critic network is needed.
 
     Args:
         surrogate:     Trained ModularMLP (weights frozen during policy training).
@@ -140,10 +135,8 @@ class SVGAgent:
         if len(bounds[0]) != self.act_dim or len(bounds[1]) != self.act_dim:
             raise ValueError("action_bounds must contain low/high vectors with length act_dim")
 
-        # The policy network outputs a Gaussian distribution over actions, which is reparameterized for low-variance gradients. 
+        # Reparameterized Gaussian policy (rsample) for low-variance gradients.
         self.policy = GaussianPolicyNetwork(self.obs_dim, bounds, hidden_dims).to(self.device)
-        self.policy.action_min = self.policy.action_min.to(self.device)
-        self.policy.action_max = self.policy.action_max.to(self.device)
 
         # optimizer for the policy network parameters
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
@@ -152,6 +145,12 @@ class SVGAgent:
         self.best_score = -float("inf")
         self.best_params = {str(k): float(v) for k, v in default_params.items()}
         self.train_steps = 0
+
+    def select_action(self, state, training: bool = True):
+        """Gym-style action selection so SVG plugs into the shared runners."""
+        if training:
+            return self.policy.select_action(state)
+        return self.policy.select_greedy_action(state)
 
     def optimize_episode(self, beam0: Optional[torch.Tensor] = None) -> SVGResult:
         """Train policy for one episode via SVG-H.
@@ -177,10 +176,8 @@ class SVGAgent:
         # lets gradients flow through the surrogate outputs to action -> policy.
         with self.env.frozen_surrogate_weights():
             for _ in range(self.n_step):
-
-                # policy chooses an action
-                action, logpa, _, _, _ = self.policy.full_pass(state.obs)
                 # action: (1, act_dim), physical delta applied to machine params.
+                action, logpa, _, _, _ = self.policy.full_pass(state.obs)
 
                 # Differentiable env step. The returned reward keeps the path:
                 # reward -> score -> surrogate -> params -> action -> policy.
@@ -192,11 +189,10 @@ class SVGAgent:
                 total_loss = total_loss - (reward - self.alpha * logpa)
                 score_history.append(float(next_state.score.detach()))
 
-                # detach the next state to avoid accumulating gradients through time.
-                # we only want to backpropagate through the current step's computation graph.
-                state = next_state.detach_for_next_step()
+                # SVG(∞): keep the graph alive across steps so each reward is
+                # backpropagated through the whole action sequence (BPTT).
+                state = next_state
 
-            # Backpropagate through all local surrogate transitions accumulated above.
             total_loss.backward()
             # Clip gradients to avoid exploding gradients due to long unrolls through the surrogate.
             grad_norm = torch.nn.utils.clip_grad_norm_(

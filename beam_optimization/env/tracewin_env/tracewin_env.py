@@ -1,7 +1,7 @@
 """
 TraceWinEnv provides REAL transitions (actual physics, ~30 s/step)
 
-Shares its reset/step scaffolding with SurrogateEnv via BaseBeamEnv (env/base_env.py).
+Shares its reset/step scaffolding with SurrogateEnv via BaseBeamEnv (env/base_beam_env.py).
 
 State / Observation:
     Beam states selected by OBSERVATION_STAGE_MASK in adige.py and flattened
@@ -30,6 +30,8 @@ Note: the input beam (stage 0) is fixed by the .ini project file.
 """
 from __future__ import annotations
 
+from beam_optimization.config.adige import MAX_STEPS
+from beam_optimization.config.paths import DEFAULT_TRACEWIN_ENV_CALC_DIR
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
 
@@ -49,8 +51,8 @@ class TraceWinEnv(BaseBeamEnv):
     def __init__(
         self,
         project_file: str,
-        calc_dir: str = "/tmp/tracewin_calc",
-        max_steps: int = 20,
+        calc_dir: str = str(DEFAULT_TRACEWIN_ENV_CALC_DIR),
+        max_steps: int = MAX_STEPS,
         timeout: float = 120.0,
         retries: int = 2,
     ):
@@ -73,32 +75,33 @@ class TraceWinEnv(BaseBeamEnv):
 
     def render(
         self,
-        mode: str = "human",
+        save_path: str | None = None,
+        fps: int = 2,
         render_beam_distribution: bool = False,
         max_particles: int = 40000,
         bins: int = 150,
         axis_range_mm: float = 50.0,
     ):
         """
-        The inherited render shows the same observation-feature bars used by SurrogateEnv.  
-        
+        The inherited render shows the same parameter/beam-feature episode
+        trends used by SurrogateEnv (see BaseBeamEnv.render()).
+
         TraceWin can additionally render the real final particle
         distribution written by TraceWin in ``calc/part_dtl1.dst``: ``x-y``, ``x-x'`` and ``y-y'``.
         """
 
-        # Call the base class render to show the observation-feature bars.
-        feature_fig = super().render(mode=mode)
-        
+        # Call the base class render for the parameter/beam-feature trends.
+        result = super().render(save_path=save_path, fps=fps)
+
         # If requested, render the final particle distribution in a second figure.
         if render_beam_distribution:
-            beam_distribution_fig = self.render_final_beam_distribution(
+            result["beam_distribution"] = self.render_final_beam_distribution(
                 max_particles=max_particles,
                 bins=bins,
                 axis_range_mm=axis_range_mm,
             )
-            return feature_fig, beam_distribution_fig
-        
-        return feature_fig
+
+        return result
 
     def render_final_beam_distribution(
         self,

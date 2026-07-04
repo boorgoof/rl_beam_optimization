@@ -116,8 +116,20 @@ class TraceWin:
             print(self.last_stdout, self.last_stderr)
             return False
 
+        if self._reports_internal_error(self.last_stdout, self.last_stderr):
+            self.last_run_success = False
+            print("TraceWin reported an internal error despite exit code 0")
+            print(self.last_stdout, self.last_stderr)
+            return False
+
         self.last_run_success = True
         return True
+
+    @staticmethod
+    def _reports_internal_error(stdout: str, stderr: str) -> bool:
+        """Return True when TraceWin reports a physics/internal failure in text output."""
+        text = f"{stdout}\n{stderr}".lower()
+        return "error:" in text or "transport failed" in text
 
     @staticmethod
     def _kill_process_group(proc: "subprocess.Popen", pgid: int) -> None:

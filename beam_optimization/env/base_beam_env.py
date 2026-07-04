@@ -8,6 +8,7 @@ in the backend simulator that produces the beam states and score for a given set
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Dict
 
 import numpy as np
@@ -15,15 +16,13 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from beam_optimization.config.adige import (
-    PARAM_KEYS, BEAM_STATE_DIM,
+    ERROR_SCORE, MAX_STEPS, PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
-    observation_dim, observation_stage_labels, select_observation_stages,
-    clip_params_to_hw,
+    observation_dim, observation_stage_labels, observation_stage_indices,
+    select_observation_stages, clip_params_to_hw,
 )
 
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
-
-ERROR_SCORE = -99.0
 
 
 class BaseBeamEnv(gym.Env, ABC):
@@ -40,7 +39,7 @@ class BaseBeamEnv(gym.Env, ABC):
     # -------------------------------------------------------------------------
     def __init__(
         self,
-        max_steps: int = 20,
+        max_steps: int = MAX_STEPS,
     ):
         super().__init__()
 
@@ -80,15 +79,29 @@ class BaseBeamEnv(gym.Env, ABC):
         self.best_score      = ERROR_SCORE
         self.best_params     = default_params()
 
+        # Per-episode history for render(): index 0 is the state right
+        # after reset(), index k is the state after the k-th step().
+        self._params_history: list[dict] = []
+        self._obs_history: list[np.ndarray] = []
+        self._score_history: list[float] = []
+        self._reward_history: list[float] = []
+
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._step_count = 0
 
         # Sample random initial params and perturb them with per-parameter reset stddevs.
+        # Tests against the real TraceWin backend can disable this through
+        # options={"randomize_params": False} to start from the nominal machine.
+        randomize_params = True
+        if options is not None and "randomize_params" in options:
+            randomize_params = bool(options["randomize_params"])
+
         params = default_params()
-        for key, std in zip(PARAM_KEYS, self._reset_std):
-            params[key] += float(self.np_random.normal(0.0, std))
+        if randomize_params:
+            for key, std in zip(PARAM_KEYS, self._reset_std):
+                params[key] += float(self.np_random.normal(0.0, std))
         params = clip_params_to_hw(params)
         self._current_params = params
 
@@ -106,7 +119,12 @@ class BaseBeamEnv(gym.Env, ABC):
         self._last_action   = None
         self._last_reward   = 0.0
 
-        info = {"score": score, "step": 0, **extra}
+        self._params_history = [dict(self._current_params)]
+        self._obs_history = [obs.copy()]
+        self._score_history = [float(score)]
+        self._reward_history = [0.0]
+
+        info = {"score": score, "step": 0, "reset_randomized": randomize_params, **extra}
         return obs.copy(), info
 
     def step(self, action: np.ndarray):
@@ -136,6 +154,11 @@ class BaseBeamEnv(gym.Env, ABC):
         self._last_action   = action.copy()
         self._last_reward   = float(reward)
 
+        self._params_history.append(dict(self._current_params))
+        self._obs_history.append(obs.copy())
+        self._score_history.append(float(score))
+        self._reward_history.append(float(reward))
+
         # update best score and best parameters if the current score is better than the best score so far.
         if score > self.best_score:
             self.best_score  = score
@@ -152,69 +175,238 @@ class BaseBeamEnv(gym.Env, ABC):
         return obs.copy(), reward, False, truncated, info
 
 
-    def render(self, mode: str = "human"):
-        """Render the current observation as graphical beam-feature bars ().
+    def render(self, save_path: str | Path | None = None, fps: int = 2) -> dict:
+        """Render how machine parameters, beam features, and score/reward
+        evolved over the whole episode so far (since the last reset()).
 
-        It visualizes a graphical representation of the current observation,
-        showing the before and after values of each beam feature (npart_ratio, x0, y0, SizeX, SizeY, ex, ey, x'0, y'0) for each stage, 
-        along with the delta compared to the previous observation. 
-        
-        The number of stages shown is determined by OBSERVATION_STAGE_MASK.  
-        
-        If called after ``step()``, the previous observation is shown as dashed reference segments; 
-        if called after ``reset()``, the reference is the current observation itself.
+        Draws one line panel per machine parameter, one line panel per
+        (feature, observed stage) combination, and one panel each for score
+        and reward, with every step recorded since the last reset(). A dashed
+        line marks the value right after reset() ("start"). The x-axis always
+        spans the full episode (0..max_steps) even if only some steps have
+        happened so far, so repeated snapshots of the same episode stay on a
+        comparable scale. Parameter panels are always blue (a parameter has
+        no inherent "good" direction). Beam-feature and score/reward panels
+        are colored per segment: each step-to-step move is green if that
+        stage's feature improved (or score/reward went up), red if it
+        worsened (see _feature_improved) — so a single line can show several
+        colors along its path, not one color for the whole episode.
+
+        Args:
+            save_path: if None (default), show the figures with all steps
+                already drawn, and return them. If given, instead save
+                step-by-step animations (one per figure) built frame by
+                frame, and return their paths too. A ".gif" path (or no
+                extension) is saved with Pillow; a ".mp4" path requires the
+                ffmpeg binary to be installed.
+            fps: animation frame rate, only used when save_path is given.
+
+        Returns:
+            {"params": Figure, "state": Figure, "score": Figure} normally,
+            plus {"params_video": Path, "state_video": Path,
+            "score_video": Path} when save_path is given.
         """
-        if mode != "human":
-            raise NotImplementedError(f"Only render(mode='human') is supported, got {mode!r}")
-
         import matplotlib.pyplot as plt
 
-        # Convert current and previous observations to DataFrames
-        # (rows = stages, columns = beam features)
-        current = self._obs_to_stage_frame(self._current_obs)
-    
-        previous_obs = self._previous_obs if self._previous_obs is not None else self._current_obs # If no previous obs exists (e.g. just after reset), use current as reference
-        previous = self._obs_to_stage_frame(previous_obs)
+        n_frames = len(self._obs_history)
+        steps = np.arange(n_frames)
+        animate = save_path is not None
+        n_init = 1 if animate else n_frames
 
-        # Build a flat list of dicts, one per (stage, feature) combination,
-        # storing before/after values, the delta, and the trend direction
-        rows = []
-        for row_idx, stage in enumerate(current["stage"]):
-            for feature in BEAM_STATE_FEATURES:
-                before = float(previous.loc[row_idx, feature])
-                after = float(current.loc[row_idx, feature])
-                rows.append(
-                    {
-                        "stage": stage,
-                        "feature": feature,
-                        "before": before,
-                        "after": after,
-                        "delta": after - before,
-                        "trend": self._feature_trend(feature, before, after),
-                    }
-                )
-
-        # Create a 3×3 grid of subplots, one panel per beam feature
-        fig, axes = plt.subplots(3, 3, figsize=(16, 10.2))
-        # Title bar with environment name, obs mode, step count, score, and last reward
-        fig.suptitle(
-            f"{type(self).__name__} render | observation_stages={observation_stage_labels()} | "
-            f"step={self._step_count} | score={self._current_score:.6g} | "
-            f"last reward={self._last_reward:.6g}",
-            fontsize=13,
+        # ── Parameters figure: one panel per machine parameter ──────────────
+        n_params = len(PARAM_KEYS)
+        ncols = 4
+        nrows = -(-n_params // ncols)  # ceil division
+        params_fig, params_axes = plt.subplots(
+            nrows, ncols, figsize=(4.2 * ncols, 3.0 * nrows), squeeze=False
         )
+        params_fig.suptitle("Parameter value trends over one full episode", fontweight="bold")
 
-        # Fill each subplot with the bar chart for its feature
-        for ax, feature in zip(axes.ravel(), BEAM_STATE_FEATURES):
-            feature_rows = [row for row in rows if row["feature"] == feature]
-            self._plot_render_feature_panel(ax, feature, feature_rows)
+        params_updaters: list = []
+        for ax, spec in zip(params_axes.ravel(), PARAMETERS):
+            values = [float(p[spec.key]) for p in self._params_history]
+            ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
+            line, = ax.plot(steps[:n_init], values[:n_init], color="tab:blue", marker="o", markersize=3)
+            params_updaters.append(self._line_updater(line, steps, values))
+            ax.set_xlim(0, self.max_steps)
+            ax.set_ylim(*self._series_ylim(values))
+            ax.set_title(spec.name, fontsize=9)
+            ax.set_xlabel("step", fontsize=8)
+            ax.set_ylabel("value", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=0.25)
+            ax.legend(fontsize=6, loc="upper left")
+        for ax in params_axes.ravel()[n_params:]:
+            ax.set_visible(False)
+        params_fig.tight_layout(rect=(0, 0, 1, 0.96))
 
-        plt.tight_layout()  # Prevent overlapping labels between subplots
-        plt.show()
-        return fig 
+        # ── Beam-feature figure: one panel per (feature, observed stage) ────
+        stage_titles = [f"stage {idx}" for idx in observation_stage_indices()]
+        n_stages = len(stage_titles)
+        stage_frames = [self._obs_to_stage_frame(obs) for obs in self._obs_history]
+
+        state_fig, state_axes = plt.subplots(
+            len(BEAM_STATE_FEATURES), n_stages,
+            figsize=(4.2 * n_stages, 2.6 * len(BEAM_STATE_FEATURES)),
+            squeeze=False,
+        )
+        state_fig.suptitle("Beam feature trends over one full episode", fontweight="bold")
+
+        state_updaters: list = []
+        for row, feature in enumerate(BEAM_STATE_FEATURES):
+            for col, stage in enumerate(stage_titles):
+                values = [float(df.loc[col, feature]) for df in stage_frames]
+
+                ax = state_axes[row, col]
+                ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
+                lc, points, segments = self._plot_colored_trend(ax, steps, values, n_init, feature=feature)
+                state_updaters.append(self._colored_trend_updater(lc, points, segments, steps, values))
+                ax.set_xlim(0, self.max_steps)
+                ax.set_ylim(*self._series_ylim(values))
+                if row == 0:
+                    ax.set_title(stage, fontsize=9)
+                if col == 0:
+                    ax.set_ylabel(feature, fontsize=9)
+                ax.set_xlabel("step", fontsize=8)
+                ax.tick_params(labelsize=7)
+                ax.grid(alpha=0.25)
+                ax.legend(fontsize=6, loc="upper left")
+        state_fig.tight_layout(rect=(0, 0, 1, 0.97))
+
+        # ── Score/reward figure: two panels, whole episode ──────────────────
+        score_fig, score_axes = plt.subplots(1, 2, figsize=(8.4, 3.2), squeeze=False)
+        score_fig.suptitle("Score and reward trends over one full episode", fontweight="bold")
+
+        score_updaters: list = []
+        for ax, key, values in zip(
+            score_axes.ravel(),
+            ("score", "reward"),
+            (self._score_history, self._reward_history),
+        ):
+            ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
+            lc, points, segments = self._plot_colored_trend(ax, steps, values, n_init, feature=None)
+            score_updaters.append(self._colored_trend_updater(lc, points, segments, steps, values))
+            ax.set_xlim(0, self.max_steps)
+            ax.set_ylim(*self._series_ylim(values))
+            ax.set_title(key, fontsize=10)
+            ax.set_xlabel("step", fontsize=8)
+            ax.set_ylabel("value", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=0.25)
+            ax.legend(fontsize=6, loc="upper left")
+        score_fig.tight_layout(rect=(0, 0, 1, 0.86))
+
+        if not animate:
+            plt.show()
+            return {"params": params_fig, "state": state_fig, "score": score_fig}
+
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        suffix = save_path.suffix or ".gif"
+        params_path = save_path.with_name(f"{save_path.stem}_params{suffix}")
+        state_path = save_path.with_name(f"{save_path.stem}_state{suffix}")
+        score_path = save_path.with_name(f"{save_path.stem}_score{suffix}")
+
+        self._save_trend_animation(params_fig, params_updaters, n_frames, params_path, fps)
+        self._save_trend_animation(state_fig, state_updaters, n_frames, state_path, fps)
+        self._save_trend_animation(score_fig, score_updaters, n_frames, score_path, fps)
+        plt.close(params_fig)
+        plt.close(state_fig)
+        plt.close(score_fig)
+
+        return {
+            "params": params_fig,
+            "state": state_fig,
+            "score": score_fig,
+            "params_video": params_path,
+            "state_video": state_path,
+            "score_video": score_path,
+        }
+
+    @classmethod
+    def _segment_colors(cls, values: list[float], feature: str | None = None) -> list[str]:
+        """Per-segment green/red/gray color for each consecutive pair in values.
+
+        Gray if the value did not change between the two steps. Otherwise,
+        if `feature` is given, reuses _feature_improved's "minimize
+        everything except npart_ratio" convention; otherwise (score/reward)
+        higher is always better.
+        """
+        colors = []
+        for before, after in zip(values[:-1], values[1:]):
+            if np.isclose(before, after):
+                colors.append("tab:gray")
+                continue
+            improved = (
+                cls._feature_improved(feature, before, after)
+                if feature is not None
+                else after >= before
+            )
+            colors.append("tab:green" if improved else "tab:red")
+        return colors
+
+    @classmethod
+    def _plot_colored_trend(cls, ax, steps: np.ndarray, values: list[float],
+                             n_init: int, feature: str | None = None):
+        """Draw a per-segment colored trend line (green/red per step-to-step
+        move) plus neutral markers on ax.
+
+        Returns (LineCollection, markers Line2D, full list of segments) so
+        the caller can later grow the line frame by frame for animation.
+        """
+        from matplotlib.collections import LineCollection
+
+        segments = [
+            [(steps[i], values[i]), (steps[i + 1], values[i + 1])]
+            for i in range(len(values) - 1)
+        ]
+        colors = cls._segment_colors(values, feature=feature)
+
+        n_segments_shown = max(0, n_init - 1)
+        lc = LineCollection(segments[:n_segments_shown], colors=colors, linewidths=2)
+        ax.add_collection(lc)
+        points, = ax.plot(
+            steps[:n_init], values[:n_init],
+            linestyle="None", marker="o", markersize=3, color="0.25",
+        )
+        return lc, points, segments
+
+    @staticmethod
+    def _line_updater(line, steps: np.ndarray, values: list[float]):
+        """Animation updater for a single-color Line2D (used by parameters)."""
+        def update(frame_idx: int) -> None:
+            line.set_data(steps[: frame_idx + 1], values[: frame_idx + 1])
+        return update
+
+    @staticmethod
+    def _colored_trend_updater(lc, points, segments: list, steps: np.ndarray, values: list[float]):
+        """Animation updater for a per-segment colored trend (state/score)."""
+        def update(frame_idx: int) -> None:
+            lc.set_segments(segments[:frame_idx])
+            points.set_data(steps[: frame_idx + 1], values[: frame_idx + 1])
+        return update
+
+    @staticmethod
+    def _save_trend_animation(fig, updaters: list, n_frames: int, path: Path, fps: int) -> None:
+        """Animate one render() trend figure step by step and save it."""
+        from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
+
+        def update(frame_idx):
+            for updater in updaters:
+                updater(frame_idx)
+            return []
+
+        anim = FuncAnimation(fig, update, frames=n_frames, interval=1000 / fps, blit=False)
+        writer = FFMpegWriter(fps=fps) if path.suffix.lower() == ".mp4" else PillowWriter(fps=fps)
+        try:
+            anim.save(str(path), writer=writer)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"Could not save {path}: the ffmpeg binary was not found on PATH. "
+                "Install ffmpeg, or save to a .gif path instead (uses Pillow)."
+            ) from exc
 
 
-    
     def evaluate_params(self, params: Dict[str, float]) -> float:
         """Evaluate a fixed parameter set without stepping the episode.
         Returns the final score of a specific simulation."""
@@ -267,111 +459,28 @@ class BaseBeamEnv(gym.Env, ABC):
     @staticmethod
     def _feature_improved(feature: str, before: float, after: float) -> bool:
         """Return True if the feature value improved from before to after, False otherwise.
-        We want npart_ratio to increase, SizeX/SizeY/ex/ey to decrease, and x0/y0/x'0/y'0 to move closer to zero.
+        Every feature is minimized (green when it goes down, red when it goes up),
+        except npart_ratio which is maximized (green when it goes up).
         """
         if feature == "npart_ratio":
             return round(float(after), 3) >= round(float(before), 3)
-        if feature in {"SizeX", "SizeY", "ex", "ey"}:
-            return after < before
-        if feature in {"x0", "y0", "x'0", "y'0"}:
-            return abs(after) < abs(before)
-        return after >= before
-
-    @classmethod
-    def _feature_trend(cls, feature: str, before: float, after: float) -> str:
-        """Return 'improved', 'worse', or 'same' based on the before and after values of a feature. """
-        
-        if feature == "npart_ratio":
-            return "improved" if cls._feature_improved(feature, before, after) else "worse"
-        if np.isclose(before, after):
-            return "same"
-        return "improved" if cls._feature_improved(feature, before, after) else "worse"
+        return after < before
 
     @staticmethod
-    def _feature_ylim(before_values, after_values) -> tuple[float, float]:
+    def _series_ylim(values) -> tuple[float, float]:
+        """Y-axis limits for a full-episode line trend.
+
+        Does not force zero into the range: a parameter or feature that
+        never crosses zero (e.g. always negative) should not have its axis
+        padded down to 0.
         """
-        Compute the y-axis limits (min, max) for a feature panel based on the before and after values of the feature.
-        It is used in _plot_render_feature_panel() to set the y-axis limits for each feature panel in the render() visualization.
-        """
-        values = np.asarray(list(before_values) + list(after_values), dtype=float)
+        values = np.asarray(values, dtype=float)
         values = values[np.isfinite(values)]
         if values.size == 0:
             return -1.0, 1.0
-        lo = min(0.0, float(np.nanmin(values)))
-        hi = max(0.0, float(np.nanmax(values)))
+        lo, hi = float(np.min(values)), float(np.max(values))
         if np.isclose(lo, hi):
             pad = max(abs(hi) * 0.1, 1e-6)
             return lo - pad, hi + pad
-        pad = 0.28 * (hi - lo)
+        pad = 0.12 * (hi - lo)
         return lo - pad, hi + pad
-
-    @classmethod
-    def _plot_render_feature_panel(cls, ax, feature: str, feature_rows: list[dict]) -> None:
-        """it is used in render() to plot a single feature panel, showing before/after values and delta for each stage."""
-        
-        stages = [str(row["stage"]) for row in feature_rows]
-        before = np.asarray([row["before"] for row in feature_rows], dtype=float)
-        after = np.asarray([row["after"] for row in feature_rows], dtype=float)
-        delta = np.asarray([row["delta"] for row in feature_rows], dtype=float)
-        colors = [
-            "tab:green" if row["trend"] == "improved"
-            else "tab:red" if row["trend"] == "worse"
-            else "tab:gray"
-            for row in feature_rows
-        ]
-
-        x = np.arange(len(stages))
-        width = 0.68 if len(stages) <= 3 else 0.78
-        ax.bar(x, after, width=width, color=colors, alpha=0.82)
-        ax.axhline(0, color="0.2", lw=0.8)
-        ax.hlines(
-            before,
-            x - width / 2,
-            x + width / 2,
-            color="0.15",
-            lw=1.6,
-            linestyle=(0, (5, 3)),
-            alpha=0.85,
-        )
-        ax.set_ylim(*cls._feature_ylim(before, after))
-        ax.set_xticks(x)
-        ax.set_xticklabels(stages, fontsize=7, rotation=90 if len(stages) > 4 else 0)
-        ax.set_title(feature, fontsize=10)
-        ax.grid(axis="y", alpha=0.24)
-        ax.tick_params(axis="y", labelsize=8)
-
-        y0, y1 = ax.get_ylim()
-        yrange = y1 - y0
-        top_pad = 0.035 * yrange
-        delta_y = y0 + 0.08 * yrange
-        for xi, before_i, after_i, delta_i, color_i in zip(x, before, after, delta, colors):
-            va = "bottom" if after_i >= 0 else "top"
-            ax.text(
-                xi,
-                after_i + (top_pad if after_i >= 0 else -top_pad),
-                f"{after_i:.3g}",
-                ha="center",
-                va=va,
-                fontsize=7 if len(stages) > 4 else 8,
-            )
-            if len(stages) <= 3:
-                ax.text(
-                    xi + width * 0.44,
-                    before_i,
-                    f"before {before_i:.3g}",
-                    ha="left",
-                    va="center",
-                    fontsize=7,
-                    color="0.2",
-                )
-            ax.text(
-                xi,
-                delta_y,
-                f"D {delta_i:+.2g}",
-                ha="center",
-                va="bottom",
-                fontsize=6 if len(stages) > 4 else 8,
-                color=color_i,
-                fontweight="bold",
-                rotation=90 if len(stages) > 4 else 0,
-            )

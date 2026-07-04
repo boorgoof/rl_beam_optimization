@@ -17,7 +17,7 @@ Uso tipico:
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 
@@ -42,13 +42,40 @@ def _check_sb3():
 class _BestScoreCallback(BaseCallback):
     """Traccia il best score dell'env durante il training SB3."""
 
-    def __init__(self, logger: Optional[Logger] = None, log_every: int = 10_000):
+    def __init__(
+        self,
+        logger: Optional[Logger] = None,
+        log_every: int = 10_000,
+        agent=None,
+        eval_every: int = 1000,
+        eval_episodes: int = 5,
+        eval_fn: Optional[Callable] = None,
+        eval_logger: Optional[Callable] = None,
+    ):
         super().__init__()
         self.best_score = -float("inf")
         self.metrics_logger = logger
         self.log_every = max(1, int(log_every))
+        self.agent = agent
+        self.eval_every = max(1, int(eval_every))
+        self.eval_episodes = max(1, int(eval_episodes))
+        self.eval_fn = eval_fn
+        self.eval_logger = eval_logger
+        self._last_eval_step = None
         self._episode_reward = 0.0
         self._episode_count = 0
+
+    def _run_eval(self, step: int) -> None:
+        if self.eval_fn is None or self.eval_logger is None or self.agent is None:
+            return
+        if self._last_eval_step == step:
+            return
+        metrics = self.eval_fn(self.agent, self.eval_episodes)
+        self.eval_logger(step, metrics)
+        self._last_eval_step = step
+
+    def _on_training_start(self) -> None:
+        self._run_eval(0)
 
     def _on_step(self) -> bool:
         # SB3 espone env info tramite self.locals
@@ -72,6 +99,8 @@ class _BestScoreCallback(BaseCallback):
         if len(dones) > 0 and bool(np.asarray(dones).reshape(-1)[0]):
             self._episode_count += 1
             self._episode_reward = 0.0
+        if self.num_timesteps % self.eval_every == 0:
+            self._run_eval(self.num_timesteps)
         return True
 
 
@@ -122,7 +151,11 @@ class SB3SAC:
 
     def train(self, env=None, n_steps: int = 200_000,
               log_every: int = 10_000,
-              logger: Optional[Logger] = None) -> float:
+              logger: Optional[Logger] = None,
+              eval_every: int = 1000,
+              eval_episodes: int = 5,
+              eval_fn: Optional[Callable] = None,
+              eval_logger: Optional[Callable] = None) -> float:
         """Esegue il training SB3 per n_steps step reali.
 
         Args:
@@ -137,7 +170,15 @@ class SB3SAC:
         if env is not None and env is not self._env:
             self._model.set_env(env)
 
-        cb = _BestScoreCallback(logger=logger, log_every=log_every)
+        cb = _BestScoreCallback(
+            logger=logger,
+            log_every=log_every,
+            agent=self,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_fn=eval_fn,
+            eval_logger=eval_logger,
+        )
         self._model.learn(
             total_timesteps=n_steps,
             callback=cb,
