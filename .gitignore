@@ -51,6 +51,14 @@ checkpoints/
 *.pth
 *.ckpt
 
+# Versioned baseline data/models
+!beam_optimization/env/dataset/base/dataset_base.pt
+!beam_optimization/env/surrogate_env/surrogate/trained_models/
+!beam_optimization/env/surrogate_env/surrogate/trained_models/base/
+!beam_optimization/env/surrogate_env/surrogate/trained_models/base/*.pt
+!beam_optimization/env/surrogate_env/surrogate/trained_models/updated/
+!beam_optimization/env/surrogate_env/surrogate/trained_models/updated/*.pt
+
 # Logs
 *.log
 *.csv
