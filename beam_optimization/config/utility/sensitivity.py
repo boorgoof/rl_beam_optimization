@@ -30,7 +30,7 @@ from typing import Dict, List, Optional
 from beam_optimization.config.adige import PARAMETERS, default_params
 
 
-TARGET_SCORE_CHANGE: float = 15.0
+TARGET_SCORE_CHANGE: float = 20.0
 
 
 def compute_sensitivity(

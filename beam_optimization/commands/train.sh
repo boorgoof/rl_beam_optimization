@@ -1,5 +1,7 @@
 #!/bin/bash
-# Train all model-free and model-based RL algorithms on SurrogateEnv.
+# Full thesis training run: all model-free and model-based RL algorithms on
+# SurrogateEnv, 3 seeds each, learning curves as mean±std across seeds.
+# Expected duration: several hours (11 algorithms × 3 seeds × 200k steps).
 # See: beam_optimization/scripts/train.py, README.md section 4 ("train").
 set -e
 
@@ -14,4 +16,8 @@ python -m beam_optimization train \
   --dataset beam_optimization/env/dataset/base/dataset_base.pt \
   --single-surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --base-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --output beam_optimization/runs/all
+  --output beam_optimization/runs/all \
+  --rl-steps 200000 \
+  --svg-episodes 1000 \
+  --seed 42 \
+  --n-seeds 3

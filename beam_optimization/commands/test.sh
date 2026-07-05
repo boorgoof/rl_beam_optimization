@@ -16,4 +16,5 @@ python -m beam_optimization test \
   --env surrogate \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --seed 42 \
   --render

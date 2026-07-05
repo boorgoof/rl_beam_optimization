@@ -87,6 +87,10 @@ class SurrogateBeamSimulator(BeamSimulator):
         self._initial_beam_states = dataset.get_initial_beam_states()
         self._episode_beam0 = np.zeros(BEAM_STATE_DIM, dtype=np.float32)
         self._active_model_index = 0
+        # Internal RNG used when the caller provides none (e.g. SVG's
+        # reset_torch). Derived from the global numpy seed so training runs
+        # are reproducible after set_global_seed().
+        self._rng = np.random.default_rng(int(np.random.randint(0, 2**31)))
         self.reset_context()
 
     @property
@@ -99,7 +103,7 @@ class SurrogateBeamSimulator(BeamSimulator):
         if len(self._ensemble) <= 1:
             return 0
         if rng is None:
-            rng = np.random.default_rng()
+            rng = self._rng
         return int(rng.integers(0, len(self._ensemble)))
 
     def set_active_model(self, index: int) -> None:
@@ -115,7 +119,7 @@ class SurrogateBeamSimulator(BeamSimulator):
         """Sample one real initial beam state from the dataset."""
         # Use the caller-provided RNG when available, so episodes can be reproducible.
         if rng is None:
-            rng = np.random.default_rng()
+            rng = self._rng
         n = self._initial_beam_states.shape[0]
         idx = int(rng.integers(0, n))
         return self._initial_beam_states[idx].numpy().astype(np.float32)
@@ -125,7 +129,7 @@ class SurrogateBeamSimulator(BeamSimulator):
 
     def reset_context(self, rng=None) -> None:
         if rng is None:
-            rng = np.random.default_rng()
+            rng = self._rng
         # set the initial beam and the model to use from the ensemble
         self.set_active_model(self.sample_model_index(rng))
         self.set_episode_beam0(self.sample_beam0(rng))

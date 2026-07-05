@@ -40,7 +40,7 @@ class ParameterSpec:
     key: str                     # TraceWin element key, e.g. "ele[2][5]=0.365663". The parameter to specificated is in marker 2 at position 5
     marker: int                  # lattice element index where this param is applied
     default: float               # physical default value
-    sensitivity: float           # Δparam per 15 score points — base physical scale
+    sensitivity: float           # Δparam per 20 score points — base physical scale
     hw_min: float | None = None  # hardware lower bound (from machine specs); None = unknown
     hw_max: float | None = None  # hardware upper bound (from machine specs); None = unknown
     action_scale_rl: float = 1.0 # per-parameter RL action scale, in sensitivity units
@@ -49,27 +49,24 @@ class ParameterSpec:
 
 # List of all tunable parameters in the ADIGE beam line, in order of appearance in the lattice.
 PARAMETERS: Tuple[ParameterSpec, ...] = (
- ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.365663, sensitivity=5.980825523552588e-04, hw_min=0.0, hw_max=1.5, action_scale_rl=4.837568678487386e+00, reset_scale=5.000000000000001e-01),
-    # AD.SO.02: NO STABLE PLATEAU — keep old value 4.350615777335317e-04
-    ParameterSpec("AD.SO.02", "ele[4][5]", marker=4, default=0.168963, sensitivity=4.350615777335317e-04, hw_min=0.0, hw_max=1.5, action_scale_rl=1.486214282224481e+01, reset_scale=4.999999999999906e-01),
-    ParameterSpec("AD.ST.04.X", "ele[10][1]", marker=10, default=0.0, sensitivity=1.884023027844582e-05, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=2.460332986888881e+06, reset_scale=5.000000020983005e-01),
+    # AD.SO.01: NO STABLE PLATEAU — keep old value 5.980825523552588e-04
+    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.365663, sensitivity=5.980825523552588e-04, hw_min=0.0, hw_max=1.5, action_scale_rl=4.837568678487386e+00, reset_scale=5.000000000000001e-01),
+    ParameterSpec("AD.SO.02", "ele[4][5]", marker=4, default=0.168963, sensitivity=4.152654195866172e-02, hw_min=0.0, hw_max=1.5, action_scale_rl=1.486214282224481e+01, reset_scale=4.999999999999906e-01),
+    ParameterSpec("AD.ST.04.X", "ele[10][1]", marker=10, default=0.0, sensitivity=3.581434809584721e-04, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=2.460332986888881e+06, reset_scale=5.000000020983005e-01),
+    # AD.ST.04.Y: NO STABLE PLATEAU — keep old value 4.993476706525125e-06
     ParameterSpec("AD.ST.04.Y", "ele[10][2]", marker=10, default=0.0, sensitivity=4.993476706525125e-06, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=4.142325893605957e+06, reset_scale=5.000000006315652e-01),
-    # AD.1EQ.01: NO STABLE PLATEAU — keep old value 2.239468491689368e+01
-    ParameterSpec("AD.1EQ.01", "ele[12][2]", marker=12, default=-145.835, sensitivity=2.239468491689368e+01, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=8.261739478094448e+00, reset_scale=5.000000000000053e-01),
-    ParameterSpec("AD.1EQ.02", "ele[16][2]", marker=16, default=-106.29, sensitivity=6.074273756406187e+00, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=2.379506336874284e+01, reset_scale=5.000000000000133e-01),
-    ParameterSpec("AD.D.02", "ele[18][5]", marker=18, default=-0.0461848, sensitivity=5.389288454887024e-07, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
-    ParameterSpec("AD.EM.6", "ele[21][6]", marker=24, default=-213.9, sensitivity=3.099807835730481e+00, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
-    # AD.EM.8: NO STABLE PLATEAU — keep old value 8.259334331806062e+01
-    ParameterSpec("AD.EM.8", "ele[22][6]", marker=24, default=-16.8, sensitivity=8.259334331806062e+01, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
-    # AD.EM.10: NO STABLE PLATEAU — keep old value 9.283778507845258e+01
-    ParameterSpec("AD.EM.10", "ele[23][6]", marker=24, default=-1.67, sensitivity=9.283778507845258e+01, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
-    ParameterSpec("AD.EM.12", "ele[24][6]", marker=24, default=-86.9, sensitivity=7.509926465051485e+02, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
-    ParameterSpec("AD.D.03", "ele[26][5]", marker=26, default=0.0461848, sensitivity=1.355515831815867e-06, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
-    ParameterSpec("AD.1EQ.03", "ele[30][2]", marker=30, default=-192.5536, sensitivity=1.024535998204059e+01, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=7.542729961994288e+00, reset_scale=5.000000000000028e-01),
+    ParameterSpec("AD.1EQ.01", "ele[12][2]", marker=12, default=-145.835, sensitivity=2.699532639835742e+03, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=8.261739478094448e+00, reset_scale=5.000000000000053e-01),
+    ParameterSpec("AD.1EQ.02", "ele[16][2]", marker=16, default=-106.29, sensitivity=1.494016488020322e+02, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=2.379506336874284e+01, reset_scale=5.000000000000133e-01),
+    ParameterSpec("AD.D.02", "ele[18][5]", marker=18, default=-0.0461848, sensitivity=1.788961025682464e-05, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
+    ParameterSpec("AD.EM.6", "ele[21][6]", marker=24, default=-213.9, sensitivity=8.443282378506103e+01, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
+    ParameterSpec("AD.EM.8", "ele[22][6]", marker=24, default=-16.8, sensitivity=2.907278396759959e+03, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
+    ParameterSpec("AD.EM.10", "ele[23][6]", marker=24, default=-1.67, sensitivity=2.677665743710252e+03, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
+    ParameterSpec("AD.EM.12", "ele[24][6]", marker=24, default=-86.9, sensitivity=1.447134459130258e+04, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
+    ParameterSpec("AD.D.03", "ele[26][5]", marker=26, default=0.0461848, sensitivity=1.161122549025513e-05, hw_min=None, hw_max=None, action_scale_rl=1.000000000000000e+00, reset_scale=5.000000000000000e-01),
+    ParameterSpec("AD.1EQ.03", "ele[30][2]", marker=30, default=-192.5536, sensitivity=1.865419445664892e+02, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=7.542729961994288e+00, reset_scale=5.000000000000028e-01),
     # AD.1EQ.04: NO STABLE PLATEAU — keep old value 1.598187376008477e+01
     ParameterSpec("AD.1EQ.04", "ele[35][2]", marker=35, default=0.0, sensitivity=1.598187376008477e+01, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=1.195786267896739e+01, reset_scale=5.000000000000090e-01),
-    # AD.ST.05.X: NO STABLE PLATEAU — keep old value 6.532795027279745e-04
-    ParameterSpec("AD.ST.05.X", "ele[38][1]", marker=38, default=0.0, sensitivity=6.532795027279745e-04, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=1.177490302479993e+05, reset_scale=4.999999999277465e-01),
+    ParameterSpec("AD.ST.05.X", "ele[38][1]", marker=38, default=0.0, sensitivity=3.456300275897177e-02, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=1.177490302479993e+05, reset_scale=4.999999999277465e-01),
     # AD.ST.05.Y: NO STABLE PLATEAU — keep old value 9.270255561071355e-06
     ParameterSpec("AD.ST.05.Y", "ele[38][2]", marker=38, default=0.0, sensitivity=9.270255561071355e-06, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=8.297837715589128e+06, reset_scale=5.000000025253357e-01),
 )

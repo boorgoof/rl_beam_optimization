@@ -16,9 +16,10 @@ fi
 
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/runs/sac_compare/sac/sac_agent.pt \
+  --policy beam_optimization/runs/all/sac/sac_agent.pt \
   --env tracewin \
   --max-ep-steps 5 \
+  --seed 42 \
   --deterministic-reset \
   --render \
   --episode-video \

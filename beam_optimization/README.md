@@ -16,7 +16,7 @@ stored in normal Git history.
 The RL action bounds and reset perturbations are defined per parameter in
 `beam_optimization/config/adige.py`. Each `ParameterSpec` contains:
 
-- `sensitivity`: physical parameter change for a 15-point score change;
+- `sensitivity`: physical parameter change for a 20-point score change;
 - `action_scale_rl`: RL step size in sensitivity units;
 - `reset_scale`: reset perturbation size in sensitivity units.
 
@@ -50,14 +50,20 @@ cd /path/to/rl_beam_optimization
 source beam_optimization/.venv/bin/activate
 ```
 
-Run the project check:
+After the Python environment is ready, follow the project onboarding flow:
 
-```bash
-python -m beam_optimization check
+```text
+1. Configure the local TraceWin workspace, binary and launcher.
+2. Run setup if the base dataset/surrogates are missing or must be regenerated.
+3. Run check to verify the full local installation.
+4. Train policies.
+5. Run benchmark for quantitative comparison.
+6. Run test for one qualitative rendered episode.
 ```
 
-This checks imports, dataset/surrogate loading when available, environments and
-main RL components. It does not run a real TraceWin simulation.
+`check` validates the prerequisites described below, including a real
+`TraceWinEnv` reset and step. It does not create datasets or surrogate models;
+if those artifacts are missing it prints the `setup` command to run.
 
 ## 2. Local Files Not Stored On GitHub
 
@@ -296,32 +302,26 @@ python -m beam_optimization <command> [options]
 Available commands:
 
 ```text
-check       quick project health check, no real TraceWin run
 setup       generate a new TraceWin dataset and train base surrogates
+check       procedural onboarding check, including real TraceWin reset+step
 train       train RL agents on SurrogateEnv, optionally with TraceWin MBPO
-test        run one trained policy for one qualitative episode
 benchmark   compare PSO, Bayesian optimization, SVG, and optional RL checkpoints
+test        run one trained policy for one qualitative episode
 ```
 
 Help is available at both levels:
 
 ```bash
 python -m beam_optimization --help
-python -m beam_optimization train --help
-python -m beam_optimization test --help
+python -m beam_optimization setup --help
+python -m beam_optimization check --help
 ```
 
-### `check`
+Recommended order:
 
-Use this after setup or after pulling changes:
-
-```bash
-python -m beam_optimization check
+```text
+setup -> check -> train -> benchmark -> test
 ```
-
-It checks imports, dataset/surrogate loading, `SurrogateEnv`, SVG, MBPO, updater
-logic, and TraceWin object construction. It does not launch a real TraceWin
-simulation. It takes no options besides `--help`.
 
 ### `setup`
 
@@ -378,6 +378,44 @@ Surrogate logs are written by default under:
 beam_optimization/runs/surrogate/
 ```
 
+### `check`
+
+Use this after configuring TraceWin and after `setup`, or after pulling changes:
+
+```bash
+python -m beam_optimization check
+```
+
+`check` is an onboarding diagnostic. It validates Python dependencies, project
+paths, the TraceWin workspace/binary/launcher described above, a real
+`TraceWinEnv` reset plus zero-action step, the base dataset, base surrogate
+checkpoints, `SurrogateEnv`, algorithms, and the online surrogate updater.
+
+If something fails, the output includes:
+
+```text
+Problem:
+Action:
+Path/Command:
+```
+
+For example, if `dataset_base.pt` or the base `surrogate_*.pt` files are
+missing, run:
+
+```bash
+python -m beam_optimization setup --target-samples 100 --n-surrogates 4
+```
+
+All options:
+
+```text
+--tracewin-calc-dir PATH   TraceWin calculation directory for the real check
+                           (default: /tmp/tracewin_check)
+--tracewin-timeout FLOAT   timeout in seconds for each TraceWin call
+                           (default: 120.0)
+--surrogate-steps N        random SurrogateEnv steps to run (default: 5)
+```
+
 ### `train`
 
 Quick smoke run:
@@ -386,15 +424,25 @@ Quick smoke run:
 python -m beam_optimization train --quick
 ```
 
-Typical full surrogate training run:
+Full thesis training run (identical to `commands/train.sh`): all algorithms,
+3 seeds each, learning curves as mean±std across seeds:
 
 ```bash
 python -m beam_optimization train \
   --dataset beam_optimization/env/dataset/base/dataset_base.pt \
   --single-surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --base-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --output beam_optimization/runs/all
+  --output beam_optimization/runs/all \
+  --rl-steps 200000 \
+  --svg-episodes 1000 \
+  --seed 42 \
+  --n-seeds 3
 ```
+
+With `--n-seeds N` each algorithm is trained N times (seeds `seed..seed+N-1`)
+under `runs/all/<algo>/seed_<s>/`; the aggregated mean±std learning curve and
+the best seed's checkpoint are promoted to `runs/all/<algo>/`, so the
+checkpoint paths used by `benchmark` and `test` do not change.
 
 During training, the current policy is periodically evaluated without updating
 network weights. By default this happens every 1000 environment steps with 5
@@ -459,6 +507,9 @@ All options:
 --rollout-length N        MBPO synthetic rollout length, 1=Dyna, >1=MBPO (default: 1)
 --max-ep-steps N          max steps per episode (default: 20)
 --hidden N [N ...]        hidden layer sizes for all networks (default: 256 256)
+--seed N                  base random seed (default: 42)
+--n-seeds N               independent runs per algorithm; curves become mean±std
+                          and the best seed's checkpoint is promoted (default: 1)
 --quick                   reduced budget for a fast smoke test
 --eval-every N            env steps between policy evaluations for learning curves
                           (default: 1000)
@@ -551,26 +602,43 @@ Use `benchmark` for numerical comparison on `SurrogateEnv`:
 python -m beam_optimization benchmark --quick
 ```
 
-Typical benchmark:
+Full benchmark (identical to `commands/benchmark.sh`): PSO/BO/SVG plus the
+final policy benchmark over all trained checkpoints:
 
 ```bash
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --dataset beam_optimization/env/dataset/base/dataset_base.pt \
-  --output beam_optimization/runs/benchmark.json \
+  --output beam_optimization/results/benchmark.json \
   --n-runs 3 \
   --eval-budget 3000 \
-  --svg-episodes 500
-```
-
-Optionally benchmark trained policies too:
-
-```bash
-python -m beam_optimization benchmark \
+  --svg-episodes 500 \
   --policy-episodes 50 \
   --sac beam_optimization/runs/all/sac/sac_agent.pt \
   --td3 beam_optimization/runs/all/td3/td3_agent.pt \
-  --ppo beam_optimization/runs/all/ppo/ppo_agent.pt
+  --ppo beam_optimization/runs/all/ppo/ppo_agent.pt \
+  --ddpg beam_optimization/runs/all/ddpg/ddpg_agent.pt \
+  --a2c beam_optimization/runs/all/a2c/a2c_agent.pt \
+  --reinforce beam_optimization/runs/all/reinforce/reinforce_agent.pt \
+  --trpo beam_optimization/runs/all/trpo/trpo_agent.pt \
+  --sb3-sac beam_optimization/runs/all/sb3_sac/sb3_sac_agent.zip \
+  --mbpo beam_optimization/runs/all/dyna/dyna_agent.pt \
+  --svg-finale beam_optimization/runs/all/svg_finale/svg_agent.pt \
+  --svg-uniform beam_optimization/runs/all/svg_uniform/svg_agent.pt
+```
+
+Real-physics validation of the best policies (identical to
+`commands/benchmark_tracewin.sh`, ~30 s per TraceWin step):
+
+```bash
+python -m beam_optimization benchmark \
+  --output beam_optimization/results/benchmark_tracewin.json \
+  --quick \
+  --tracewin \
+  --tracewin-episodes 5 \
+  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --mbpo beam_optimization/runs/all/dyna/dyna_agent.pt \
+  --svg-finale beam_optimization/runs/all/svg_finale/svg_agent.pt
 ```
 
 When checkpoint paths are provided, `benchmark` also runs a final policy
@@ -581,11 +649,17 @@ for each episode, then writes mean/std summaries plus bar and box plots:
 ```text
 benchmark_policy_episodes.csv
 benchmark_policy_summary.csv
-benchmark_policy_bars.png
+benchmark_policy_bars.png       # per-metric bars ± std, PSO/BO reference lines
 benchmark_policy_boxplots.png
+benchmark_convergence.png       # best score so far vs surrogate evaluations
+benchmark.png                   # final bar chart of the optimization methods
 ```
 
-The main JSON contains both `optimization_results` and `policy_evaluation`.
+With `--tracewin`, the same CSV/plot set is written again with a `_tracewin`
+suffix for the real-physics validation episodes.
+
+The main JSON contains `optimization_results`, `policy_evaluation` and
+`policy_evaluation_tracewin`.
 `test` is for inspecting one trained policy trajectory in detail.
 
 All options:
@@ -603,6 +677,9 @@ All options:
 --policy-episodes N  independent episodes per trained policy benchmark (default: 50)
 --max-ep-steps N     max steps per policy benchmark episode (default: 20)
 --policy-seed N      base seed for policy benchmark episodes (default: 42)
+--tracewin [INI]     also validate the passed checkpoints on the real TraceWin
+                     environment (default project .ini when no value is given)
+--tracewin-episodes N  episodes per policy in the TraceWin validation (default: 5)
 --hidden N [N ...]   hidden layer sizes used to load custom policy checkpoints
 --no-policy-plots    disable policy bar plot and boxplot generation
 --quick              reduced budget for a fast smoke test

@@ -48,7 +48,7 @@ from beam_optimization.config.paths import (
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
-from beam_optimization.scripts.common import evaluate_policy
+from beam_optimization.scripts.common import algo_style, evaluate_policy, set_global_seed
 from beam_optimization.config.adige import (
     MAX_STEPS,
     N_PARAMS,
@@ -59,6 +59,11 @@ from beam_optimization.config.adige import (
 )
 
 ACT_DIM = N_PARAMS  # 16
+
+# Fixed seed for periodic policy evaluations: every algorithm and every
+# training seed is evaluated on the same initial states, so learning curves
+# are reproducible and comparisons are paired.
+EVAL_SEED = 10_000
 # OBS_DIM is computed dynamically from the env observation mask.
 
 STAGE_WEIGHT_CONFIGS = {
@@ -271,14 +276,18 @@ def save_all_learning_curves_plot(curves: Dict[str, list[dict]], out_root: Path)
 
     fig, ax = plt.subplots(figsize=(8.4, 5.0))
     for name, rows in sorted(curves.items()):
-        steps = [row["step"] for row in rows]
-        scores = [row["eval_mean_score"] for row in rows]
-        ax.plot(steps, scores, marker="o", linewidth=1.8, label=name)
+        steps = np.asarray([row["step"] for row in rows], dtype=float)
+        scores = np.asarray([row["eval_mean_score"] for row in rows], dtype=float)
+        stds = np.asarray([row.get("eval_std_score", 0.0) for row in rows], dtype=float)
+        color, linestyle = algo_style(name)
+        ax.plot(steps, scores, color=color, linestyle=linestyle, linewidth=1.8, label=name)
+        if len(steps) > 1:
+            ax.fill_between(steps, scores - stds, scores + stds, color=color, alpha=0.12)
     ax.set_title("Learning curves")
     ax.set_xlabel("Environment steps")
-    ax.set_ylabel("Mean evaluation score")
+    ax.set_ylabel("Mean evaluation score (higher is better)")
     ax.grid(alpha=0.25)
-    ax.legend()
+    ax.legend(ncols=2, fontsize=9)
     fig.tight_layout()
 
     path = out_root / "learning_curves.png"
@@ -288,25 +297,129 @@ def save_all_learning_curves_plot(curves: Dict[str, list[dict]], out_root: Path)
     return path
 
 
+# ── Multi-seed orchestration ──────────────────────────────────────────────────
+
+def aggregate_seed_curves(per_seed_rows: list[list[dict]]) -> list[dict]:
+    """Aggregate per-seed learning curves into one mean±std curve.
+
+    Seeds share the same eval-step grid; steps present in every seed are kept.
+    The returned std is the across-seed std of the per-seed mean scores.
+    """
+    per_seed_rows = [rows for rows in per_seed_rows if rows]
+    if not per_seed_rows:
+        return []
+    common_steps = sorted(
+        set.intersection(*({row["step"] for row in rows} for rows in per_seed_rows))
+    )
+    by_step = [
+        {row["step"]: row for row in rows}
+        for rows in per_seed_rows
+    ]
+    aggregated = []
+    for step in common_steps:
+        scores = np.asarray([m[step]["eval_mean_score"] for m in by_step], dtype=float)
+        rewards = np.asarray([m[step]["eval_mean_reward"] for m in by_step], dtype=float)
+        bests = np.asarray([m[step]["eval_best_score"] for m in by_step], dtype=float)
+        aggregated.append({
+            "step": int(step),
+            "episode": int(max(m[step]["episode"] for m in by_step)),
+            "eval_mean_reward": float(rewards.mean()),
+            "eval_mean_score": float(scores.mean()),
+            "eval_std_score": float(scores.std()),
+            "eval_best_score": float(bests.max()),
+            "eval_episodes": int(by_step[0][step]["eval_episodes"]),
+        })
+    return aggregated
+
+
+def run_seeded(
+    label: str,
+    out_root: Path,
+    seeds: list[int],
+    checkpoint_files: list[str],
+    train_fn,
+    learning_curves: Optional[Dict[str, list[dict]]],
+) -> dict:
+    """Run train_fn once per seed, aggregate curves, promote the best checkpoint.
+
+    train_fn(seed, out_dir, curves) must train one agent, save its checkpoint(s)
+    in out_dir, fill `curves[<any key>]` with learning-curve rows, and return the
+    best training score. With one seed everything stays in out_root/label as
+    before; with N seeds each run lives in out_root/label/seed_<s> and the best
+    seed's checkpoint files are copied up to out_root/label/.
+    """
+    multi = len(seeds) > 1
+    per_seed_scores: list[float] = []
+    per_seed_curves: list[list[dict]] = []
+    selection_scores: list[float] = []
+
+    for s in seeds:
+        if multi:
+            print(f"\n--- {label} seed={s} ---")
+        out_dir = out_root / label / (f"seed_{s}" if multi else "")
+        curves: Dict[str, list[dict]] = {}
+        best = train_fn(seed=s, out_dir=out_dir, curves=curves)
+        rows = next(iter(curves.values()), [])
+        per_seed_scores.append(float(best))
+        per_seed_curves.append(rows)
+        # Select the best seed by final evaluation score (more robust than the
+        # best single training episode); fall back to the training best.
+        selection_scores.append(rows[-1]["eval_mean_score"] if rows else float(best))
+
+    aggregated = aggregate_seed_curves(per_seed_curves)
+    if learning_curves is not None and aggregated:
+        learning_curves[label] = aggregated
+
+    best_idx = int(np.argmax(selection_scores))
+    if multi:
+        # Aggregated curve + promoted checkpoint at the algo level, so the paths
+        # used by benchmark/test do not depend on the number of seeds.
+        recorder = LearningCurveRecorder(out_root / label, label)
+        recorder.rows = aggregated
+        if aggregated:
+            recorder.save_csv()
+            recorder.save_plot()
+        for fname in checkpoint_files:
+            src = out_root / label / f"seed_{seeds[best_idx]}" / fname
+            if src.exists():
+                shutil.copy2(src, out_root / label / fname)
+        print(f"  Best seed for {label}: {seeds[best_idx]} "
+              f"(final eval {selection_scores[best_idx]:.3f}) → promoted checkpoint")
+
+    return {
+        "best_score_mean": float(np.mean(per_seed_scores)),
+        "best_score_std": float(np.std(per_seed_scores)),
+        "best_seed": int(seeds[best_idx]),
+        "per_seed": {str(s): float(v) for s, v in zip(seeds, per_seed_scores)},
+    }
+
+
 # ── Training loops ────────────────────────────────────────────────────────────
 
 def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
              hidden, out_dir: Path,
+             seed: int = 42,
              enable_tensorboard: bool = True,
              eval_every: int = 1000,
              eval_episodes: int = 5,
              enable_learning_curve: bool = True,
              learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
     """Train one custom model-free algorithm on the surrogate environment."""
+    set_global_seed(seed)
     # Create env first so obs_dim is known before building the agent
     env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
     obs_dim = env.observation_space.shape[0]
 
     act_bds = action_bounds()
     bounds  = (act_bds[0].tolist(), act_bds[1].tolist())
-    agent   = make_agent(algo, obs_dim, ACT_DIM, bounds, hidden_dims=hidden)
+    agent_kwargs = {}
+    if not is_on_policy(algo):
+        # Scale the replay warmup with the budget so short (--quick) runs
+        # still perform gradient updates; full runs keep the default 1000.
+        agent_kwargs["warmup_steps"] = min(1000, max(1, n_steps // 4))
+    agent = make_agent(algo, obs_dim, ACT_DIM, bounds, hidden_dims=hidden, **agent_kwargs)
 
-    obs, _     = env.reset()
+    obs, _     = env.reset(seed=seed)
     best_score = -np.inf
     ep_reward  = 0.0
     ep_count   = 0
@@ -323,7 +436,7 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
 
     try:
         if recorder is not None:
-            metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -390,7 +503,7 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
                 ep_reward = 0.0
 
             if recorder is not None and step % max(1, eval_every) == 0:
-                metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+                metrics = evaluate_policy(agent, make_eval_env, eval_episodes, seed=EVAL_SEED)
                 log_learning_curve_eval(
                     recorder=recorder,
                     logger=logger,
@@ -400,7 +513,7 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
                 )
 
         if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != n_steps):
-            metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -422,6 +535,7 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
 
 def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
                   hidden, out_dir: Path,
+                  seed: int = 42,
                   enable_tensorboard: bool = True,
                   eval_every: int = 1000,
                   eval_episodes: int = 5,
@@ -430,6 +544,7 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
     """Train Stable Baselines 3 SAC on the surrogate environment (sanity baseline)."""
     from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
 
+    set_global_seed(seed)
     env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
 
     logger = _make_logger(out_dir, "sb3_sac", enable_tensorboard)
@@ -442,6 +557,7 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
     agent = SB3SAC(
         env,
         hidden_dims=tuple(hidden),
+        seed=seed,
         tensorboard_log=str(out_dir) if enable_tensorboard else None,
     )
     try:
@@ -452,7 +568,7 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
             logger=logger,
             eval_every=eval_every,
             eval_episodes=eval_episodes,
-            eval_fn=(lambda current_agent, n: evaluate_policy(current_agent, make_eval_env, n))
+            eval_fn=(lambda current_agent, n: evaluate_policy(current_agent, make_eval_env, n, seed=EVAL_SEED))
             if recorder is not None
             else None,
             eval_logger=(
@@ -468,7 +584,7 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
             else None,
         )
         if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != n_steps):
-            metrics = evaluate_policy(agent, make_eval_env, eval_episodes)
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -490,6 +606,7 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
 
 def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
               stage_weights, out_dir: Path,
+              seed: int = 42,
               enable_tensorboard: bool = True,
               eval_every: int = 1000,
               eval_episodes: int = 5,
@@ -498,6 +615,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
               curve_label: str = "svg") -> float:
     from beam_optimization.algorithms.model_based.svg import SVGAgent
 
+    set_global_seed(seed)
     agent = SVGAgent(
         surrogate=surrogate,
         dataset=dataset,
@@ -523,7 +641,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
 
     try:
         if recorder is not None:
-            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes)
+            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -551,7 +669,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
                       f"score={result.final_score:.3f}  best={best_score:.3f}")
             if recorder is not None and ep % eval_every_episodes == 0:
                 step = ep * horizon
-                metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes)
+                metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes, seed=EVAL_SEED)
                 log_learning_curve_eval(
                     recorder=recorder,
                     logger=logger,
@@ -562,7 +680,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
 
         final_step = n_episodes * horizon
         if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != final_step):
-            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes)
+            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -584,6 +702,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
 
 def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                rollout_length, hidden, out_dir: Path,
+               seed: int = 42,
                tracewin_project: Optional[str] = None,
                online_finetune: bool = False,
                online_mix_ratio: float = 0.5,
@@ -618,6 +737,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
     """
     from beam_optimization.algorithms.model_free.sac import SAC
 
+    set_global_seed(seed)
     use_model_update = online_finetune and bool(tracewin_project)
 
     if use_model_update:
@@ -642,7 +762,9 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
     obs_dim = env.observation_space.shape[0]
     act_bds = action_bounds()
     bounds  = (act_bds[0].tolist(), act_bds[1].tolist())
-    inner   = SAC(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden))
+    # Scale warmup/thresholds with the budget so short (--quick) runs still train.
+    warmup = min(1000, max(1, n_steps // 4))
+    inner  = SAC(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden), warmup_steps=warmup)
 
     mbpo_kwargs = dict(
         agent=inner,
@@ -651,6 +773,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         obs_dim=obs_dim,
         act_dim=ACT_DIM,
         rollout_length=rollout_length,
+        min_real_samples=min(256, max(1, n_steps // 4)),
     )
     if use_model_update:
         mbpo_kwargs["online_mix_ratio"] = online_mix_ratio
@@ -679,8 +802,10 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             surrogate_save_dir = out_dir / "updated"
         mbpo_kwargs["surrogate_save_dir"] = surrogate_save_dir
     mbpo = MBPOClass(**mbpo_kwargs)
+    # Seed the synthetic-rollout env once; later resets reuse this generator.
+    mbpo.synthetic_env.reset(seed=seed)
 
-    obs, _     = env.reset()
+    obs, _     = env.reset(seed=seed)
     best_score = -np.inf
     ep_reward  = 0.0
     ep_count   = 0
@@ -700,7 +825,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
 
     try:
         if recorder is not None:
-            metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes)
+            metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -766,7 +891,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                 ep_reward = 0.0
 
             if recorder is not None and step % max(1, eval_every) == 0:
-                metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes)
+                metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes, seed=EVAL_SEED)
                 log_learning_curve_eval(
                     recorder=recorder,
                     logger=logger,
@@ -776,7 +901,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                 )
 
         if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != n_steps):
-            metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes)
+            metrics = evaluate_policy(mbpo, make_eval_env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -804,14 +929,15 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
 
 # ── Final summary ─────────────────────────────────────────────────────────────
 
-def print_summary(scores: Dict[str, float]):
-    print(f"\n{'='*50}")
+def print_summary(scores: Dict[str, dict]):
+    print(f"\n{'='*60}")
     print("TRAINING SUMMARY")
-    print(f"{'Algorithm':<35}  {'Best Score':>10}")
-    print("-" * 50)
-    for name, sc in sorted(scores.items()):
-        print(f"{name:<35}  {sc:>10.3f}")
-    print(f"{'='*50}")
+    print(f"{'Algorithm':<25}  {'Best score (mean±std over seeds)':>32}")
+    print("-" * 60)
+    for name, entry in sorted(scores.items()):
+        print(f"{name:<25}  {entry['best_score_mean']:>15.3f} ± {entry['best_score_std']:<8.3f}"
+              f" (seed {entry['best_seed']})")
+    print(f"{'='*60}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -843,6 +969,14 @@ def main():
                         help="MBPO synthetic rollout length (1=Dyna, >1=MBPO)")
     parser.add_argument("--max-ep-steps",   type=int, default=MAX_STEPS)
     parser.add_argument("--hidden",         type=int, nargs="+", default=[256, 256])
+    parser.add_argument("--seed",           type=int, default=42,
+                        help="Base random seed. With --n-seeds N, seeds are "
+                             "seed, seed+1, ..., seed+N-1. Default: 42.")
+    parser.add_argument("--n-seeds",        type=int, default=1,
+                        help="Independent training runs per algorithm; learning "
+                             "curves become mean±std across seeds and the best "
+                             "seed's checkpoint is promoted. Default: 1 "
+                             "(thesis runs use 3).")
     parser.add_argument("--quick",          action="store_true",
                         help="Reduced budget for a quick smoke test")
     parser.add_argument("--eval-every",     type=int, default=1000,
@@ -923,62 +1057,73 @@ def main():
     scores: Dict[str, float] = {}
     learning_curves: Dict[str, list[dict]] = {}
 
+    seeds = [args.seed + i for i in range(max(1, args.n_seeds))]
+    common_kwargs = dict(
+        enable_tensorboard=enable_tensorboard,
+        eval_every=args.eval_every,
+        eval_episodes=args.eval_episodes,
+        enable_learning_curve=enable_learning_curve,
+    )
+
     # ── Model-free RL ─────────────────────────────────────────────────────────
     for algo in MODEL_FREE_ALGORITHMS:
         if algo in skip:
             print(f"\n[SKIP] {algo.upper()}")
             continue
-        print(f"\n{'='*50}\nTraining {algo.upper()}  ({args.rl_steps} steps)\n{'='*50}")
-        scores[algo] = train_rl(
-            algo, single_surrogate, dataset, args.rl_steps,
-            args.max_ep_steps, args.hidden,
-            out_root / algo,
-            enable_tensorboard=enable_tensorboard,
-            eval_every=args.eval_every,
-            eval_episodes=args.eval_episodes,
-            enable_learning_curve=enable_learning_curve,
-            learning_curves=learning_curves,
+        print(f"\n{'='*50}\nTraining {algo.upper()}  ({args.rl_steps} steps × {len(seeds)} seed)\n{'='*50}")
+        scores[algo] = run_seeded(
+            algo, out_root, seeds, [f"{algo}_agent.pt"],
+            lambda seed, out_dir, curves, algo=algo: train_rl(
+                algo, single_surrogate, dataset, args.rl_steps,
+                args.max_ep_steps, args.hidden, out_dir,
+                seed=seed, learning_curves=curves, **common_kwargs,
+            ),
+            learning_curves,
         )
 
     # ── SB3-SAC ───────────────────────────────────────────────────────────────
     if "sb3_sac" not in skip:
-        print(f"\n{'='*50}\nTraining SB3-SAC  ({args.rl_steps} steps)\n{'='*50}")
-        scores["sb3_sac"] = train_sb3_sac(
-            single_surrogate, dataset, args.rl_steps,
-            args.max_ep_steps, args.hidden,
-            out_root / "sb3_sac",
-            enable_tensorboard=enable_tensorboard,
-            eval_every=args.eval_every,
-            eval_episodes=args.eval_episodes,
-            enable_learning_curve=enable_learning_curve,
-            learning_curves=learning_curves,
+        print(f"\n{'='*50}\nTraining SB3-SAC  ({args.rl_steps} steps × {len(seeds)} seed)\n{'='*50}")
+        scores["sb3_sac"] = run_seeded(
+            "sb3_sac", out_root, seeds, ["sb3_sac_agent.zip"],
+            lambda seed, out_dir, curves: train_sb3_sac(
+                single_surrogate, dataset, args.rl_steps,
+                args.max_ep_steps, args.hidden, out_dir,
+                seed=seed, learning_curves=curves, **common_kwargs,
+            ),
+            learning_curves,
         )
 
     # ── MBPO ──────────────────────────────────────────────────────────────────
     if "dyna" not in skip:
-        tw_label  = "TraceWin" if args.tracewin else "surrogato"
+        tw_label  = "TraceWin" if args.tracewin else "surrogate"
         use_mu    = args.online_finetune and bool(args.tracewin)
         alg_label = "MBPOWithModelUpdate" if use_mu else "MBPO"
-        print(f"\n{'='*50}\nTraining {alg_label} [{tw_label}]  ({args.rl_steps} steps, "
-              f"rollout={args.rollout_length})\n{'='*50}")
+        dyna_seeds = seeds
+        if args.tracewin and len(seeds) > 1:
+            print("WARNING: --tracewin active — MBPO runs with a single seed "
+                  "(multi-seed on real physics is prohibitively slow).")
+            dyna_seeds = seeds[:1]
+        print(f"\n{'='*50}\nTraining {alg_label} [{tw_label}]  ({args.rl_steps} steps × "
+              f"{len(dyna_seeds)} seed, rollout={args.rollout_length})\n{'='*50}")
         dyna_surrogate = updated_ensemble if use_mu else base_ensemble
         dyna_surrogate_path = updated_ensemble_path if use_mu else base_ensemble_path
-        scores["mbpo"] = train_dyna(
-            dyna_surrogate, dataset, args.rl_steps,
-            args.max_ep_steps, args.rollout_length, args.hidden,
-            out_root / "dyna",
-            tracewin_project=args.tracewin,
-            online_finetune=args.online_finetune,
-            online_mix_ratio=args.online_mix_ratio,
-            update_dataset_path=args.update_dataset,
-            surrogate_path=dyna_surrogate_path,
-            dataset_path=Path(args.dataset),
-            update_surrogates_path=str(updated_ensemble_path) if use_mu else None,
-            enable_tensorboard=enable_tensorboard,
-            eval_every=args.eval_every,
-            eval_episodes=args.eval_episodes,
-            enable_learning_curve=enable_learning_curve,
-            learning_curves=learning_curves,
+        scores["mbpo"] = run_seeded(
+            "dyna", out_root, dyna_seeds, ["dyna_agent.pt"],
+            lambda seed, out_dir, curves: train_dyna(
+                dyna_surrogate, dataset, args.rl_steps,
+                args.max_ep_steps, args.rollout_length, args.hidden, out_dir,
+                seed=seed,
+                tracewin_project=args.tracewin,
+                online_finetune=args.online_finetune,
+                online_mix_ratio=args.online_mix_ratio,
+                update_dataset_path=args.update_dataset,
+                surrogate_path=dyna_surrogate_path,
+                dataset_path=Path(args.dataset),
+                update_surrogates_path=str(updated_ensemble_path) if use_mu else None,
+                learning_curves=curves, **common_kwargs,
+            ),
+            learning_curves,
         )
 
     # ── SVGAgent ─────────────────────────────────────────────────────────────
@@ -987,17 +1132,15 @@ def main():
         if label in skip or "svg" in skip:
             print(f"\n[SKIP] {label}")
             continue
-        print(f"\n{'='*50}\nTraining SVGAgent [{name}]  ({args.svg_episodes} episodes)\n{'='*50}")
-        scores[label] = train_svg(
-            base_ensemble, dataset, args.svg_episodes, args.svg_horizon,
-            args.hidden, weights,
-            out_root / label,
-            enable_tensorboard=enable_tensorboard,
-            eval_every=args.eval_every,
-            eval_episodes=args.eval_episodes,
-            enable_learning_curve=enable_learning_curve,
-            learning_curves=learning_curves,
-            curve_label=label,
+        print(f"\n{'='*50}\nTraining SVGAgent [{name}]  ({args.svg_episodes} episodes × {len(seeds)} seed)\n{'='*50}")
+        scores[label] = run_seeded(
+            label, out_root, seeds, ["svg_agent.pt"],
+            lambda seed, out_dir, curves, weights=weights, label=label: train_svg(
+                base_ensemble, dataset, args.svg_episodes, args.svg_horizon,
+                args.hidden, weights, out_dir,
+                seed=seed, learning_curves=curves, curve_label=label, **common_kwargs,
+            ),
+            learning_curves,
         )
 
     print_summary(scores)

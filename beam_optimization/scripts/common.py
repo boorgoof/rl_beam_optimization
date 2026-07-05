@@ -1,11 +1,55 @@
 """Shared episode/evaluation helpers for the CLI scripts (train/test/benchmark)."""
 from __future__ import annotations
 
+import random
 from typing import Callable, Optional
 
 import numpy as np
+import torch
 
 from beam_optimization.config.adige import BEAM_STATE_FEATURES
+
+
+def set_global_seed(seed: int) -> None:
+    """Seed python, numpy and torch for a reproducible training run."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+# Fixed entity → (color, linestyle) mapping used by ALL figures (learning
+# curves, convergence, policy benchmark), so an algorithm keeps the same
+# visual identity everywhere. Colorblind-validated 8-hue palette; algorithm
+# families share a hue and differ by linestyle (composite encoding).
+ALGO_STYLES: dict[str, tuple[str, str]] = {
+    # SAC family (blue)
+    "sac":          ("#2a78d6", "-"),
+    "sb3_sac":      ("#2a78d6", "--"),
+    # deterministic actor-critic family (aqua)
+    "td3":          ("#1baf7a", "-"),
+    "ddpg":         ("#1baf7a", "--"),
+    # trust-region family (yellow)
+    "ppo":          ("#eda100", "-"),
+    "trpo":         ("#eda100", "--"),
+    # vanilla policy-gradient family (orange)
+    "a2c":          ("#eb6834", "-"),
+    "reinforce":    ("#eb6834", "--"),
+    # model-based (green / violet); "dyna" is the training/run-dir label of MBPO
+    "mbpo":         ("#008300", "-"),
+    "dyna":         ("#008300", "-"),
+    "svg_finale":   ("#4a3aa7", "-"),
+    "svg_uniform":  ("#4a3aa7", "--"),
+    # optimization baselines (red / magenta)
+    "bayesian_opt": ("#e34948", "-"),
+    "pso":          ("#e87ba4", "-"),
+}
+
+
+def algo_style(name: str) -> tuple[str, str]:
+    """Return the fixed (color, linestyle) for an algorithm/method name."""
+    return ALGO_STYLES.get(name, ("#898781", "-"))  # muted gray fallback
 
 
 def select_eval_action(agent, obs):
@@ -80,14 +124,20 @@ def run_episode(
     }
 
 
-def evaluate_policy(agent, make_env: Callable[[], object], n_episodes: int) -> dict[str, float]:
-    """Aggregate greedy-episode statistics (used for learning curves and benchmarks)."""
+def evaluate_policy(agent, make_env: Callable[[], object], n_episodes: int,
+                    seed: Optional[int] = None) -> dict[str, float]:
+    """Aggregate greedy-episode statistics (used for learning curves and benchmarks).
+
+    With a seed, episode i is reset with seed+i: every evaluation (and every
+    algorithm) sees the same initial states, making curves reproducible and
+    comparisons paired.
+    """
     env = make_env()
     rewards: list[float] = []
     scores: list[float] = []
     try:
-        for _ in range(n_episodes):
-            result = run_episode(env, agent)
+        for i in range(n_episodes):
+            result = run_episode(env, agent, seed=None if seed is None else seed + i)
             rewards.append(result["total_reward"])
             scores.append(result["final_score"])
     finally:

@@ -1,5 +1,7 @@
 #!/bin/bash
-# Compare PSO, Bayesian optimization, SVG, and optional RL checkpoints on the surrogate.
+# Full benchmark on the surrogate: PSO + Bayesian optimization + SVG training
+# runs, then the final policy benchmark over all trained checkpoints
+# (50 independent episodes each). Requires a completed train.sh run.
 # See: beam_optimization/scripts/benchmark.py, README.md section 4 ("benchmark").
 set -e
 
@@ -13,7 +15,19 @@ fi
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --dataset beam_optimization/env/dataset/base/dataset_base.pt \
-  --output beam_optimization/runs/benchmark.json \
+  --output beam_optimization/results/benchmark.json \
   --n-runs 3 \
   --eval-budget 3000 \
-  --svg-episodes 500
+  --svg-episodes 500 \
+  --policy-episodes 50 \
+  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --td3 beam_optimization/runs/all/td3/td3_agent.pt \
+  --ppo beam_optimization/runs/all/ppo/ppo_agent.pt \
+  --ddpg beam_optimization/runs/all/ddpg/ddpg_agent.pt \
+  --a2c beam_optimization/runs/all/a2c/a2c_agent.pt \
+  --reinforce beam_optimization/runs/all/reinforce/reinforce_agent.pt \
+  --trpo beam_optimization/runs/all/trpo/trpo_agent.pt \
+  --sb3-sac beam_optimization/runs/all/sb3_sac/sb3_sac_agent.zip \
+  --mbpo beam_optimization/runs/all/dyna/dyna_agent.pt \
+  --svg-finale beam_optimization/runs/all/svg_finale/svg_agent.pt \
+  --svg-uniform beam_optimization/runs/all/svg_uniform/svg_agent.pt

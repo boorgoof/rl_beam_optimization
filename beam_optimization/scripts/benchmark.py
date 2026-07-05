@@ -36,7 +36,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Callable, Dict, Optional
 
 import numpy as np
 import torch
@@ -46,12 +46,13 @@ from beam_optimization.config.paths import (
     DEFAULT_BASE_DATASET,
     DEFAULT_BENCHMARK_OUTPUT,
     DEFAULT_SINGLE_SURROGATE_MODEL,
+    DEFAULT_TRACEWIN_INI,
     configure_matplotlib_cache,
 )
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
-from beam_optimization.scripts.common import run_episode
+from beam_optimization.scripts.common import algo_style, run_episode
 from beam_optimization.config.adige import (
     MAX_STEPS,
     N_PARAMS,
@@ -150,8 +151,13 @@ def run_svg(surrogate, dataset, n_episodes, horizon, seed, stage_weights) -> Dic
 
 # ── Final policy benchmark ────────────────────────────────────────────────────
 
-def make_policy_agent(algo: str, ckpt_path: str, env, hidden: list[int]):
-    """Instantiate and load a trained policy for deterministic evaluation."""
+def make_policy_agent(algo: str, ckpt_path: str, env, hidden: list[int],
+                      surrogate=None, dataset=None):
+    """Instantiate and load a trained policy for deterministic evaluation.
+
+    surrogate/dataset are needed only to rebuild SVG agents (their policy is
+    env-independent at evaluation time, so they can also be scored on TraceWin).
+    """
     bounds = ACTION_BOUNDS
     obs_dim = env.observation_space.shape[0]
 
@@ -162,8 +168,8 @@ def make_policy_agent(algo: str, ckpt_path: str, env, hidden: list[int]):
         from beam_optimization.algorithms.model_based.svg import SVGAgent
         stage_weights = STAGE_WEIGHT_CONFIGS["uniform" if algo == "svg_uniform" else "finale"]
         agent = SVGAgent(
-            surrogate=env.simulator.model,
-            dataset=env.simulator.dataset,
+            surrogate=surrogate,
+            dataset=dataset,
             obs_dim=obs_dim,
             act_dim=ACT_DIM,
             action_bounds=bounds,
@@ -234,10 +240,11 @@ def print_policy_table(summary: dict[str, dict]) -> None:
     print(f"{'='*112}")
 
 
-def write_policy_csvs(episodes: list[dict], summary: dict[str, dict], output_json: str | Path) -> tuple[Path, Path]:
+def write_policy_csvs(episodes: list[dict], summary: dict[str, dict], output_json: str | Path,
+                      tag: str = "") -> tuple[Path, Path]:
     out_dir = Path(output_json).parent
-    episodes_path = out_dir / "benchmark_policy_episodes.csv"
-    summary_path = out_dir / "benchmark_policy_summary.csv"
+    episodes_path = out_dir / f"benchmark_policy_episodes{tag}.csv"
+    summary_path = out_dir / f"benchmark_policy_summary{tag}.csv"
 
     episode_fields = [
         "algorithm",
@@ -276,57 +283,101 @@ def write_policy_csvs(episodes: list[dict], summary: dict[str, dict], output_jso
     return episodes_path, summary_path
 
 
-def save_policy_plots(episodes: list[dict], summary: dict[str, dict], output_json: str | Path) -> tuple[Path, Path]:
+# Panels of the policy benchmark figures: (metric key, title, y-label).
+POLICY_PANELS = [
+    ("final_score", "Final score", "score (higher is better)"),
+    ("final_emittance", "Final emittance", "(ex + ey) / 2 (lower is better)"),
+    ("final_npart_ratio", "Final particle ratio", "npart ratio (higher is better)"),
+    ("total_reward", "Score improvement", "Σ reward = final − initial score"),
+]
+
+
+def _optimization_best(results: Optional[dict], method: str) -> Optional[float]:
+    """Mean best score across runs for one optimization method, if present."""
+    runs = (results or {}).get(method)
+    if not runs:
+        return None
+    return float(np.mean([r["best_score"] for r in runs]))
+
+
+def save_policy_plots(episodes: list[dict], summary: dict[str, dict], output_json: str | Path,
+                      tag: str = "",
+                      optimization_results: Optional[dict] = None) -> tuple[Path, Path]:
     configure_matplotlib_cache()
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    metrics = [
-        ("total_reward", "Total reward"),
-        ("final_score", "Final score"),
-        ("final_emittance", "Final emittance"),
-        ("final_npart_ratio", "Final npart ratio"),
-    ]
     algorithms = sorted(summary)
+    colors = [algo_style(algo)[0] for algo in algorithms]
     out_dir = Path(output_json).parent
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    for ax, (metric, title) in zip(axes.ravel(), metrics):
+    for ax, (metric, title, ylabel) in zip(axes.ravel(), POLICY_PANELS):
         means = [summary[algo][f"{metric}_mean"] for algo in algorithms]
         stds = [summary[algo][f"{metric}_std"] for algo in algorithms]
-        ax.bar(algorithms, means, yerr=stds, capsize=4, alpha=0.86)
+        ax.bar(algorithms, means, yerr=stds, capsize=4, alpha=0.86, color=colors)
+        if metric == "final_score":
+            for ref in ("bayesian_opt", "pso"):
+                best = _optimization_best(optimization_results, ref)
+                if best is not None:
+                    ax.axhline(best, color=algo_style(ref)[0], linewidth=1.2,
+                               linestyle=":", label=f"{ref} best")
+            if ax.get_legend_handles_labels()[0]:
+                ax.legend(fontsize=8)
         ax.set_title(title)
+        ax.set_ylabel(ylabel)
         ax.grid(axis="y", alpha=0.25)
         ax.tick_params(axis="x", rotation=35)
     fig.tight_layout()
-    bar_path = out_dir / "benchmark_policy_bars.png"
+    bar_path = out_dir / f"benchmark_policy_bars{tag}.png"
     fig.savefig(bar_path, dpi=160)
     plt.close(fig)
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    for ax, (metric, title) in zip(axes.ravel(), metrics):
+    for ax, (metric, title, ylabel) in zip(axes.ravel(), POLICY_PANELS):
         values = [
             [row[metric] for row in episodes if row["algorithm"] == algo]
             for algo in algorithms
         ]
         try:
-            ax.boxplot(values, tick_labels=algorithms, showmeans=True)
+            boxes = ax.boxplot(values, tick_labels=algorithms, showmeans=True, patch_artist=True)
         except TypeError:
-            ax.boxplot(values, labels=algorithms, showmeans=True)
+            boxes = ax.boxplot(values, labels=algorithms, showmeans=True, patch_artist=True)
+        for patch, color in zip(boxes["boxes"], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.45)
         ax.set_title(title)
+        ax.set_ylabel(ylabel)
         ax.grid(axis="y", alpha=0.25)
         ax.tick_params(axis="x", rotation=35)
     fig.tight_layout()
-    box_path = out_dir / "benchmark_policy_boxplots.png"
+    box_path = out_dir / f"benchmark_policy_boxplots{tag}.png"
     fig.savefig(box_path, dpi=160)
     plt.close(fig)
 
     return bar_path, box_path
 
 
-def run_policy_benchmark(args, surrogate, dataset) -> dict:
+def run_policy_benchmark(args, surrogate, dataset,
+                         env_factory: Optional[Callable] = None,
+                         episodes: Optional[int] = None,
+                         tag: str = "",
+                         optimization_results: Optional[dict] = None) -> dict:
+    """Evaluate trained policy checkpoints over independent episodes.
+
+    By default policies run on SurrogateEnv; pass env_factory (e.g. TraceWinEnv)
+    and a smaller `episodes` for real-physics validation. `tag` suffixes the
+    CSV/plot filenames (e.g. "_tracewin").
+    """
+    if env_factory is None:
+        env_factory = lambda: SurrogateEnv(
+            model=surrogate, dataset=dataset, max_steps=args.max_ep_steps
+        )
+    if episodes is None:
+        episodes = args.policy_episodes
+
     checkpoint_args = {
         "sac": args.sac,
         "td3": args.td3,
@@ -354,13 +405,15 @@ def run_policy_benchmark(args, surrogate, dataset) -> dict:
         raise FileNotFoundError(f"Policy checkpoint not found: {details}")
 
     all_episodes: list[dict] = []
-    print(f"\n{'='*65}\nFinal policy benchmark ({args.policy_episodes} episodes)\n{'='*65}")
+    label = tag.lstrip("_") or "surrogate"
+    print(f"\n{'='*65}\nFinal policy benchmark [{label}] ({episodes} episodes)\n{'='*65}")
     for algo, ckpt_path in sorted(checkpoints.items()):
         print(f"{algo}: {ckpt_path}")
-        env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=args.max_ep_steps)
-        agent = make_policy_agent(algo, str(ckpt_path), env, args.hidden)
+        env = env_factory()
+        agent = make_policy_agent(algo, str(ckpt_path), env, args.hidden,
+                                  surrogate=surrogate, dataset=dataset)
         try:
-            for episode_idx in range(args.policy_episodes):
+            for episode_idx in range(episodes):
                 seed = args.policy_seed + episode_idx
                 row = run_policy_episode(env, agent, algo, seed, episode_idx)
                 all_episodes.append(row)
@@ -371,13 +424,16 @@ def run_policy_benchmark(args, surrogate, dataset) -> dict:
 
     summary = summarize_policy_episodes(all_episodes)
     print_policy_table(summary)
-    episodes_csv, summary_csv = write_policy_csvs(all_episodes, summary, args.output)
+    episodes_csv, summary_csv = write_policy_csvs(all_episodes, summary, args.output, tag=tag)
     print(f"Policy episode CSV saved → {episodes_csv}")
     print(f"Policy summary CSV saved → {summary_csv}")
 
     plot_paths = {}
     if not args.no_policy_plots:
-        bar_path, box_path = save_policy_plots(all_episodes, summary, args.output)
+        bar_path, box_path = save_policy_plots(
+            all_episodes, summary, args.output,
+            tag=tag, optimization_results=optimization_results,
+        )
         plot_paths = {"bar_plot": str(bar_path), "box_plot": str(box_path)}
         print(f"Policy bar plot saved → {bar_path}")
         print(f"Policy boxplot saved  → {box_path}")
@@ -411,6 +467,64 @@ def print_table(results: Dict):
     print(f"{'='*65}")
 
 
+def _best_so_far(history) -> np.ndarray:
+    """Cumulative maximum of a score history."""
+    return np.maximum.accumulate(np.asarray(history, dtype=float))
+
+
+def save_convergence_plot(results: Dict, output_json: str | Path,
+                          svg_horizon: int) -> Optional[Path]:
+    """Sample-efficiency plot: best score so far vs surrogate evaluations.
+
+    PSO/BO histories contain one entry per objective evaluation; SVG histories
+    one entry per episode (= svg_horizon surrogate calls). Mean across the
+    n_runs with a ±std band, truncated to the shortest run.
+    """
+    configure_matplotlib_cache()
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8.4, 5.0))
+    plotted = False
+    for method, runs in sorted(results.items()):
+        histories = [r["history"] for r in runs if r.get("history")]
+        if not histories:
+            continue
+        n = min(len(h) for h in histories)
+        curves = np.stack([_best_so_far(h[:n]) for h in histories])
+        evals_per_point = svg_horizon if method.startswith("svg") else 1
+        x = np.arange(1, n + 1) * evals_per_point
+        mean = curves.mean(axis=0)
+        std = curves.std(axis=0)
+        color, linestyle = algo_style(method)
+        # Short histories (few points) would be invisible as a bare line.
+        marker = "o" if n < 25 else None
+        ax.plot(x, mean, color=color, linestyle=linestyle, linewidth=1.8,
+                marker=marker, markersize=4, label=method)
+        if curves.shape[0] > 1:
+            ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.12)
+        plotted = True
+
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    ax.set_xscale("log")
+    ax.set_xlabel("Surrogate evaluations (log scale)")
+    ax.set_ylabel("Best score so far (higher is better)")
+    ax.set_title("Sample efficiency")
+    ax.grid(alpha=0.25, which="both")
+    ax.legend()
+    fig.tight_layout()
+
+    path = Path(output_json).parent / "benchmark_convergence.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
 def save_summary_plot(results: Dict, output_json: str | Path) -> Path:
     """Save a bar chart comparing benchmark best scores."""
     configure_matplotlib_cache()
@@ -438,7 +552,7 @@ def save_summary_plot(results: Dict, output_json: str | Path) -> Path:
 
     fig_width = max(8.0, 0.9 * len(methods))
     fig, ax = plt.subplots(figsize=(fig_width, 5.2))
-    colors = ["#2f7d32" if value >= 0 else "#b23b3b" for value in means]
+    colors = [algo_style(method)[0] for method in methods]
     bars = ax.bar(methods, means, yerr=stds, color=colors, alpha=0.86, capsize=4)
 
     ax.axhline(0.0, color="#333333", linewidth=0.9)
@@ -496,6 +610,14 @@ def main():
                         help="Max environment steps per policy-evaluation episode.")
     parser.add_argument("--policy-seed", type=int, default=42,
                         help="Base seed for final policy benchmark episodes.")
+    parser.add_argument("--tracewin", default=None, metavar="INI",
+                        nargs="?", const=str(DEFAULT_TRACEWIN_INI),
+                        help="Also validate the passed policy checkpoints on the real "
+                             "TraceWin environment (~30 s per step). Without a value, "
+                             "uses the project default .ini.")
+    parser.add_argument("--tracewin-episodes", type=int, default=5,
+                        help="Episodes per policy in the TraceWin validation "
+                             "(default: 5; keep small — real physics is slow).")
     parser.add_argument("--hidden", type=int, nargs="+", default=[256, 256],
                         help="Hidden layer sizes used to recreate checkpointed custom agents.")
     parser.add_argument("--no-policy-plots", action="store_true",
@@ -555,11 +677,38 @@ def main():
 
     print_table(results)
 
-    policy_evaluation = run_policy_benchmark(args, surrogate, dataset)
+    policy_evaluation = run_policy_benchmark(
+        args, surrogate, dataset, optimization_results=results,
+    )
+
+    policy_evaluation_tracewin = {}
+    if args.tracewin:
+        n_ckpts = sum(
+            1 for path in (args.sac, args.td3, args.ppo, args.ddpg, args.a2c,
+                           args.reinforce, args.trpo, args.sb3_sac, args.mbpo,
+                           args.svg_finale, args.svg_uniform)
+            if path is not None
+        )
+        est_min = n_ckpts * args.tracewin_episodes * args.max_ep_steps * 30 / 60
+        print(f"\nTraceWin validation: {n_ckpts} policies × {args.tracewin_episodes} "
+              f"episodes × {args.max_ep_steps} steps ≈ {est_min:.0f} min of real physics")
+
+        def tracewin_env_factory():
+            from beam_optimization.env.tracewin_env import TraceWinEnv
+            return TraceWinEnv(project_file=args.tracewin, max_steps=args.max_ep_steps)
+
+        policy_evaluation_tracewin = run_policy_benchmark(
+            args, surrogate, dataset,
+            env_factory=tracewin_env_factory,
+            episodes=args.tracewin_episodes,
+            tag="_tracewin",
+            optimization_results=results,
+        )
 
     output_payload = {
         "optimization_results": results,
         "policy_evaluation": policy_evaluation,
+        "policy_evaluation_tracewin": policy_evaluation_tracewin,
     }
 
     with open(args.output, "w") as f:
@@ -569,8 +718,11 @@ def main():
     try:
         plot_path = save_summary_plot(results, args.output)
         print(f"Plot saved   → {plot_path}")
+        convergence_path = save_convergence_plot(results, args.output, args.svg_horizon)
+        if convergence_path is not None:
+            print(f"Convergence plot saved → {convergence_path}")
     except Exception as exc:
-        print(f"WARN: could not save the benchmark plot: {exc}")
+        print(f"WARN: could not save the benchmark plots: {exc}")
 
 
 if __name__ == "__main__":

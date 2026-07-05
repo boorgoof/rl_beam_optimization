@@ -128,6 +128,7 @@ class SB3SAC:
         tau: float = 0.005,
         gamma: float = 0.99,
         device: str = "auto",
+        seed: Optional[int] = None,
         tensorboard_log: Optional[str] = None,
     ):
         _check_sb3()
@@ -142,6 +143,7 @@ class SB3SAC:
             gamma=gamma,
             policy_kwargs=policy_kwargs,
             device=device,
+            seed=seed,
             tensorboard_log=tensorboard_log,
             verbose=0,
         )

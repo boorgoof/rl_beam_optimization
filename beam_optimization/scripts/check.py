@@ -1,13 +1,9 @@
-"""
-Quick health check for the beam_optimization project.
+"""Procedural onboarding check for the beam_optimization project.
 
-Verifies:
-  1. Imports from all project paths
-  2. Dataset and surrogate ensemble loading
-  3. SurrogateEnv: reset + 5 random-action steps
-  4. SurrogateEnv: Thompson sampling over the ensemble
-  5. SAC / MBPO / SVGAgent instantiation + SurrogateDatasetUpdater bootstrap
-  6. TraceWin import + optional local binary/workspace check
+The command verifies the same prerequisites described in README.md:
+Python dependencies, local TraceWin files, a real TraceWinEnv reset/step,
+dataset and surrogate artifacts, SurrogateEnv, algorithms, and the online
+surrogate updater.
 
 Usage:
     python -m beam_optimization check
@@ -15,208 +11,796 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
+import os
 import sys
 import traceback
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+import numpy as np
 
 from beam_optimization.config.paths import (
     DEFAULT_BASE_DATASET,
     DEFAULT_BASE_SURROGATE_DIR,
+    DEFAULT_DATASET_ROOT,
+    DEFAULT_TRACEWIN_INI,
     PROJECT_ROOT,
+    configure_matplotlib_cache,
 )
 
-PASS = "✓"
-FAIL = "✗"
+
+SETUP_COMMAND = "python -m beam_optimization setup --target-samples 100 --n-surrogates 4"
+INSTALL_COMMAND = (
+    "beam_optimization/.venv/bin/pip install -r beam_optimization/requirements.txt"
+)
+
+
+@dataclass
+class CheckResult:
+    name: str
+    status: str
+    details: str = ""
+    problem: str = ""
+    action: str = ""
+    path_command: str = ""
+    traceback_text: str = ""
+
+
+@dataclass
+class CheckMessage:
+    status: str = "PASS"
+    details: str = ""
+    problem: str = ""
+    action: str = ""
+    path_command: str = ""
+
+
+class CheckFailure(RuntimeError):
+    def __init__(self, problem: str, action: str = "", path_command: str = ""):
+        super().__init__(problem)
+        self.problem = problem
+        self.action = action
+        self.path_command = path_command
 
 
 class Checker:
     def __init__(self):
-        self.results: list[tuple[str, bool, str]] = []
+        self.results: list[CheckResult] = []
 
-    def check(self, name: str, fn):
+    def check(
+        self,
+        name: str,
+        fn: Callable[[], Optional[str | CheckMessage]],
+        *,
+        default_action: str = "",
+        default_path_command: str = "",
+        skip_reason: str | None = None,
+        skip_action: str = "",
+    ) -> bool:
+        if skip_reason is not None:
+            result = CheckResult(
+                name=name,
+                status="SKIP",
+                problem=skip_reason,
+                action=skip_action,
+            )
+            self.results.append(result)
+            self._print_result(result)
+            return False
+
         try:
-            fn()
-            self.results.append((name, True, ""))
-            print(f"  {PASS}  {name}")
-        except Exception as e:
-            self.results.append((name, False, traceback.format_exc()))
-            print(f"  {FAIL}  {name}  →  {e}")
+            value = fn()
+            if isinstance(value, CheckMessage):
+                result = CheckResult(
+                    name=name,
+                    status=value.status,
+                    details=value.details,
+                    problem=value.problem,
+                    action=value.action,
+                    path_command=value.path_command,
+                )
+            else:
+                result = CheckResult(
+                    name=name,
+                    status="PASS",
+                    details=value or "",
+                )
+        except CheckFailure as exc:
+            result = CheckResult(
+                name=name,
+                status="FAIL",
+                problem=exc.problem,
+                action=exc.action or default_action,
+                path_command=exc.path_command or default_path_command,
+                traceback_text=traceback.format_exc(),
+            )
+        except Exception as exc:
+            result = CheckResult(
+                name=name,
+                status="FAIL",
+                problem=str(exc),
+                action=default_action,
+                path_command=default_path_command,
+                traceback_text=traceback.format_exc(),
+            )
+
+        self.results.append(result)
+        self._print_result(result)
+        return result.status in {"PASS", "WARN"}
+
+    def _print_result(self, result: CheckResult) -> None:
+        print(f"  [{result.status}] {result.name}")
+        if result.details:
+            print(f"         {result.details}")
+        if result.problem:
+            print(f"         Problem: {result.problem}")
+        if result.action:
+            print(f"         Action:  {result.action}")
+        if result.path_command:
+            print(f"         Path/Command: {result.path_command}")
 
     def summary(self) -> int:
-        n_pass = sum(1 for _, ok, _ in self.results if ok)
-        n_fail = sum(1 for _, ok, _ in self.results if not ok)
-        print(f"\n{'='*50}")
-        print(f"  {PASS} {n_pass} / {n_pass + n_fail} checks passed")
-        if n_fail:
-            print(f"  {FAIL} {n_fail} failed:")
-            for name, ok, tb in self.results:
-                if not ok:
-                    print(f"\n  [{name}]")
-                    print(tb)
-        print(f"{'='*50}\n")
-        return 0 if n_fail == 0 else 1
+        counts = {status: 0 for status in ("PASS", "WARN", "FAIL", "SKIP")}
+        for result in self.results:
+            counts[result.status] = counts.get(result.status, 0) + 1
+
+        print("\n" + "=" * 72)
+        print("CHECK SUMMARY")
+        print(
+            f"  PASS {counts['PASS']}   WARN {counts['WARN']}   "
+            f"FAIL {counts['FAIL']}   SKIP {counts['SKIP']}"
+        )
+
+        actions = [
+            result for result in self.results
+            if result.status == "FAIL" and (result.action or result.path_command)
+        ]
+        if actions:
+            print("\nACTIONS")
+            for result in actions:
+                print(f"  - {result.name}")
+                if result.action:
+                    print(f"    Action: {result.action}")
+                if result.path_command:
+                    print(f"    Path/Command: {result.path_command}")
+
+        failures = [result for result in self.results if result.status == "FAIL"]
+        if failures:
+            print("\nTRACEBACKS")
+            for result in failures:
+                if result.traceback_text:
+                    print(f"\n[{result.name}]")
+                    print(result.traceback_text.rstrip())
+
+        print("=" * 72 + "\n")
+        return 0 if counts["FAIL"] == 0 else 1
+
+
+def _require_path(
+    path: Path,
+    description: str,
+    *,
+    action: str,
+    must_be_file: bool | None = None,
+    readable: bool = False,
+    executable: bool = False,
+) -> None:
+    if not path.exists():
+        raise CheckFailure(
+            f"{description} does not exist: {path}",
+            action=action,
+            path_command=str(path),
+        )
+    if must_be_file is True and not path.is_file():
+        raise CheckFailure(
+            f"{description} is not a file: {path}",
+            action=action,
+            path_command=str(path),
+        )
+    if must_be_file is False and not path.is_dir():
+        raise CheckFailure(
+            f"{description} is not a directory: {path}",
+            action=action,
+            path_command=str(path),
+        )
+    if readable and not os.access(path, os.R_OK):
+        raise CheckFailure(
+            f"{description} is not readable: {path}",
+            action=action,
+            path_command=f"chmod +r {path}",
+        )
+    if executable and not os.access(path, os.X_OK):
+        raise CheckFailure(
+            f"{description} is not executable: {path}",
+            action=action,
+            path_command=f"chmod +x {path}",
+        )
+
+
+def _assert_obs_shape(obs: np.ndarray, expected_dim: int, context: str) -> None:
+    if tuple(obs.shape) != (expected_dim,):
+        raise CheckFailure(
+            f"{context} observation shape is {tuple(obs.shape)}, expected {(expected_dim,)}.",
+            action="Check OBSERVATION_STAGE_MASK and environment construction.",
+        )
+
+
+def _assert_beam_states_shape(beam_states, context: str) -> None:
+    from beam_optimization.config.adige import BEAM_STATE_DIM, N_STAGES
+
+    if beam_states is None:
+        raise CheckFailure(
+            f"{context} did not return beam_states.",
+            action="Check the simulator result conversion.",
+        )
+    if tuple(beam_states.shape) != (N_STAGES, BEAM_STATE_DIM):
+        raise CheckFailure(
+            f"{context} beam_states shape is {tuple(beam_states.shape)}, "
+            f"expected {(N_STAGES, BEAM_STATE_DIM)}.",
+            action="Check simulator output parsing and config/adige.py stage settings.",
+        )
+
+
+def _assert_successful_sim_result(result, context: str) -> None:
+    if result is None:
+        raise CheckFailure(
+            f"{context} did not return a simulation result.",
+            action="Check environment/simulator result conversion.",
+        )
+    if not getattr(result, "success", False):
+        metadata = getattr(result, "metadata", {}) or {}
+        calc_dir = metadata.get("calc_dir", "")
+        error = getattr(result, "error", "") or "unknown TraceWin failure"
+        raise CheckFailure(
+            f"{context} TraceWin simulation failed: {error}",
+            action=(
+                "TraceWin files exist, but the real simulation did not complete. "
+                "Check SSH to comunian@localhost, TraceWin license, launcher permissions, "
+                ".ini/.dat/field maps/.dst and TraceWin output files."
+            ),
+            path_command=str(calc_dir),
+        )
+    if getattr(result, "source", None) != "tracewin":
+        raise CheckFailure(
+            f"{context} returned source={getattr(result, 'source', None)!r}, expected 'tracewin'.",
+            action="Check TraceWinEnv/TraceWinSimulator result conversion.",
+        )
+
+
+def _extract_action(value) -> np.ndarray:
+    if isinstance(value, tuple):
+        value = value[0]
+    return np.asarray(value, dtype=np.float32).reshape(-1)
+
+
+def _setup_action() -> str:
+    return "Generate the base dataset and base surrogate checkpoints."
+
+
+def _setup_command() -> str:
+    return SETUP_COMMAND
 
 
 def main() -> int:
-    argparse.ArgumentParser(
-        description="Run quick project checks without launching the real TraceWin."
-    ).parse_args()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run procedural onboarding checks: Python dependencies, local "
+            "TraceWin files, real TraceWinEnv reset/step, dataset/surrogates, "
+            "SurrogateEnv, algorithms, and updater."
+        )
+    )
+    parser.add_argument(
+        "--tracewin-calc-dir",
+        default="/tmp/tracewin_check",
+        metavar="PATH",
+        help="TraceWin calculation directory for the real reset+step check.",
+    )
+    parser.add_argument(
+        "--tracewin-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout in seconds for each TraceWin call.",
+    )
+    parser.add_argument(
+        "--surrogate-steps",
+        type=int,
+        default=5,
+        help="Random SurrogateEnv steps to run in the surrogate environment check.",
+    )
+    args = parser.parse_args()
 
-    c = Checker()
+    checker = Checker()
     state: dict = {}
 
-    # ── 1. Imports ────────────────────────────────────────────────────────────
-    print("\n[1/6] Imports")
+    print("\n[1/10] Python environment")
 
-    c.check("SurrogateEnv, ModularMLP, BeamDataset from env.surrogate_env",
-            lambda: __import__("beam_optimization.env.surrogate_env",
-                               fromlist=["SurrogateEnv", "ModularMLP", "BeamDataset"]))
-    c.check("TraceWinEnv, TraceWinSimulator, BeamSimulationResult from env.tracewin_env",
-            lambda: __import__("beam_optimization.env.tracewin_env",
-                               fromlist=["TraceWinEnv", "TraceWinSimulator", "BeamSimulationResult"]))
-    c.check("BeamSimulationResult, BeamSimulator (common)",
-            lambda: __import__("beam_optimization.env.simulation",
-                               fromlist=["BeamSimulationResult", "BeamSimulator"]))
-    c.check("algorithm registry (make_agent)",
-            lambda: __import__("beam_optimization.algorithms", fromlist=["make_agent"]))
-    c.check("MBPO", lambda: __import__("beam_optimization.algorithms.model_based.mbpo",
-                                       fromlist=["MBPO"]))
-    c.check("SVGAgent", lambda: __import__("beam_optimization.algorithms.model_based.svg",
-                                           fromlist=["SVGAgent"]))
-    c.check("config adige", lambda: __import__("beam_optimization.config.adige",
-                                               fromlist=["PARAM_KEYS", "BEAM_STATE_FEATURES"]))
+    def _python_environment():
+        configure_matplotlib_cache()
+        packages = ["numpy", "torch", "gymnasium", "matplotlib", "stable_baselines3"]
+        missing = []
+        for package in packages:
+            try:
+                importlib.import_module(package)
+            except Exception as exc:
+                missing.append(f"{package} ({exc})")
+        try:
+            importlib.import_module("beam_optimization")
+        except Exception as exc:
+            missing.append(f"beam_optimization ({exc})")
+        if missing:
+            raise CheckFailure(
+                "Missing or broken imports: " + "; ".join(missing),
+                action="Install the project requirements in the active environment.",
+                path_command=INSTALL_COMMAND,
+            )
+        return "numpy, torch, gymnasium, matplotlib, stable_baselines3 and package import OK"
 
-    # ── 2. Dataset and surrogates ─────────────────────────────────────────────
-    print("\n[2/6] Dataset and surrogates")
+    python_ok = checker.check("Python packages and package import", _python_environment)
 
-    def _load_dataset():
-        from beam_optimization.env.dataset import BeamDataset
-        state["ds"] = BeamDataset.load(str(DEFAULT_BASE_DATASET))
-        assert len(state["ds"]) > 0, "Empty dataset"
+    print("\n[2/10] Project paths")
 
-    c.check("Load dataset_base.pt", _load_dataset)
+    def _project_paths():
+        paths = [
+            (PROJECT_ROOT, "package root", False),
+            (PROJECT_ROOT / "requirements.txt", "requirements.txt", True),
+            (PROJECT_ROOT / "config/paths.py", "config/paths.py", True),
+            (DEFAULT_DATASET_ROOT, "dataset root", False),
+            (DEFAULT_BASE_SURROGATE_DIR.parent, "surrogate trained_models root", False),
+            (DEFAULT_TRACEWIN_INI.parent, "TraceWin workspace", False),
+        ]
+        missing = [f"{label}: {path}" for path, label, is_file in paths
+                   if not path.exists() or (is_file and not path.is_file())
+                   or (not is_file and not path.is_dir())]
+        if missing:
+            raise CheckFailure(
+                "Missing project paths: " + "; ".join(missing),
+                action=(
+                    "Create/copy local TraceWin files if a TraceWin path is missing; "
+                    "run setup if dataset/surrogate artifact folders are missing."
+                ),
+                path_command=_setup_command(),
+            )
+        return "core package, requirements, dataset, surrogate and TraceWin roots exist"
 
-    def _load_ensemble():
-        from beam_optimization.env.surrogate_env import ModularMLP
-        files = sorted(DEFAULT_BASE_SURROGATE_DIR.glob("surrogate_*.pt"))
-        assert len(files) > 0, f"No surrogate_*.pt in {DEFAULT_BASE_SURROGATE_DIR}"
-        state["surrogates"] = [ModularMLP.load(str(f)) for f in files]
-        print(f"       loaded {len(files)} surrogates from {DEFAULT_BASE_SURROGATE_DIR}")
+    paths_ok = checker.check("README/config paths", _project_paths)
 
-    c.check("Load surrogate ensemble", _load_ensemble)
+    print("\n[3/10] TraceWin local setup from README")
 
-    # ── 3. SurrogateEnv reset + step ──────────────────────────────────────────
-    print("\n[3/6] SurrogateEnv — reset + 5 steps")
+    tracewin_action = (
+        "Copy the TraceWin workspace/program files described in README.md, "
+        "fix launcher permissions, then rerun check."
+    )
 
-    def _beam_env_single():
-        from beam_optimization.env.surrogate_env import SurrogateEnv
-        from beam_optimization.config.adige import N_STAGES, BEAM_STATE_DIM, observation_dim
+    def _tracewin_local_setup():
+        workspace = DEFAULT_TRACEWIN_INI.parent
+        wrapper_dir = PROJECT_ROOT / "env/tracewin_env/tracewin/pyTraceWin_wrapper"
+        tracewin_program_dir = wrapper_dir / "TraceWin_program"
+        tracewin_binary = tracewin_program_dir / "TraceWin"
+        launcher = wrapper_dir / "run_tracewin_with_permissions.sh"
+        calc_dir = Path(args.tracewin_calc_dir)
+
+        _require_path(workspace, "TraceWin workspace", action=tracewin_action,
+                      must_be_file=False, readable=True)
+        _require_path(DEFAULT_TRACEWIN_INI, "TraceWin project .ini", action=tracewin_action,
+                      must_be_file=True, readable=True)
+        _require_path(workspace / "condensed.dat", "TraceWin lattice .dat",
+                      action=tracewin_action, must_be_file=True, readable=True)
+        _require_path(workspace / "16O5.dst", "TraceWin input distribution .dst",
+                      action=tracewin_action, must_be_file=True, readable=True)
+        _require_path(launcher, "TraceWin permission launcher", action=tracewin_action,
+                      must_be_file=True, readable=True, executable=True)
+        _require_path(tracewin_binary, "TraceWin binary", action=tracewin_action,
+                      must_be_file=True, readable=True, executable=True)
+
+        try:
+            calc_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            raise CheckFailure(
+                f"Cannot create TraceWin calc dir {calc_dir}: {exc}",
+                action="Use --tracewin-calc-dir with a writable directory or fix permissions.",
+                path_command=f"mkdir -p {calc_dir}",
+            ) from exc
+        if not os.access(calc_dir, os.W_OK):
+            raise CheckFailure(
+                f"TraceWin calc dir is not writable: {calc_dir}",
+                action="Use --tracewin-calc-dir with a writable directory or fix permissions.",
+                path_command=f"mkdir -p {calc_dir}",
+            )
+        return f"TraceWin files OK; calc dir writable: {calc_dir}"
+
+    tracewin_files_ok = checker.check(
+        "TraceWin workspace, binary, launcher and permissions",
+        _tracewin_local_setup,
+        skip_reason=None if paths_ok else "Project path check failed.",
+        skip_action="Fix missing project paths first.",
+    )
+
+    print("\n[4/10] TraceWinEnv real reset + step")
+
+    def _tracewin_env_real():
+        from beam_optimization.config.adige import N_PARAMS, observation_dim
+        from beam_optimization.env.tracewin_env import TraceWinEnv
+
         obs_dim = observation_dim()
-        env = SurrogateEnv(model=state["surrogates"][0], dataset=state["ds"], max_steps=5)
-        obs, info = env.reset()
-        assert obs.shape == (obs_dim,), f"obs shape wrong: {obs.shape}"
-        assert "score" in info
-        assert info["sim_result"].source == "surrogate"
-        assert info["sim_result"].beam_states.shape == (N_STAGES, BEAM_STATE_DIM)
-        for _ in range(5):
-            action = env.action_space.sample()
-            obs, rew, term, trunc, info = env.step(action)
-            assert obs.shape == (obs_dim,)
-            assert info["sim_result"].source == "surrogate"
-        print(f"       best_score={env.best_score:.4f}")
+        env = TraceWinEnv(
+            project_file=str(DEFAULT_TRACEWIN_INI),
+            calc_dir=str(Path(args.tracewin_calc_dir)),
+            max_steps=1,
+            timeout=args.tracewin_timeout,
+        )
+        obs, info = env.reset(options={"randomize_params": False})
+        _assert_obs_shape(obs, obs_dim, "TraceWinEnv reset")
+        if "score" not in info or not np.isfinite(float(info["score"])):
+            raise CheckFailure(
+                "TraceWinEnv reset did not return a finite score.",
+                action="Check TraceWin output parsing and generated partran files.",
+            )
+        result = info.get("sim_result")
+        _assert_successful_sim_result(result, "TraceWinEnv reset")
+        _assert_beam_states_shape(result.beam_states, "TraceWinEnv reset")
 
-    c.check("SurrogateEnv with one surrogate (observation mask)", _beam_env_single)
+        zero_action = np.zeros(N_PARAMS, dtype=np.float32)
+        obs2, reward, terminated, truncated, info2 = env.step(zero_action)
+        _assert_obs_shape(obs2, obs_dim, "TraceWinEnv step")
+        if not np.isfinite(float(reward)):
+            raise CheckFailure(
+                "TraceWinEnv step returned a non-finite reward.",
+                action="Check score calculation and TraceWin simulation output.",
+            )
+        result2 = info2.get("sim_result")
+        _assert_successful_sim_result(result2, "TraceWinEnv step")
+        _assert_beam_states_shape(result2.beam_states, "TraceWinEnv step")
+        return (
+            f"reset_score={float(info['score']):.6g}, "
+            f"step_score={float(info2['score']):.6g}, reward={float(reward):.6g}"
+        )
 
-    # ── 4. Thompson sampling over the ensemble ────────────────────────────────
-    print("\n[4/6] SurrogateEnv — ensemble Thompson sampling")
+    tracewin_env_ok = checker.check(
+        "TraceWinEnv nominal reset and zero-action step",
+        _tracewin_env_real,
+        default_action=(
+            "TraceWin files exist, but the real simulation failed. Check the "
+            ".ini/.dat/field maps/.dst, license, launcher permissions and TraceWin output."
+        ),
+        default_path_command=str(Path(args.tracewin_calc_dir)),
+        skip_reason=None if tracewin_files_ok else "TraceWin local setup did not pass.",
+        skip_action="Fix TraceWin local setup first.",
+    )
+    state["tracewin_env_ok"] = tracewin_env_ok
 
-    def _thompson():
+    print("\n[5/10] Base dataset")
+
+    def _dataset():
+        from beam_optimization.env.dataset import BeamDataset
+
+        if not DEFAULT_BASE_DATASET.exists():
+            raise CheckFailure(
+                f"Base dataset not found: {DEFAULT_BASE_DATASET}",
+                action=_setup_action(),
+                path_command=_setup_command(),
+            )
+        dataset = BeamDataset.load(DEFAULT_BASE_DATASET)
+        if len(dataset) <= 0:
+            raise CheckFailure(
+                f"Base dataset is empty: {DEFAULT_BASE_DATASET}",
+                action=_setup_action(),
+                path_command=_setup_command(),
+            )
+        if tuple(dataset.X.shape[1:]) != (25,) or tuple(dataset.Y.shape[1:]) != (99,):
+            raise CheckFailure(
+                f"Dataset shapes are X={tuple(dataset.X.shape)}, Y={tuple(dataset.Y.shape)}.",
+                action="Regenerate dataset/surrogates with the current config.",
+                path_command=_setup_command(),
+            )
+        if dataset.scores.shape[0] != len(dataset):
+            raise CheckFailure(
+                f"Dataset scores length {dataset.scores.shape[0]} != samples {len(dataset)}.",
+                action="Regenerate dataset/surrogates with the current config.",
+                path_command=_setup_command(),
+            )
+        state["dataset"] = dataset
+        return f"loaded {len(dataset):,} samples from {DEFAULT_BASE_DATASET}"
+
+    dataset_ok = checker.check(
+        "Load and validate dataset_base.pt",
+        _dataset,
+        default_action=_setup_action(),
+        default_path_command=_setup_command(),
+    )
+
+    print("\n[6/10] Base surrogates")
+
+    def _surrogates():
+        from beam_optimization.env.surrogate_env import ModularMLP
+
+        files = sorted(DEFAULT_BASE_SURROGATE_DIR.glob("surrogate_*.pt"))
+        if not files:
+            raise CheckFailure(
+                f"No surrogate_*.pt files found in {DEFAULT_BASE_SURROGATE_DIR}",
+                action=_setup_action(),
+                path_command=_setup_command(),
+            )
+        surrogates = []
+        for path in files:
+            model = ModularMLP.load(str(path))
+            model.eval()
+            surrogates.append(model)
+        state["surrogates"] = surrogates
+        return f"loaded {len(surrogates)} surrogate(s) from {DEFAULT_BASE_SURROGATE_DIR}"
+
+    surrogates_ok = checker.check(
+        "Load base surrogate checkpoints",
+        _surrogates,
+        default_action=_setup_action(),
+        default_path_command=_setup_command(),
+    )
+
+    print("\n[7/10] SurrogateEnv")
+
+    def _surrogate_env():
+        from beam_optimization.config.adige import observation_dim
         from beam_optimization.env.surrogate_env import SurrogateEnv
-        env = SurrogateEnv(model=state["surrogates"], dataset=state["ds"], max_steps=3)
-        assert len(env.simulator.ensemble) == len(state["surrogates"])
+
+        obs_dim = observation_dim()
+        env = SurrogateEnv(
+            model=state["surrogates"][0],
+            dataset=state["dataset"],
+            max_steps=max(1, int(args.surrogate_steps)),
+        )
+        obs, info = env.reset()
+        _assert_obs_shape(obs, obs_dim, "SurrogateEnv reset")
+        result = info.get("sim_result")
+        if result is None or result.source != "surrogate":
+            raise CheckFailure(
+                "SurrogateEnv reset did not return a surrogate simulation result.",
+                action="Check surrogate simulator result conversion.",
+            )
+        _assert_beam_states_shape(result.beam_states, "SurrogateEnv reset")
+        if "score" not in info or not np.isfinite(float(info["score"])):
+            raise CheckFailure(
+                "SurrogateEnv reset did not return a finite score.",
+                action="Regenerate dataset/surrogates with the current config.",
+                path_command=_setup_command(),
+            )
+
+        for _ in range(max(1, int(args.surrogate_steps))):
+            obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
+            _assert_obs_shape(obs, obs_dim, "SurrogateEnv step")
+            if not np.isfinite(float(reward)):
+                raise CheckFailure(
+                    "SurrogateEnv step returned a non-finite reward.",
+                    action="Regenerate dataset/surrogates with the current config.",
+                    path_command=_setup_command(),
+                )
+            result = info.get("sim_result")
+            if result is None or result.source != "surrogate":
+                raise CheckFailure(
+                    "SurrogateEnv step did not return a surrogate simulation result.",
+                    action="Check surrogate simulator result conversion.",
+                )
+            _assert_beam_states_shape(result.beam_states, "SurrogateEnv step")
+
+        state["surrogate_env"] = env
+        return f"reset + {max(1, int(args.surrogate_steps))} random step(s) OK"
+
+    surrogate_env_ok = checker.check(
+        "SurrogateEnv reset and random steps",
+        _surrogate_env,
+        default_action=(
+            "Dataset/surrogates exist but are incompatible with the current config; "
+            "regenerate them."
+        ),
+        default_path_command=_setup_command(),
+        skip_reason=None if (dataset_ok and surrogates_ok) else (
+            "Dataset and surrogate checks must pass first."
+        ),
+        skip_action=_setup_action(),
+    )
+
+    print("\n[8/10] Surrogate ensemble")
+
+    def _surrogate_ensemble():
+        from beam_optimization.env.surrogate_env import SurrogateEnv
+
+        surrogates = state["surrogates"]
+        if len(surrogates) < 2:
+            return CheckMessage(
+                status="WARN",
+                details="Only one surrogate is available; Thompson sampling diversity is skipped.",
+                action="Train more base surrogates if you want ensemble uncertainty.",
+                path_command=_setup_command(),
+            )
+        env = SurrogateEnv(model=surrogates, dataset=state["dataset"], max_steps=3)
+        if len(env.simulator.ensemble) != len(surrogates):
+            raise CheckFailure(
+                "SurrogateEnv ensemble size does not match loaded surrogates.",
+                action="Check SurrogateEnv/SurrogateBeamSimulator ensemble construction.",
+            )
         seen = set()
         for _ in range(30):
             env.reset()
             seen.add(id(env.simulator.model))
-        if len(state["surrogates"]) > 1:
-            assert len(seen) > 1, "Thompson sampling does not diversify the surrogate"
-        print(f"       {len(seen)} distinct surrogates over 30 resets")
+        if len(seen) <= 1:
+            raise CheckFailure(
+                "Thompson sampling did not switch active surrogate over 30 resets.",
+                action="Check SurrogateBeamSimulator.sample_model_index/reset_context.",
+            )
+        return f"{len(seen)} distinct active surrogate objects over 30 resets"
 
-    c.check("Ensemble Thompson sampling active", _thompson)
+    checker.check(
+        "Surrogate ensemble Thompson sampling",
+        _surrogate_ensemble,
+        skip_reason=None if (dataset_ok and surrogates_ok) else (
+            "Dataset and surrogate checks must pass first."
+        ),
+        skip_action=_setup_action(),
+    )
 
-    # ── 5. RL agents ──────────────────────────────────────────────────────────
-    print("\n[5/6] RL agents")
+    print("\n[9/10] Algorithms")
 
-    def _bounds():
-        from beam_optimization.config.adige import action_bounds
-        low, high = action_bounds()
-        return (low.tolist(), high.tolist())
+    def _model_free_algorithms():
+        from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, make_agent
+        from beam_optimization.config.adige import N_PARAMS, action_bounds, observation_dim
 
-    def _sac():
-        from beam_optimization.algorithms import make_agent
-        from beam_optimization.config.adige import N_PARAMS, observation_dim
-        agent = make_agent("sac", observation_dim(), N_PARAMS, _bounds())
-        assert agent is not None
+        obs_dim = observation_dim()
+        bounds = action_bounds()
+        action_bounds_tuple = (bounds[0].tolist(), bounds[1].tolist())
+        dummy_obs = np.zeros(obs_dim, dtype=np.float32)
+        checked = []
+        for name in MODEL_FREE_ALGORITHMS:
+            agent = make_agent(name, obs_dim, N_PARAMS, action_bounds_tuple)
+            action = _extract_action(agent.select_action(dummy_obs, training=False))
+            if action.shape != (N_PARAMS,):
+                raise CheckFailure(
+                    f"{name} action shape is {action.shape}, expected {(N_PARAMS,)}.",
+                    action="Fix the algorithm select_action interface.",
+                )
+            checked.append(name)
+        return "checked custom model-free agents: " + ", ".join(checked)
 
-    c.check("SAC via registry", _sac)
+    model_free_ok = checker.check(
+        "Custom model-free agents",
+        _model_free_algorithms,
+        default_action="Fix algorithm imports/constructors/select_action interfaces.",
+    )
+
+    def _sb3_sac():
+        from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
+        from beam_optimization.env.surrogate_env import SurrogateEnv
+
+        env = SurrogateEnv(
+            model=state["surrogates"][0],
+            dataset=state["dataset"],
+            max_steps=1,
+        )
+        agent = SB3SAC(env, hidden_dims=(32, 32), buffer_size=1024, batch_size=32)
+        if agent is None:
+            raise CheckFailure(
+                "SB3SAC constructor returned None.",
+                action="Fix SB3SAC wrapper construction.",
+            )
+        return "SB3SAC wrapper construction OK"
+
+    checker.check(
+        "Stable-Baselines3 SAC wrapper",
+        _sb3_sac,
+        default_action=(
+            "Install stable-baselines3 from requirements or fix the SB3SAC wrapper."
+        ),
+        default_path_command=INSTALL_COMMAND,
+        skip_reason=None if (dataset_ok and surrogates_ok) else (
+            "Dataset and surrogate checks must pass first."
+        ),
+        skip_action=_setup_action(),
+    )
 
     def _mbpo():
         from beam_optimization.algorithms import make_agent
         from beam_optimization.algorithms.model_based.mbpo import MBPO
-        from beam_optimization.config.adige import N_PARAMS, observation_dim
-        obs_dim = observation_dim()
-        inner = make_agent("sac", obs_dim, N_PARAMS, _bounds())
-        agent = MBPO(agent=inner, surrogates=state["surrogates"], dataset=state["ds"],
-                     obs_dim=obs_dim, act_dim=N_PARAMS)
-        assert agent is not None
+        from beam_optimization.config.adige import N_PARAMS, action_bounds, observation_dim
 
-    c.check("MBPO with ensemble", _mbpo)
+        obs_dim = observation_dim()
+        bounds = action_bounds()
+        action_bounds_tuple = (bounds[0].tolist(), bounds[1].tolist())
+        inner = make_agent("sac", obs_dim, N_PARAMS, action_bounds_tuple)
+        agent = MBPO(
+            agent=inner,
+            surrogates=state["surrogates"],
+            dataset=state["dataset"],
+            obs_dim=obs_dim,
+            act_dim=N_PARAMS,
+            rollout_length=1,
+            n_synthetic_per_step=1,
+            n_grad_updates=1,
+        )
+        action = _extract_action(agent.select_action(np.zeros(obs_dim, dtype=np.float32), training=False))
+        if action.shape != (N_PARAMS,):
+            raise CheckFailure(
+                f"MBPO inner policy action shape is {action.shape}, expected {(N_PARAMS,)}.",
+                action="Fix MBPO/inner SAC select_action interface.",
+            )
+        return "MBPO construction and inner action selection OK"
+
+    checker.check(
+        "MBPO construction",
+        _mbpo,
+        default_action="Fix MBPO construction or inner agent compatibility.",
+        skip_reason=None if (dataset_ok and surrogates_ok and model_free_ok) else (
+            "Dataset, surrogate and model-free checks must pass first."
+        ),
+        skip_action="Fix earlier dependency checks first.",
+    )
 
     def _svg():
         from beam_optimization.algorithms.model_based.svg import SVGAgent
         from beam_optimization.config.adige import (
-            N_PARAMS, PARAM_KEYS, default_params, observation_dim,
+            N_PARAMS,
+            PARAM_KEYS,
+            action_bounds,
+            default_params,
+            observation_dim,
         )
+
+        bounds = action_bounds()
+        action_bounds_tuple = (bounds[0].tolist(), bounds[1].tolist())
         agent = SVGAgent(
             surrogate=state["surrogates"],
-            dataset=state["ds"],
+            dataset=state["dataset"],
             obs_dim=observation_dim(),
             act_dim=N_PARAMS,
-            action_bounds=_bounds(),
+            action_bounds=action_bounds_tuple,
             param_keys=PARAM_KEYS,
             default_params=default_params(),
-            n_step=3,
+            hidden_dims=(32, 32),
+            n_step=1,
         )
-        assert len(agent.env.simulator.ensemble) == len(state["surrogates"])
         result = agent.optimize_episode()
-        assert result.final_score != 0.0
-        print(f"       SVG episode score={result.final_score:.4f}")
+        if not np.isfinite(float(result.final_score)):
+            raise CheckFailure(
+                "SVG mini optimize_episode returned a non-finite final score.",
+                action="Fix DifferentiableSurrogateEnv/SVG backward pass.",
+            )
+        return f"SVG n_step=1 optimize_episode OK, final_score={result.final_score:.6g}"
 
-    c.check("SVGAgent with ensemble (1 episode)", _svg)
+    checker.check(
+        "SVG differentiable mini episode",
+        _svg,
+        default_action="Fix SVG/DifferentiableSurrogateEnv differentiable rollout.",
+        skip_reason=None if (dataset_ok and surrogates_ok) else (
+            "Dataset and surrogate checks must pass first."
+        ),
+        skip_action=_setup_action(),
+    )
 
-    print("\n[5b] SurrogateDatasetUpdater — bootstrap ensemble fine-tuning")
+    print("\n[10/10] Online surrogate updater")
 
     def _surrogate_updater():
-        import numpy as np
+        from beam_optimization.config.adige import BEAM_STATE_FEATURES, default_params, score
+        from beam_optimization.env.simulation import BeamSimulationResult
         from beam_optimization.env.surrogate_env.surrogate.model.updater import (
             SurrogateDatasetUpdater,
         )
-        from beam_optimization.env.simulation import BeamSimulationResult
-        from beam_optimization.config.adige import BEAM_STATE_FEATURES, default_params, score
 
         updater = SurrogateDatasetUpdater(
-            state["surrogates"], min_samples=5, batch_size=8, epochs=3
+            state["surrogates"],
+            offline_dataset=state["dataset"],
+            min_samples=5,
+            batch_size=8,
+            epochs=1,
         )
-        assert updater.n_online_samples == 0
-
-        for i in range(8):
-            _, beam_states = state["ds"].get_training_batch([i])
+        for i in range(5):
+            _, beam_states = state["dataset"].get_training_batch([i])
             fake_bs = np.stack(
                 [stage.squeeze(0).numpy() for stage in beam_states],
                 axis=0,
             ).astype(np.float32)
-            fake_final = {v: float(fake_bs[-1][vi])
-                          for vi, v in enumerate(BEAM_STATE_FEATURES)}
-            res = BeamSimulationResult(
+            fake_final = {
+                name: float(fake_bs[-1][idx])
+                for idx, name in enumerate(BEAM_STATE_FEATURES)
+            }
+            result = BeamSimulationResult(
                 params=default_params(),
                 beam_states=fake_bs,
                 final_beam=fake_final,
@@ -224,52 +808,34 @@ def main() -> int:
                 success=True,
                 source="tracewin",
             )
-            updater.add_tracewin_result(res)
-
-        assert updater.n_online_samples == 8
+            if not updater.add_tracewin_result(result):
+                raise CheckFailure(
+                    "SurrogateDatasetUpdater rejected a valid fake TraceWin result.",
+                    action="Fix tracewin_result_to_flat_sample/updater ingestion.",
+                )
         losses = updater.update()
-        assert losses is not None
-        assert len(losses) == len(state["surrogates"])
-        print(f"       update OK, losses: {losses}")
+        if losses is None or len(losses) != len(state["surrogates"]):
+            raise CheckFailure(
+                "SurrogateDatasetUpdater.update did not return one loss per surrogate.",
+                action="Fix online surrogate fine-tuning before using MBPO model update.",
+            )
+        return f"accepted {updater.n_online_samples} fake TraceWin samples; losses={losses}"
 
-    c.check("SurrogateDatasetUpdater: add + bootstrap update", _surrogate_updater)
+    checker.check(
+        "SurrogateDatasetUpdater ingestion and tiny update",
+        _surrogate_updater,
+        default_action=(
+            "Fix online surrogate updater before using MBPO with model update/online fine-tuning."
+        ),
+        skip_reason=None if (dataset_ok and surrogates_ok) else (
+            "Dataset and surrogate checks must pass first."
+        ),
+        skip_action=_setup_action(),
+    )
 
-    # ── 6. TraceWin import ────────────────────────────────────────────────────
-    print("\n[6/6] TraceWin (import + local setup only, no execution)")
-
-    c.check("Import TraceWinSimulator",
-            lambda: __import__("beam_optimization.env.tracewin_env.tracewin.tracewin_simulator",
-                               fromlist=["TraceWinSimulator"]))
-    c.check("Import TraceWinEnv",
-            lambda: __import__("beam_optimization.env.tracewin_env",
-                               fromlist=["TraceWinEnv"]))
-
-    def _tw_local_setup():
-        wrapper_dir = PROJECT_ROOT / "env/tracewin_env/tracewin/pyTraceWin_wrapper"
-        tw_dir = wrapper_dir / "TraceWin_program"
-        tw_bin = tw_dir / "TraceWin"
-        launcher = wrapper_dir / "run_tracewin_with_permissions.sh"
-        workspace = PROJECT_ROOT / "env/tracewin_env/tracewin/TraceWin_workspace"
-        missing = [p for p in (tw_bin, launcher, workspace) if not p.exists()]
-        if missing:
-            print("       local TraceWin setup incomplete; skipping binary/workspace check:")
-            for path in missing:
-                print(f"         - missing: {path}")
-            print("       see README.md to create these unversioned local files.")
-            return
-
-        license_logs = [tw_dir / "tracewin_key.log", tw_dir / "toutatis_key.log"]
-        missing_logs = [p for p in license_logs if not p.exists()]
-        if missing_logs:
-            print("       binary/workspace OK; license/log files not found:")
-            for path in missing_logs:
-                print(f"         - optional/missing: {path}")
-        else:
-            print(f"       local TraceWin setup OK, {len(license_logs)} license/log files found")
-
-    c.check("Optional local TraceWin setup", _tw_local_setup)
-
-    return c.summary()
+    # Keep otherwise-unused variables visible for debugger/readability.
+    _ = python_ok, surrogate_env_ok
+    return checker.summary()
 
 
 if __name__ == "__main__":
