@@ -18,7 +18,7 @@ Reward:
 
 Episode design:
     RESET:
-        1. Sample beam0 from dataset (or from N(mu, sigma) if beam0_mode='gaussian')
+        1. Sample beam0 from the dataset
         2. Run surrogate(params) -> beam_states at all 12 stages
         3. obs = selected/flattened beam_states -> initial RL state
     STEP:
@@ -49,9 +49,6 @@ class SurrogateEnv(BaseBeamEnv):
         dataset:      BeamDataset with initial beam states for episode reset.
         max_steps:    Episode length.
         observation:   Selected by OBSERVATION_STAGE_MASK in adige.py.
-        beam0_mode:   How to sample the initial beam state at each reset:
-                        'dataset'  — pick a random row from the dataset (default)
-                        'gaussian' — sample from N(μ, sigma) fitted on the dataset
         device:       Torch device for inference.
     """
 
@@ -60,11 +57,10 @@ class SurrogateEnv(BaseBeamEnv):
         model: Union[ModularMLP, List[ModularMLP]],
         dataset: BeamDataset,
         max_steps: int = MAX_STEPS,
-        beam0_mode: str = "dataset",
         device: Optional[str] = None,
     ):
-        # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator 
-        self._simulator_kwargs = { "model": model, "dataset": dataset, "beam0_mode": beam0_mode, "device": device}
+        # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator
+        self._simulator_kwargs = {"model": model, "dataset": dataset, "device": device}
         
         # Call the base class constructor
         super().__init__(max_steps=max_steps)

@@ -16,7 +16,7 @@ stored in normal Git history.
 The RL action bounds and reset perturbations are defined per parameter in
 `beam_optimization/config/adige.py`. Each `ParameterSpec` contains:
 
-- `sensitivity`: physical parameter change per score-point change;
+- `sensitivity`: physical parameter change for a 15-point score change;
 - `action_scale_rl`: RL step size in sensitivity units;
 - `reset_scale`: reset perturbation size in sensitivity units.
 
@@ -83,7 +83,7 @@ Expected contents include the project files and field maps, for example:
 
 ```text
 TraceWin_workspace/
-├── condensed_new.ini
+├── condensed.ini
 ├── condensed.dat
 ├── 16O5.dst
 ├── sol*.bsr / sol*.bsz
@@ -93,10 +93,10 @@ TraceWin_workspace/
 ```
 
 The Python code needs to know which TraceWin project file to open. By default,
-it uses the file `condensed_new.ini` inside the local workspace shown above.
+it uses the file `condensed.ini` inside the local workspace shown above.
 
 ```text
-env/tracewin_env/tracewin/TraceWin_workspace/condensed_new.ini
+env/tracewin_env/tracewin/TraceWin_workspace/condensed.ini
 ```
 
 This position is defined in:
@@ -243,7 +243,7 @@ output to `calc/`:
 
 ```bash
 mkdir -p beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/calc
-sudo -u comunian test -r beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/condensed_new.ini
+sudo -u comunian test -r beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/condensed.ini
 sudo -u comunian test -w beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/calc
 ```
 
@@ -265,6 +265,25 @@ sudo -u comunian DISPLAY=$DISPLAY ./TraceWin
 If your licensed TraceWin binary is valid for a different Linux user, use that
 user instead of `comunian` in the SSH setup, the permission checks, and
 `run_tracewin_with_permissions.sh`.
+
+
+
+## Observation Configuration
+
+The RL observation is configured in `beam_optimization/config/adige.py` with
+`OBSERVATION_STAGE_MASK`. The mask has one boolean per `STAGE_MARKERS` entry:
+`True` means that stage is included in the flattened RL observation.
+
+Default:
+
+```python
+OBSERVATION_STAGE_MASK = (
+    True,   # beam0
+    False,  # intermediate stages
+    ...
+    True,   # final
+)
+```
 
 ## 4. Commands
 
@@ -425,8 +444,6 @@ sac td3 ppo ddpg a2c reinforce trpo sb3_sac dyna svg svg_finale svg_uniform
 All options:
 
 ```text
---surrogate PATH          legacy alias: a .pt file maps to --single-surrogate,
-                          a folder maps to --base-ensemble
 --single-surrogate PATH   surrogate used by SAC/TD3/PPO/DDPG/A2C/REINFORCE/TRPO/SB3-SAC
                           (default: DEFAULT_SINGLE_SURROGATE_MODEL)
 --base-ensemble PATH      folder with surrogate_*.pt used by SVG and MBPO
@@ -434,7 +451,7 @@ All options:
 --updated-ensemble PATH   working ensemble used only by MBPOWithModelUpdate; if empty,
                           it is initialized by copying --base-ensemble
                           (default: DEFAULT_UPDATED_SURROGATE_DIR)
---dataset PATH            offline BeamDataset (default: DEFAULT_DATASET)
+--dataset PATH            offline BeamDataset (default: DEFAULT_BASE_DATASET)
 --output PATH             root directory for checkpoints/logs (default: DEFAULT_OUTPUT_DIR)
 --rl-steps N              env steps for model-free algorithms and MBPO (default: 200000)
 --svg-episodes N          episodes for SVGAgent (default: 1000)
@@ -458,7 +475,6 @@ All options:
                           dataset (default: 0.5)
 --update-dataset PATH     where to save the merged offline+online dataset from
                           MBPOWithModelUpdate (default: same path as --dataset)
---update-surrogates PATH  legacy alias for --updated-ensemble
 ```
 
 TraceWin + online surrogate fine-tuning:
@@ -526,6 +542,84 @@ port from your local machine before opening the browser:
 ssh -L 6006:localhost:6006 USER@HOST
 ```
 
+
+### `benchmark`
+
+Use `benchmark` for numerical comparison on `SurrogateEnv`:
+
+```bash
+python -m beam_optimization benchmark --quick
+```
+
+Typical benchmark:
+
+```bash
+python -m beam_optimization benchmark \
+  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
+  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --output beam_optimization/runs/benchmark.json \
+  --n-runs 3 \
+  --eval-budget 3000 \
+  --svg-episodes 500
+```
+
+Optionally benchmark trained policies too:
+
+```bash
+python -m beam_optimization benchmark \
+  --policy-episodes 50 \
+  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --td3 beam_optimization/runs/all/td3/td3_agent.pt \
+  --ppo beam_optimization/runs/all/ppo/ppo_agent.pt
+```
+
+When checkpoint paths are provided, `benchmark` also runs a final policy
+stability benchmark on independent `SurrogateEnv` episodes. It records total
+reward, final score, final emittance `(ex + ey) / 2`, and final particle ratio
+for each episode, then writes mean/std summaries plus bar and box plots:
+
+```text
+benchmark_policy_episodes.csv
+benchmark_policy_summary.csv
+benchmark_policy_bars.png
+benchmark_policy_boxplots.png
+```
+
+The main JSON contains both `optimization_results` and `policy_evaluation`.
+`test` is for inspecting one trained policy trajectory in detail.
+
+All options:
+
+```text
+--surrogate PATH     single surrogate .pt file used by every method
+                     (default: DEFAULT_SINGLE_SURROGATE_MODEL)
+--dataset PATH       offline BeamDataset used to sample initial beam0 states
+                     (default: DEFAULT_BASE_DATASET)
+--output PATH        JSON results output path (default: DEFAULT_BENCHMARK_OUTPUT)
+--n-runs N           repeated runs per method, different seeds (default: 3)
+--eval-budget N      evaluation budget for PSO/Bayesian optimization (default: 3000)
+--svg-episodes N     episodes for each SVGAgent variant (default: 500)
+--svg-horizon N      SVGAgent rollout horizon (default: 20)
+--policy-episodes N  independent episodes per trained policy benchmark (default: 50)
+--max-ep-steps N     max steps per policy benchmark episode (default: 20)
+--policy-seed N      base seed for policy benchmark episodes (default: 42)
+--hidden N [N ...]   hidden layer sizes used to load custom policy checkpoints
+--no-policy-plots    disable policy bar plot and boxplot generation
+--quick              reduced budget for a fast smoke test
+--sac CKPT           optional trained SAC checkpoint
+--td3 CKPT           optional trained TD3 checkpoint
+--ppo CKPT           optional trained PPO checkpoint
+--ddpg CKPT          optional trained DDPG checkpoint
+--a2c CKPT           optional trained A2C checkpoint
+--reinforce CKPT     optional trained REINFORCE checkpoint
+--trpo CKPT          optional trained TRPO checkpoint
+--sb3-sac CKPT       optional trained Stable-Baselines3 SAC checkpoint
+--mbpo CKPT          optional trained MBPO/Dyna inner SAC checkpoint
+--svg-finale CKPT    optional trained SVG final-stage checkpoint
+--svg-uniform CKPT   optional trained SVG uniform-stage checkpoint
+```
+
+
 ### `test`
 
 Use `test` to inspect one trained policy on one qualitative episode.
@@ -580,9 +674,9 @@ All options:
                         (default: 256 256)
 --seed N                 base episode seed (default: 42)
 --surrogate PATH         surrogate model or ensemble folder, used when --env surrogate
-                        (default: DEFAULT_SURROGATE_DIR)
+                        (default: DEFAULT_BASE_SURROGATE_DIR)
 --dataset PATH           offline BeamDataset, used when --env surrogate
-                        (default: DEFAULT_DATASET)
+                        (default: DEFAULT_BASE_DATASET)
 --tracewin-project INI   TraceWin project file, used when --env tracewin
                         (default: DEFAULT_TRACEWIN_INI)
 --calc-dir PATH          TraceWin calc directory, used when --env tracewin
@@ -613,99 +707,8 @@ beam_optimization/runs/all/renders/
 For TraceWin, rendering can also save final particle phase-space images from the
 latest `.dst` file when available.
 
-### `benchmark`
 
-Use `benchmark` for numerical comparison on `SurrogateEnv`:
 
-```bash
-python -m beam_optimization benchmark --quick
-```
-
-Typical benchmark:
-
-```bash
-python -m beam_optimization benchmark \
-  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
-  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
-  --output beam_optimization/runs/benchmark.json \
-  --n-runs 3 \
-  --eval-budget 3000 \
-  --svg-episodes 500
-```
-
-Optionally benchmark trained policies too:
-
-```bash
-python -m beam_optimization benchmark \
-  --policy-episodes 50 \
-  --sac beam_optimization/runs/all/sac/sac_agent.pt \
-  --td3 beam_optimization/runs/all/td3/td3_agent.pt \
-  --ppo beam_optimization/runs/all/ppo/ppo_agent.pt
-```
-
-When checkpoint paths are provided, `benchmark` also runs a final policy
-stability benchmark on independent `SurrogateEnv` episodes. It records total
-reward, final score, final emittance `(ex + ey) / 2`, and final particle ratio
-for each episode, then writes mean/std summaries plus bar and box plots:
-
-```text
-benchmark_policy_episodes.csv
-benchmark_policy_summary.csv
-benchmark_policy_bars.png
-benchmark_policy_boxplots.png
-```
-
-The main JSON contains both `optimization_results` and `policy_evaluation`.
-`test` is for inspecting one trained policy trajectory in detail.
-
-All options:
-
-```text
---surrogate PATH     single surrogate .pt file used by every method
-                     (default: DEFAULT_SURROGATE_MODEL)
---dataset PATH       offline BeamDataset used to sample initial beam0 states
-                     (default: DEFAULT_DATASET)
---output PATH        JSON results output path (default: DEFAULT_BENCHMARK_OUTPUT)
---n-runs N           repeated runs per method, different seeds (default: 3)
---eval-budget N      evaluation budget for PSO/Bayesian optimization (default: 3000)
---svg-episodes N     episodes for each SVGAgent variant (default: 500)
---svg-horizon N      SVGAgent rollout horizon (default: 20)
---eval-episodes N    episodes per SAC/TD3/PPO checkpoint evaluation (default: 20)
---policy-episodes N  independent episodes per trained policy benchmark (default: 50)
---max-ep-steps N     max steps per policy benchmark episode (default: 20)
---policy-seed N      base seed for policy benchmark episodes (default: 42)
---hidden N [N ...]   hidden layer sizes used to load custom policy checkpoints
---no-policy-plots    disable policy bar plot and boxplot generation
---quick              reduced budget for a fast smoke test
---sac CKPT           optional trained SAC checkpoint
---td3 CKPT           optional trained TD3 checkpoint
---ppo CKPT           optional trained PPO checkpoint
---ddpg CKPT          optional trained DDPG checkpoint
---a2c CKPT           optional trained A2C checkpoint
---reinforce CKPT     optional trained REINFORCE checkpoint
---trpo CKPT          optional trained TRPO checkpoint
---sb3-sac CKPT       optional trained Stable-Baselines3 SAC checkpoint
---mbpo CKPT          optional trained MBPO/Dyna inner SAC checkpoint
---svg-finale CKPT    optional trained SVG final-stage checkpoint
---svg-uniform CKPT   optional trained SVG uniform-stage checkpoint
-```
-
-### Observation Configuration
-
-The RL observation is configured in `beam_optimization/config/adige.py` with
-`OBSERVATION_STAGE_MASK`. The mask has one boolean per `STAGE_MARKERS` entry:
-`True` means that stage is included in the flattened RL observation.
-
-Default:
-
-```python
-OBSERVATION_STAGE_MASK = (
-    True,   # beam0
-    False,  # intermediate stages
-    ...
-    True,   # final
-)
-```
 
 ## 5. Repository Layout
 
@@ -715,10 +718,13 @@ beam_optimization/
 ├── PROJECT_SCHEMA.md
 ├── main.py
 ├── __main__.py
+├── commands/            # ready-to-run shell wrappers for the CLI commands
 ├── config/
-│   ├── adige.py
-│   └── paths.py
+│   ├── adige.py         # physics single source of truth (parameters, score, MAX_STEPS)
+│   ├── paths.py         # default filesystem paths
+│   └── utility/         # offline calibration tools (sensitivity, action-space design)
 ├── algorithms/
+│   ├── __init__.py      # algorithm registry (make_agent / load_agent)
 │   ├── ALGORITHMS_CLASS_DIAGRAM.drawio
 │   ├── ALGORITHMS_SCHEMA.md
 │   ├── model_free/
@@ -734,7 +740,10 @@ beam_optimization/
 │   ├── dataset/
 │   ├── surrogate_env/
 │   └── tracewin_env/
+├── runs/                # training outputs (checkpoints, learning curves, logs)
+├── results/             # benchmark outputs
 └── scripts/
+    ├── common.py        # shared episode runner / evaluation helpers
     ├── setup.py
     ├── train.py
     ├── benchmark.py

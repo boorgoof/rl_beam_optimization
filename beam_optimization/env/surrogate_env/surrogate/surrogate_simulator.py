@@ -71,10 +71,9 @@ class SurrogateBeamSimulator(BeamSimulator):
         self,
         model: Union[ModularMLP, List[ModularMLP]],
         dataset: BeamDataset,
-        beam0_mode: str = "dataset",
         device: Optional[str] = None,
     ):
-        
+
         # Initialize the SurrogateBeamSimulator with the given parameters.
         self._ensemble = model if isinstance(model, list) else [model]
         self.model = self._ensemble[0]
@@ -85,13 +84,7 @@ class SurrogateBeamSimulator(BeamSimulator):
             m.eval()
             m.to(self.device)
 
-        if beam0_mode not in ("dataset", "gaussian"):
-            raise ValueError(f"beam0_mode must be 'dataset' or 'gaussian', got {beam0_mode!r}")
-        self.beam0_mode = beam0_mode
-
         self._initial_beam_states = dataset.get_initial_beam_states()
-        self._beam0_mean = self._initial_beam_states.mean(0).numpy().astype(np.float32)
-        self._beam0_std = self._initial_beam_states.std(0).numpy().astype(np.float32)
         self._episode_beam0 = np.zeros(BEAM_STATE_DIM, dtype=np.float32)
         self._active_model_index = 0
         self.reset_context()
@@ -119,20 +112,10 @@ class SurrogateBeamSimulator(BeamSimulator):
         self._active_model_index = index
 
     def sample_beam0(self, rng=None) -> np.ndarray:
-        """Sample one initial beam state according to `self.beam0_mode`."""
+        """Sample one real initial beam state from the dataset."""
         # Use the caller-provided RNG when available, so episodes can be reproducible.
         if rng is None:
             rng = np.random.default_rng()
-
-        # Gaussian mode creates a synthetic beam0 using mean/std estimated from
-        # the dataset initial beam states.
-        if self.beam0_mode == "gaussian":
-            return (
-                rng.standard_normal(BEAM_STATE_DIM).astype(np.float32)
-                * self._beam0_std + self._beam0_mean
-            )
-
-        # Default mode (dataset) samples one real initial beam state from the dataset.
         n = self._initial_beam_states.shape[0]
         idx = int(rng.integers(0, n))
         return self._initial_beam_states[idx].numpy().astype(np.float32)
@@ -143,7 +126,7 @@ class SurrogateBeamSimulator(BeamSimulator):
     def reset_context(self, rng=None) -> None:
         if rng is None:
             rng = np.random.default_rng()
-        # set the initial beam and the model to use from the ensamble
+        # set the initial beam and the model to use from the ensemble
         self.set_active_model(self.sample_model_index(rng))
         self.set_episode_beam0(self.sample_beam0(rng))
 
@@ -180,7 +163,6 @@ class SurrogateBeamSimulator(BeamSimulator):
                 final_beam=final_beam,
                 metadata={
                     "beam0": self._episode_beam0.copy(),
-                    "beam0_mode": self.beam0_mode,
                     "model_index": self._active_model_index,
                 },
             )
@@ -194,7 +176,6 @@ class SurrogateBeamSimulator(BeamSimulator):
                 error=str(exc),
                 metadata={
                     "beam0": self._episode_beam0.copy(),
-                    "beam0_mode": self.beam0_mode,
                     "model_index": self._active_model_index,
                 },
             )

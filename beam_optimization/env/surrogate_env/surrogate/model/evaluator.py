@@ -29,9 +29,8 @@ def evaluate_surrogate(
 ) -> dict:
     """Evaluate one surrogate on a dataset.
 
-    Metrics are computed on beam-state predictions, not on the scalar score.
-    For normal ModularMLP models this covers all 11 output stages. If a model
-    was built with single_output=True, only the final stage is evaluated.
+    Metrics are computed on beam-state predictions, not on the scalar score,
+    over all 11 output stages.
     """
     if len(dataset) == 0:
         raise ValueError("Cannot evaluate a surrogate on an empty dataset")

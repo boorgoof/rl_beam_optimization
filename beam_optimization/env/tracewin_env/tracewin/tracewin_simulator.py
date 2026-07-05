@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -282,14 +281,4 @@ def _kill_stale_tracewin_processes():
     Prevents resource conflicts when a previous simulation timed out and left
     a TraceWin process still running inside the SSH session.
     """
-    try:
-        result = subprocess.run(
-            ["ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-             "comunian@localhost",
-             "pkill -u comunian -x TraceWin || true; "
-             "pkill -u comunian -f '[x]vfb-run.*TraceWin' || true"],
-            timeout=10,
-            capture_output=True,
-        )
-    except Exception:
-        pass  # Non-critical — if SSH fails the main simulation will also fail
+    TraceWin._kill_remote_tracewin_processes()

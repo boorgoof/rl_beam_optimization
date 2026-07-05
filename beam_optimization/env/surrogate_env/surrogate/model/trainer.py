@@ -356,5 +356,4 @@ def _model_config(model_kwargs: dict) -> dict:
         "latent_dim": int(model_kwargs.get("latent_dim", 64)),
         "out_hidden": list(model_kwargs.get("out_hidden", [256, 256])),
         "out_dropout": float(model_kwargs.get("out_dropout", 0.15)),
-        "single_output": bool(model_kwargs.get("single_output", False)),
     }

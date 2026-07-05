@@ -19,7 +19,6 @@ def _positive_or_zero(value: float) -> float:
 def compute_action_scale_rl(
     *,
     target_trajectory_fraction: float = 0.4,
-    useful_trajectory_fraction: Optional[float] = None,
     target_steps: int = 10,
     max_steps: int = 20,
     margin: float = 1.3,
@@ -44,8 +43,6 @@ def compute_action_scale_rl(
 
     Parameters without hardware bounds fall back to ``fallback_scale``.
     """
-    if useful_trajectory_fraction is not None:
-        target_trajectory_fraction = useful_trajectory_fraction
     if target_steps <= 0:
         raise ValueError(f"target_steps must be > 0, got {target_steps}")
     if max_steps <= 0:
@@ -229,15 +226,11 @@ def report(
     max_steps: int = 20,
     margin: float = 1.3,
     target_trajectory_fraction: float = 0.4,
-    useful_trajectory_fraction: Optional[float] = None,
     target_steps: int = 10,
     reset_sigma: float = 3.0,
     reset_fraction: float = 0.3,
 ) -> None:
     """Print a compact calibration report and a ParameterSpec copy-paste block."""
-    if useful_trajectory_fraction is not None:
-        target_trajectory_fraction = useful_trajectory_fraction
-
     if reset_scale is None:
         reset_scale = compute_reset_scale(
             margin=margin,
@@ -324,11 +317,6 @@ if __name__ == "__main__":
         help="Fraction of available margin used as typical useful trajectory (default: %(default)s)"
     )
     parser.add_argument(
-        "--useful-traj", type=float, default=None,
-        metavar="FRACTION",
-        help="Backward-compatible alias for --target-traj"
-    )
-    parser.add_argument(
         "--reset-sigma", type=float, default=3.0,
         help="Gaussian reset sigma multiplier used as worst-case design bound (default: %(default)s)"
     )
@@ -342,7 +330,6 @@ if __name__ == "__main__":
         max_steps=args.max_steps,
         margin=args.margin,
         target_trajectory_fraction=args.target_traj,
-        useful_trajectory_fraction=args.useful_traj,
         target_steps=args.target_steps,
         reset_sigma=args.reset_sigma,
         reset_fraction=args.reset_fraction,

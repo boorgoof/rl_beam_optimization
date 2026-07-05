@@ -40,7 +40,7 @@ class ParameterSpec:
     key: str                     # TraceWin element key, e.g. "ele[2][5]=0.365663". The parameter to specificated is in marker 2 at position 5
     marker: int                  # lattice element index where this param is applied
     default: float               # physical default value
-    sensitivity: float           # Δparam per unit Δscore — base physical scale
+    sensitivity: float           # Δparam per 15 score points — base physical scale
     hw_min: float | None = None  # hardware lower bound (from machine specs); None = unknown
     hw_max: float | None = None  # hardware upper bound (from machine specs); None = unknown
     action_scale_rl: float = 1.0 # per-parameter RL action scale, in sensitivity units
@@ -120,6 +120,11 @@ SCORE_WEIGHTS: Dict[str, float] = {
     "angle":        10.0,  # penalise angular centroid offset (|x'0| + |y'0|)
     "size":          0.1,  # penalise beam size (SizeX + SizeY)
 }
+
+# Noise-robust scoring thresholds.
+TRANSMISSION_FULL_CREDIT: float = 0.995
+OFFSET_DEADBAND_MM: float = 0.05
+ANGLE_DEADBAND_MRAD: float = 0.05
 
 
 def _build_stage_layout() -> Tuple[Tuple[Tuple[str, ...], ...], Tuple[int, ...]]:
@@ -406,21 +411,55 @@ def vec_to_stage_tensors(vec: np.ndarray, device=None) -> List[torch.Tensor]:
     return params_to_stage_tensors(vec_to_params(vec), device=device)
 
 
+# Score helpers
+def _deadband_abs(value: float, deadband: float) -> float:
+    return max(abs(float(value)) - deadband, 0.0)
+
+
+def _transmission_score(npart_ratio: float) -> float:
+    transmission = min(float(npart_ratio), 1.0)
+    return 1.0 if transmission >= TRANSMISSION_FULL_CREDIT else transmission
+
+
+def _deadband_abs_tensor(value: torch.Tensor, deadband: float) -> torch.Tensor:
+    return torch.clamp(torch.abs(value) - deadband, min=0.0)
+
+
+def _transmission_score_tensor(npart_ratio: torch.Tensor) -> torch.Tensor:
+    transmission = torch.clamp(npart_ratio, max=1.0)
+    return torch.where(
+        transmission >= TRANSMISSION_FULL_CREDIT,
+        torch.ones_like(transmission),
+        transmission,
+    )
+
+
 # Score function 
 def score(beam_state: Dict[str, float]) -> float:
     """Compute a scalar beam quality score (at a specific stage) from a beam-state dict. Higher is better.
     
-    {"npart_ratio": 1.0, "x0": 0.20, "y0": -0.07, "SizeX": 11.8,"SizeY": 11.8, "ex": 0.089,"ey": 0.089,"x'0": 0.56,"y'0": -0.16} → 95.3
+    Transmission is saturated at 1.0 and receives full credit above
+    TRANSMISSION_FULL_CREDIT. Small centroid offsets/angles inside the
+    configured deadbands are ignored to reduce TraceWin/PARTRAN noise.
 
     Weights come from SCORE_WEIGHTS. A well-tuned beam (npart_ratio≈1,
     ex/ey≈0.05, offsets≈0) scores around 95. Failed simulations get
     ERROR_SCORE instead of calling this function.
     """
     w = SCORE_WEIGHTS
-    return (w["npart_ratio"] * beam_state["npart_ratio"]
+    transmission = _transmission_score(beam_state["npart_ratio"])
+    offset_penalty = (
+        _deadband_abs(beam_state["x0"], OFFSET_DEADBAND_MM)
+        + _deadband_abs(beam_state["y0"], OFFSET_DEADBAND_MM)
+    )
+    angle_penalty = (
+        _deadband_abs(beam_state["x'0"], ANGLE_DEADBAND_MRAD)
+        + _deadband_abs(beam_state["y'0"], ANGLE_DEADBAND_MRAD)
+    )
+    return (w["npart_ratio"] * transmission
             - w["emittance"] * (beam_state["ex"] + beam_state["ey"])
-            - w["offset"]    * (abs(beam_state["x0"]) + abs(beam_state["y0"]))
-            - w["angle"]     * (abs(beam_state["x'0"]) + abs(beam_state["y'0"]))
+            - w["offset"]    * offset_penalty
+            - w["angle"]     * angle_penalty
             - w["size"]      * (beam_state["SizeX"] + beam_state["SizeY"]))
 
 
@@ -437,16 +476,20 @@ def score_from_vec(beam_vec: np.ndarray) -> float:
 def score_tensor(beam_state: torch.Tensor) -> torch.Tensor:
     """Differentiable score from a (batch, 9) tensor.
     Used by DifferentiableSurrogateEnv (SVG). Same weights as score().
-
-    Example:
-
-        tensor([ [1.0, 0.20, -0.07, 11.8, 11.8, 0.089, 0.089, 0.56, -0.16],
-                   [0.99, 0.15,  0.02, 10.5, 10.2, 0.081, 0.084, 0.40, -0.10]]) → tensor([95.3, 96.8])
     """
     w = SCORE_WEIGHTS
     col = lambda name: beam_state[:, _BS_IDX[name]]
-    return (w["npart_ratio"] * col("npart_ratio")
+    transmission = _transmission_score_tensor(col("npart_ratio"))
+    offset_penalty = (
+        _deadband_abs_tensor(col("x0"), OFFSET_DEADBAND_MM)
+        + _deadband_abs_tensor(col("y0"), OFFSET_DEADBAND_MM)
+    )
+    angle_penalty = (
+        _deadband_abs_tensor(col("x'0"), ANGLE_DEADBAND_MRAD)
+        + _deadband_abs_tensor(col("y'0"), ANGLE_DEADBAND_MRAD)
+    )
+    return (w["npart_ratio"] * transmission
             - w["emittance"] * (col("ex") + col("ey"))
-            - w["offset"]    * (torch.abs(col("x0")) + torch.abs(col("y0")))
-            - w["angle"]     * (torch.abs(col("x'0")) + torch.abs(col("y'0")))
+            - w["offset"]    * offset_penalty
+            - w["angle"]     * angle_penalty
             - w["size"]      * (col("SizeX") + col("SizeY")))

@@ -4,8 +4,6 @@ ModularMLP — Neural surrogate of TraceWin for the ADIGE beam line.
 Architecture mirrors the physical structure: one sub-network per accelerator
 stage. Each stage takes the latent beam representation + the stage parameters
 and outputs both an updated latent and a beam-state prediction at that stage.
-
-Reference design: SUMO_TROLL/SURROGATE_MODEL/models.py
 """
 from __future__ import annotations
 
@@ -27,8 +25,7 @@ class ModularMLP(nn.Module):
         beam_state_0: (batch, BEAM_STATE_DIM) — initial beam state (stage 0 from dataset)
         stage_params:  list of 11 tensors, each (batch, stage_param_size)
 
-    Output (single_output=False): list of 11 tensors, each (batch, BEAM_STATE_DIM)
-    Output (single_output=True): tensor (batch, BEAM_STATE_DIM) — final stage only
+    Output: list of 11 tensors, each (batch, BEAM_STATE_DIM)
 
     Internal normalization: if norm_stats is provided at construction, inputs
     are normalized and outputs are denormalized automatically.
@@ -42,7 +39,6 @@ class ModularMLP(nn.Module):
         out_hidden: List[int] = (256, 256),
         out_dropout: float = 0.15,
         act: nn.Module = None,
-        single_output: bool = False,
         # normalization statistics (from dataset)
         norm_stats: Optional[dict] = None,
     ):
@@ -52,7 +48,6 @@ class ModularMLP(nn.Module):
         self.latent_dim = int(latent_dim)
         self.out_hidden = list(out_hidden)
         self.out_dropout = float(out_dropout)
-        self.single_output = single_output
         self.act = act or nn.ReLU()
         self._norm_stats = norm_stats
 
@@ -143,8 +138,7 @@ class ModularMLP(nn.Module):
             beam_state_0: (batch, 9) initial beam state (raw, un-normalized)
 
         Returns:
-            If single_output=False: list of 11 tensors (batch, 9) — one per stage
-            If single_output=True:  tensor (batch, 9) — final stage only
+            list of 11 tensors (batch, 9) — one per stage
         """
         sp = self._norm_params(stage_params)
         b0 = self._norm_beam(beam_state_0, stage_idx=0)
@@ -157,23 +151,16 @@ class ModularMLP(nn.Module):
             latent = self.stage_nets[i - 1](torch.cat([latent, sp[i]], dim=1)) + residual
             outputs.append(self._denorm_beam(self.output_nets[i](latent), stage_idx=i + 1))
 
-        if self.single_output:
-            return outputs[-1]
         return outputs
 
     # ── Checkpoint I/O ─────────────────────────────────────────────────────────
 
+    _CONFIG_KEYS = ("hidden_sizes", "dropout", "latent_dim", "out_hidden", "out_dropout")
+
     def save(self, path: str, extra: Optional[dict] = None):
         payload = {
             "model_state_dict": self.state_dict(),
-            "model_config": {
-                "hidden_sizes": self.hidden_sizes,
-                "dropout": self.dropout,
-                "latent_dim": self.latent_dim,
-                "out_hidden": self.out_hidden,
-                "out_dropout": self.out_dropout,
-                "single_output": self.single_output,
-            },
+            "model_config": {key: getattr(self, key) for key in self._CONFIG_KEYS},
         }
         if extra:
             payload.update(extra)
@@ -181,35 +168,12 @@ class ModularMLP(nn.Module):
 
     @classmethod
     def load(cls, path: str, device: str = "cpu", **kwargs) -> "ModularMLP":
-        """Load from checkpoint. Reads architecture config from the file itself.
-
-        Compatible with both beam_optimization and SUMO_TROLL checkpoint formats.
-        """
+        """Load from checkpoint. Reads architecture config from the file itself."""
         ckpt = torch.load(path, map_location=device, weights_only=False)
         norm = ckpt.get("normalization_metadata") or ckpt.get("norm_stats")
 
-        # Read architecture from checkpoint (SUMO_TROLL uses different key names)
         cfg = ckpt.get("model_config", {})
-        auto_kwargs = {}
-        if "hidden_sizes_stage" in cfg:      # SUMO_TROLL format
-            auto_kwargs["hidden_sizes"] = cfg["hidden_sizes_stage"]
-        elif "hidden_sizes" in cfg:
-            auto_kwargs["hidden_sizes"] = cfg["hidden_sizes"]
-        if "dropout" in cfg:
-            auto_kwargs["dropout"] = cfg["dropout"]
-        if "latent_size" in cfg:
-            auto_kwargs["latent_dim"] = cfg["latent_size"]
-        elif "latent_dim" in cfg:
-            auto_kwargs["latent_dim"] = cfg["latent_dim"]
-        if "out_net_hidden_sizes" in cfg:
-            auto_kwargs["out_hidden"] = cfg["out_net_hidden_sizes"]
-        elif "out_hidden" in cfg:
-            auto_kwargs["out_hidden"] = cfg["out_hidden"]
-        if "out_dropout" in cfg:
-            auto_kwargs["out_dropout"] = cfg["out_dropout"]
-        if "single_output" in cfg:
-            auto_kwargs["single_output"] = cfg["single_output"]
-
+        auto_kwargs = {key: cfg[key] for key in cls._CONFIG_KEYS if key in cfg}
         auto_kwargs.update(kwargs)           # explicit kwargs override auto
         model = cls(norm_stats=norm, **auto_kwargs)
         model.load_state_dict(ckpt["model_state_dict"], strict=False)

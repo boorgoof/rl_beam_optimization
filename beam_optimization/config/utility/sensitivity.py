@@ -5,11 +5,12 @@ Computes the sensitivity of the score to each tunable parameter via central
 finite differences, using TraceWin as the physics simulator. The values are
 expressed in the same convention used by adige.py:
 
-    sensitivity_p = 2δ / |score(p+δ) - score(p-δ)|   [Δparam / Δscore]
+    sensitivity_p = TARGET_SCORE_CHANGE * 2δ / |score(p+δ) - score(p-δ)|
 
-This is the inverse of the standard derivative (Δscore/Δparam). It represents
-how much you need to move parameter p to change the score by 1 point — the
-natural unit for action step sizing in the RL environment.
+This is the inverse of the standard derivative (Δscore/Δparam), scaled by
+TARGET_SCORE_CHANGE. It represents how much you need to move parameter p to
+change the score by TARGET_SCORE_CHANGE points — the natural unit for action
+step sizing in the RL environment.
 
 Run as a script:
     python -m beam_optimization.config.utility.sensitivity
@@ -29,6 +30,9 @@ from typing import Dict, List, Optional
 from beam_optimization.config.adige import PARAMETERS, default_params
 
 
+TARGET_SCORE_CHANGE: float = 15.0
+
+
 def compute_sensitivity(
     simulator,
     *,
@@ -45,7 +49,7 @@ def compute_sensitivity(
     For each parameter p and each delta_scale s, perturbs p by δ = s * sensitivity_current
     (keeping all other parameters at their nominal defaults) and computes:
 
-        sensitivity_p = 2δ / |score(p+δ) - score(p-δ)|   [Δparam / Δscore]
+        sensitivity_p = TARGET_SCORE_CHANGE * 2δ / |score(p+δ) - score(p-δ)|
 
     Repeating at three δ scales lets you verify gradient stability:
       - ratio sens(δ) / sens(δ/2) near 1.0 → gradient is linear, values are reliable
@@ -155,14 +159,15 @@ def compute_sensitivity(
                     _save_checkpoint(checkpoint, delta_scales, results)
                 continue
 
-            sensitivity_val = (2.0 * abs(delta)) / score_diff
+            sensitivity_val = TARGET_SCORE_CHANGE * (2.0 * abs(delta)) / score_diff
             if verbose:
                 deriv = score_diff / (2.0 * abs(delta))
                 plus_std = _score_std(plus_scores)
                 minus_std = _score_std(minus_scores)
                 print(
                     f"    sens = {sensitivity_val:.6e}  "
-                    f"(Δscore/Δparam = {deriv:.4f},  Δscore = {score_diff:.4f}, "
+                    f"(target Δscore = {TARGET_SCORE_CHANGE:g}, "
+                    f"Δscore/Δparam = {deriv:.4f},  Δscore = {score_diff:.4f}, "
                     f"score+ = {score_plus:.4f}±{plus_std:.4f}, "
                     f"score- = {score_minus:.4f}±{minus_std:.4f})"
                 )
@@ -323,7 +328,11 @@ def print_sensitivity_report(
     # ── copy-paste block ──────────────────────────────────────────────────────
     bar = "─" * 80
     print(bar)
-    print("Copy-paste block for adige.py  (uses stable adjacent-scale plateau only):")
+    print(
+        "Copy-paste block for adige.py  "
+        f"(sensitivity = parameter change for {TARGET_SCORE_CHANGE:g} score points; "
+        "uses stable adjacent-scale plateau only):"
+    )
     print(bar)
     for p in PARAMETERS:
         vals = results.get(p.name, [])
@@ -366,6 +375,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Compute ADIGE parameter sensitivity from TraceWin finite differences. "
+            f"Here sensitivity means parameter change for {TARGET_SCORE_CHANGE:g} score points. "
             "Prints a stability table and a copy-paste block — does NOT modify adige.py."
         )
     )
@@ -449,6 +459,7 @@ if __name__ == "__main__":
     print(f"Repeats          : {args.repeats}")
     print(f"Aggregation      : {args.aggregation}")
     print(f"Min score diff   : {args.min_score_diff}")
+    print(f"Target Δscore    : {TARGET_SCORE_CHANGE:g}")
     print(f"Stability window : [{args.stability_low}, {args.stability_high}]")
     print(f"Parameters       : {len(PARAMETERS)}")
     print(f"Total TW runs    : {len(PARAMETERS) * len(args.delta_scales) * 2 * args.repeats}")

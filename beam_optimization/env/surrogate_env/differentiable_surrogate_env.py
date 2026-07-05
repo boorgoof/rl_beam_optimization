@@ -69,7 +69,6 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         model: Union[ModularMLP, List[ModularMLP]],
         dataset: BeamDataset,
         max_steps: int = MAX_STEPS,
-        beam0_mode: str = "dataset",
         device: Optional[str] = None,
         stage_weights: Optional[List[float]] = None,
     ):
@@ -77,7 +76,6 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             model=model,
             dataset=dataset,
             max_steps=max_steps,
-            beam0_mode=beam0_mode,
             device=device,
         )
         self.device = self.simulator.device

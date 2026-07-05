@@ -1,14 +1,14 @@
 """
-SB3SAC — wrapper intorno a stable_baselines3.SAC.
+SB3SAC — wrapper around stable_baselines3.SAC (sanity baseline).
 
-Stable Baselines 3 gestisce internamente buffer e ottimizzazione, quindi
-l'API è diversa dagli agenti custom (niente store/optimize step-by-step).
-Questo wrapper:
-  - espone train(env, n_steps) per la fase di training
-  - espone select_action(obs) per l'inference (deterministic)
-  - espone save(path) / load(path, env) per i checkpoint
+Stable Baselines 3 manages its buffer and optimization internally, so the
+API differs from the custom agents (no step-by-step store/optimize).
+This wrapper:
+  - exposes train(env, n_steps) for the training phase
+  - exposes select_action(obs) for deterministic inference
+  - exposes save(path) / load(path, env) for checkpoints
 
-Uso tipico:
+Typical use:
     from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
     env   = SurrogateEnv(model=surrogate, dataset=ds)
     agent = SB3SAC(env, hidden_dims=(256, 256), lr=3e-4)
@@ -34,13 +34,13 @@ except ImportError:
 def _check_sb3():
     if not _SB3_AVAILABLE:
         raise ImportError(
-            "stable-baselines3 non trovato. Installa con:\n"
+            "stable-baselines3 not found. Install with:\n"
             "  pip install stable-baselines3"
         )
 
 
 class _BestScoreCallback(BaseCallback):
-    """Traccia il best score dell'env durante il training SB3."""
+    """Track the env best score during SB3 training."""
 
     def __init__(
         self,
@@ -78,7 +78,7 @@ class _BestScoreCallback(BaseCallback):
         self._run_eval(0)
 
     def _on_step(self) -> bool:
-        # SB3 espone env info tramite self.locals
+        # SB3 exposes env info through self.locals
         infos = self.locals.get("infos", [])
         rewards = self.locals.get("rewards", [])
         dones = self.locals.get("dones", [])
@@ -105,17 +105,17 @@ class _BestScoreCallback(BaseCallback):
 
 
 class SB3SAC:
-    """Wrapper di stable_baselines3.SAC per SurrogateEnv.
+    """stable_baselines3.SAC wrapper for the beam envs.
 
     Args:
-        env:         Ambiente Gymnasium (SurrogateEnv o TraceWinEnv).
-        hidden_dims: Dimensioni hidden layer della policy/value net.
-        lr:          Learning rate Adam.
-        buffer_size: Dimensione del replay buffer interno SB3.
-        batch_size:  Batch size per ogni aggiornamento SAC.
+        env:         Gymnasium environment (SurrogateEnv or TraceWinEnv).
+        hidden_dims: Hidden layer sizes of the policy/value nets.
+        lr:          Adam learning rate.
+        buffer_size: SB3 internal replay buffer size.
+        batch_size:  Batch size per SAC update.
         tau:         Soft update coefficient (target networks).
         gamma:       Discount factor.
-        device:      'cpu', 'cuda', o 'auto'.
+        device:      'cpu', 'cuda', or 'auto'.
     """
 
     def __init__(
@@ -156,15 +156,15 @@ class SB3SAC:
               eval_episodes: int = 5,
               eval_fn: Optional[Callable] = None,
               eval_logger: Optional[Callable] = None) -> float:
-        """Esegue il training SB3 per n_steps step reali.
+        """Run SB3 training for n_steps real env steps.
 
         Args:
-            env:       Se fornito, rimpiazza l'env usato nel costruttore.
-            n_steps:   Numero totale di step di interazione con l'env.
-            log_every: Ogni quanti step stampare un riepilogo.
+            env:       If given, replaces the env from the constructor.
+            n_steps:   Total number of env interaction steps.
+            log_every: Print a summary every N steps.
 
         Returns:
-            Best score raggiunto durante il training.
+            Best score reached during training.
         """
         _check_sb3()
         if env is not None and env is not self._env:
@@ -191,7 +191,7 @@ class SB3SAC:
 
     def select_action(self, obs: np.ndarray,
                       deterministic: bool = True) -> np.ndarray:
-        """Seleziona un'azione (deterministica per default, stochastic=False)."""
+        """Select an action (deterministic by default)."""
         _check_sb3()
         action, _ = self._model.predict(obs, deterministic=deterministic)
         return action
@@ -199,13 +199,13 @@ class SB3SAC:
     # ── Checkpoint ────────────────────────────────────────────────────────────
 
     def save(self, path: str):
-        """Salva il modello SB3. SB3 aggiunge automaticamente l'estensione .zip."""
+        """Save the SB3 model. SB3 automatically appends the .zip extension."""
         _check_sb3()
         self._model.save(path)
 
     @classmethod
     def load(cls, path: str, env) -> "SB3SAC":
-        """Carica un modello SB3 salvato."""
+        """Load a saved SB3 model."""
         _check_sb3()
         instance = cls.__new__(cls)
         instance._model = SAC.load(path, env=env)
