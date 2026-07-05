@@ -16,7 +16,7 @@ stored in normal Git history.
 The RL action bounds and reset perturbations are defined per parameter in
 `beam_optimization/config/adige.py`. Each `ParameterSpec` contains:
 
-- `sensitivity`: physical parameter change for a 20-point score change;
+- `sensitivity`: physical parameter change for a 1-point score change;
 - `action_scale_rl`: RL step size in sensitivity units;
 - `reset_scale`: reset perturbation size in sensitivity units.
 
@@ -24,6 +24,14 @@ The effective action bound is `± sensitivity * action_scale_rl`; the reset
 standard deviation is `sensitivity * reset_scale`. The old global
 `--action-scale` / `sigma_factor` knobs are no longer part of the training
 pipeline.
+
+Sensitivities are measured with `python -m beam_optimization.config.utility.sensitivity`,
+which cancels TraceWin's Monte Carlo noise using common random numbers: each
++δ/−δ pair runs with the same `random_seed`, repeats use different seeds, and a
+startup probe measures the noise floor and checks seed determinism (if the
+probe reports non-reproducible runs at fixed seed, rerun with
+`--tracewin-threads 1`). Results are accepted only above a signal-to-noise
+threshold (`--snr-min`).
 
 ## 1. Clone And Python Setup
 
@@ -414,6 +422,8 @@ All options:
 --tracewin-timeout FLOAT   timeout in seconds for each TraceWin call
                            (default: 120.0)
 --surrogate-steps N        random SurrogateEnv steps to run (default: 5)
+--skip-tracewin            skip the TraceWin file and real reset/step checks
+                           (sections 3-4); for surrogate-only machines
 ```
 
 ### `train`
@@ -791,8 +801,6 @@ latest `.dst` file when available.
 
 ```text
 beam_optimization/
-├── PROJECT_CLASS_DIAGRAM.drawio
-├── PROJECT_SCHEMA.md
 ├── main.py
 ├── __main__.py
 ├── commands/            # ready-to-run shell wrappers for the CLI commands
@@ -803,7 +811,6 @@ beam_optimization/
 ├── algorithms/
 │   ├── __init__.py      # algorithm registry (make_agent / load_agent)
 │   ├── ALGORITHMS_CLASS_DIAGRAM.drawio
-│   ├── ALGORITHMS_SCHEMA.md
 │   ├── model_free/
 │   ├── model_based/
 │   ├── baselines/
@@ -811,7 +818,6 @@ beam_optimization/
 │   └── utils/
 ├── env/
 │   ├── ENV_CLASS_DIAGRAM.drawio
-│   ├── ENV_SCHEMA.md
 │   ├── base_beam_env.py
 │   ├── simulation.py
 │   ├── dataset/
@@ -840,35 +846,9 @@ python -m beam_optimization check
 
 ## 6. More Documentation
 
-Project overview:
+Class diagrams (open with https://app.diagrams.net or the drawio VS Code extension):
 
 ```text
-beam_optimization/PROJECT_SCHEMA.md
-beam_optimization/PROJECT_CLASS_DIAGRAM.drawio
-```
-
-Environment architecture:
-
-```text
-beam_optimization/env/ENV_SCHEMA.md
 beam_optimization/env/ENV_CLASS_DIAGRAM.drawio
-```
-
-Algorithm architecture:
-
-```text
-beam_optimization/algorithms/ALGORITHMS_SCHEMA.md
 beam_optimization/algorithms/ALGORITHMS_CLASS_DIAGRAM.drawio
-```
-
-TraceWin-specific guide:
-
-```text
-beam_optimization/env/tracewin_env/tracewin/tracewin_guide.md
-```
-
-Environment visualization notebook:
-
-```text
-beam_optimization/env/visualize_environments.ipynb
 ```

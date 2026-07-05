@@ -309,6 +309,14 @@ def main() -> int:
         default=5,
         help="Random SurrogateEnv steps to run in the surrogate environment check.",
     )
+    parser.add_argument(
+        "--skip-tracewin",
+        action="store_true",
+        help=(
+            "Skip the TraceWin file and real reset/step checks (sections 3-4). "
+            "Use on surrogate-only machines; full onboarding requires TraceWin."
+        ),
+    )
     args = parser.parse_args()
 
     checker = Checker()
@@ -410,11 +418,21 @@ def main() -> int:
             )
         return f"TraceWin files OK; calc dir writable: {calc_dir}"
 
+    if args.skip_tracewin:
+        tracewin_skip_reason = "--skip-tracewin requested."
+        tracewin_skip_action = "Rerun without --skip-tracewin for full onboarding."
+    elif not paths_ok:
+        tracewin_skip_reason = "Project path check failed."
+        tracewin_skip_action = "Fix missing project paths first."
+    else:
+        tracewin_skip_reason = None
+        tracewin_skip_action = ""
+
     tracewin_files_ok = checker.check(
         "TraceWin workspace, binary, launcher and permissions",
         _tracewin_local_setup,
-        skip_reason=None if paths_ok else "Project path check failed.",
-        skip_action="Fix missing project paths first.",
+        skip_reason=tracewin_skip_reason,
+        skip_action=tracewin_skip_action,
     )
 
     print("\n[4/10] TraceWinEnv real reset + step")
@@ -465,8 +483,14 @@ def main() -> int:
             ".ini/.dat/field maps/.dst, license, launcher permissions and TraceWin output."
         ),
         default_path_command=str(Path(args.tracewin_calc_dir)),
-        skip_reason=None if tracewin_files_ok else "TraceWin local setup did not pass.",
-        skip_action="Fix TraceWin local setup first.",
+        skip_reason=(
+            "--skip-tracewin requested." if args.skip_tracewin
+            else None if tracewin_files_ok else "TraceWin local setup did not pass."
+        ),
+        skip_action=(
+            "Rerun without --skip-tracewin for full onboarding."
+            if args.skip_tracewin else "Fix TraceWin local setup first."
+        ),
     )
     state["tracewin_env_ok"] = tracewin_env_ok
 

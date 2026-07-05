@@ -44,6 +44,10 @@ class TraceWinSimulator(BeamSimulator):
         retry_sleep:   Seconds to wait between retries.
         kill_stale:    If True, kill leftover `comunian` TraceWin processes before
                        each simulation (prevents resource conflicts).
+        tracewin_params: Extra TraceWin CLI options forwarded as key=value
+                       (e.g. {"random_seed": 42} for reproducible Monte Carlo).
+        num_threads:   TraceWin nbr_thread (None = all CPUs). Use 1 for
+                       bit-reproducible runs.
     """
 
     def __init__(
@@ -54,6 +58,8 @@ class TraceWinSimulator(BeamSimulator):
         retries: int = 2,
         retry_sleep: float = 5.0,
         kill_stale: bool = True,
+        tracewin_params: Optional[Dict[str, object]] = None,
+        num_threads: Optional[int] = None,
     ):
         # Initialize the TraceWinSimulator with the given parameters.
         project_path = Path(project_file).resolve()
@@ -63,6 +69,9 @@ class TraceWinSimulator(BeamSimulator):
         self.retries      = int(retries)
         self.retry_sleep  = float(retry_sleep)
         self.kill_stale   = bool(kill_stale)
+        # Mutable on purpose: sensitivity analysis updates random_seed per run.
+        self.tracewin_params: Dict[str, object] = dict(tracewin_params or {})
+        self.num_threads = num_threads
         self._source_project_dir = str(project_path.parent)
         self._project_filename = project_path.name
         self._sim_count   = 0
@@ -172,7 +181,12 @@ class TraceWinSimulator(BeamSimulator):
         try:
             # Run TraceWin with the given parameters and timeout.
             tw = TraceWin(runtime_project_file, self.calc_dir)
-            success = tw.run(timeout=self.timeout, elem_params=params)
+            success = tw.run(
+                timeout=self.timeout,
+                elem_params=params,
+                other_params=self.tracewin_params,
+                num_threads=self.num_threads,
+            )
 
             # If TraceWin failed, raise an exception.
             if not success:

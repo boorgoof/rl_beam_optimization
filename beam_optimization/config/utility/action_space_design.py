@@ -1,8 +1,15 @@
+"""Offline calibration of per-parameter RL action/reset scales.
 
+All scales are expressed in units of the current adige.py sensitivity
+(1-point convention: sensitivity = Δparam per 1 score point), so
+step_max = action_scale_rl * sensitivity is a physical parameter delta.
+The math is convention-agnostic; only the fallback constants below assume
+the 1-point convention.
+"""
 from __future__ import annotations
 from typing import List, Optional, Tuple
 import numpy as np
-from beam_optimization.config.adige import PARAMETERS, sensitivity_vec
+from beam_optimization.config.adige import MAX_STEPS, PARAMETERS, sensitivity_vec
 
 
 def _available_margin(param) -> float | None:
@@ -20,10 +27,10 @@ def compute_action_scale_rl(
     *,
     target_trajectory_fraction: float = 0.4,
     target_steps: int = 10,
-    max_steps: int = 20,
+    max_steps: int = MAX_STEPS,
     margin: float = 1.3,
     reset_fraction: float = 0.3,
-    fallback_scale: float = 1.0,
+    fallback_scale: float = 25.0,  # 1-point units: one action step ≈ 25 score points
 ) -> np.ndarray:
     """Compute recommended action_scale_rl per parameter.
 
@@ -81,7 +88,7 @@ def compute_reset_scale(
     margin: float = 1.3,
     reset_sigma: float = 3.0,
     reset_fraction: float = 0.3,
-    fallback_reset_scale: float = 0.5,
+    fallback_reset_scale: float = 12.5,  # 1-point units (= 0.5 in the old 25-point convention)
 ) -> np.ndarray:
     """Compute recommended reset_scale per parameter.
 
@@ -122,7 +129,7 @@ def dataset_core_bounds(
     action_scale_rl: np.ndarray,
     reset_scale: np.ndarray,
     *,
-    max_steps: int = 20,
+    max_steps: int = MAX_STEPS,
     reset_sigma: float = 3.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute the dense core sampling zone for the surrogate dataset.
@@ -155,7 +162,7 @@ def dataset_core_bounds(
 def verify_constraints(
     action_scale_rl: np.ndarray,
     reset_scale: np.ndarray,
-    max_steps: int = 20,
+    max_steps: int = MAX_STEPS,
     margin: float = 1.3,
     reset_sigma: float = 3.0,
 ) -> List[str]:
@@ -223,7 +230,7 @@ def report(
     action_scale_rl: np.ndarray | None = None,
     reset_scale: np.ndarray | None = None,
     *,
-    max_steps: int = 20,
+    max_steps: int = MAX_STEPS,
     margin: float = 1.3,
     target_trajectory_fraction: float = 0.4,
     target_steps: int = 10,
@@ -300,7 +307,7 @@ if __name__ == "__main__":
         description="Print the action space design calibration report for ADIGE."
     )
     parser.add_argument(
-        "--max-steps", type=int, default=20,
+        "--max-steps", type=int, default=MAX_STEPS,
         help="Episode length in RL steps (default: %(default)s)"
     )
     parser.add_argument(

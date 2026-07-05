@@ -35,7 +35,7 @@ class BayesianOptimizer:
     Args:
         n_calls:      Total number of objective evaluations.
         n_initial:    Random initial points (before GP fits).
-        bounds_scale: Action range as multiple of sensitivity around default.
+        bounds_scale: Search range as multiple of the (1-point) sensitivity around default.
         acq_func:     Acquisition function ('EI', 'PI', 'LCB').
         seed:         Random seed.
         param_keys:    Ordered parameter keys.
@@ -47,7 +47,7 @@ class BayesianOptimizer:
         self,
         n_calls: int = 100,
         n_initial: int = 20,
-        bounds_scale: float = 5.0,
+        bounds_scale: float = 125.0,
         acq_func: str = "EI",
         seed: int = 42,
         *,

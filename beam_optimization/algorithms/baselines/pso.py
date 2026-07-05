@@ -36,7 +36,7 @@ class PSOOptimizer:
     Args:
         n_particles:   Swarm size.
         n_iterations:  Number of PSO iterations.
-        bounds_scale:  Search range as multiple of sensitivity around default.
+        bounds_scale:  Search range as multiple of the (1-point) sensitivity around default.
         w:             Inertia weight (momentum).
         c1:            Cognitive coefficient (personal best attraction).
         c2:            Social coefficient (global best attraction).
@@ -50,7 +50,7 @@ class PSOOptimizer:
         self,
         n_particles: int = 30,
         n_iterations: int = 100,
-        bounds_scale: float = 5.0,
+        bounds_scale: float = 125.0,
         w: float = 0.729,
         c1: float = 1.494,
         c2: float = 1.494,
