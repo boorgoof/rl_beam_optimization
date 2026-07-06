@@ -78,31 +78,42 @@ def plot_tracewin_distribution(
     figure_name: str = "TraceWin Output Distribution",
     bins: int = 200,
     axis_range_mm: float = 50.0,
+    xy_range_mm: Optional[float] = None,
+    angle_range_mrad: Optional[float] = None,
+    aperture_radius_mm: Optional[float] = None,
+    figsize: tuple[float, float] = (18, 5),
     save_path: Optional[str] = None,
     dpi: int = 140,
     show: bool = False,
 ) -> plt.Figure:
-    """Plot TraceWin output distributions as x-y, x-x', and y-y' panels."""
+    """Plot TraceWin output distributions as x-y, x-x', and y-y' panels.
+
+    ``axis_range_mm`` is kept for backward compatibility and is used for both
+    position and angle axes unless ``xy_range_mm`` or ``angle_range_mrad`` are
+    provided explicitly.
+    """
     
     # create a new figure if none is provided 
     if figure is None or not plt.fignum_exists(figure.number):
-        figure = plt.figure(figure_name, figsize=(18, 5))
+        figure = plt.figure(figure_name, figsize=figsize)
 
     # clear the figure and create a 1x3 grid of subplots
     figure.clf()
     axes = figure.subplots(1, 3)
 
+    if xy_range_mm is None:
+        xy_range_mm = axis_range_mm
+    if angle_range_mrad is None:
+        angle_range_mrad = axis_range_mm
+
     # define the specifications for each subplot, including the keys for x and y values, labels, and titles 
     plot_specs = [
-        ("x", "y", "x [mm]", "y [mm]", "x-y plane"),
-        ("x", "xp", "x [mm]", "x' [mrad]", "x-xp emittance"),
-        ("y", "yp", "y [mm]", "yp [mrad]", "y-yp emittance"),
+        ("x", "y", "x [mm]", "y [mm]", "x-y plane", xy_range_mm, xy_range_mm),
+        ("x", "xp", "x [mm]", "x' [mrad]", "x-xp emittance", xy_range_mm, angle_range_mrad),
+        ("y", "yp", "y [mm]", "yp [mrad]", "y-yp emittance", xy_range_mm, angle_range_mrad),
     ]
 
-    hist_range = [[-axis_range_mm, axis_range_mm], [-axis_range_mm, axis_range_mm]]
-
-    
-    for ax, (x_key, y_key, xlabel, ylabel, panel_title) in zip(axes, plot_specs):
+    for ax, (x_key, y_key, xlabel, ylabel, panel_title, x_limit, y_limit) in zip(axes, plot_specs):
         # Convert m/rad -> mm/mrad for display
         x_vals = np.asarray(distr[x_key], dtype=float) * 1000.0
         y_vals = np.asarray(distr[y_key], dtype=float) * 1000.0
@@ -111,6 +122,7 @@ def plot_tracewin_distribution(
         # Filter the x and y values based on the mask
         x_vals = x_vals[mask]
         y_vals = y_vals[mask]
+        hist_range = [[-x_limit, x_limit], [-y_limit, y_limit]]
 
         # transform  particles into a 2D histogram for plotting
         hist, xedges, yedges = np.histogram2d(
@@ -140,6 +152,20 @@ def plot_tracewin_distribution(
         ax.set_title(panel_title)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
+
+        if x_key == "x" and y_key == "y" and aperture_radius_mm is not None:
+            aperture = plt.Circle(
+                (0.0, 0.0),
+                aperture_radius_mm,
+                fill=False,
+                color="white",
+                linewidth=1.8,
+                linestyle="--",
+                label=f"tube radius {aperture_radius_mm:g} mm",
+            )
+            ax.add_patch(aperture)
+            ax.legend(fontsize=8, loc="upper right")
+
         figure.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
 
     if title is not None and title.strip():

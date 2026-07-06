@@ -142,5 +142,6 @@ class TraceWinEnv(BaseBeamEnv):
             figure_name=f"{type(self).__name__} TraceWin final beam distribution",
             bins=bins,
             axis_range_mm=axis_range_mm,
+            figsize=(18, 5),
             show=True,
         )
