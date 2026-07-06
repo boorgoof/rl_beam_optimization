@@ -538,7 +538,7 @@ if __name__ == "__main__":
         "--delta-scales",
         nargs="+",
         type=float,
-        default=[50.0, 12.0, 3.0, 1.0],
+        default=[10.0, 4.0, 1.5, 0.5],
         metavar="S",
         help=(
             "Multiples of the current (1-point) sensitivity used as δ. "
