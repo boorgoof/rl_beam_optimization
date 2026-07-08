@@ -121,7 +121,6 @@ Confronta piu metodi sullo stesso problema.
 
 Nel diagramma e collegato sia agli agenti RL sia alle baseline classiche:
 
-- `PSOOptimizer`;
 - `BayesianOptimizer`;
 - `SVGAgent`;
 - agenti model-free salvati.
@@ -636,7 +635,6 @@ params -> objective(params) -> score
 
 Nel progetto ci sono:
 
-- `PSOOptimizer`;
 - `BayesianOptimizer`.
 
 Sono utili come confronto con gli agenti RL.

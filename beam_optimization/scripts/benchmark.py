@@ -5,7 +5,6 @@ All methods receive the same surrogate, the same initial beam0 and the same
 evaluation budget.
 
 Methods:
-  pso               Particle Swarm Optimization
   bayesian_opt      Bayesian Optimization (GP)
   svg_finale        SVGAgent — final-stage reward only
   svg_uniform      SVGAgent — uniform reward over all stages
@@ -79,28 +78,6 @@ STAGE_WEIGHT_CONFIGS = {
 
 
 # ── Benchmark functions ───────────────────────────────────────────────────────
-
-def run_pso(surrogate, dataset, budget, seed) -> Dict:
-    from beam_optimization.algorithms.baselines.pso import PSOOptimizer
-    beam0 = _pick_beam(dataset, seed)
-    surrogate.eval()
-
-    def objective(params):
-        with torch.no_grad():
-            outs = surrogate(params_to_stage_tensors(params), beam0)
-            return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
-
-    n_particles  = 30
-    n_iterations = max(1, budget // n_particles - 1)
-    result = PSOOptimizer(
-        n_particles=n_particles,
-        n_iterations=n_iterations,
-        seed=seed,
-        param_keys=PARAM_KEYS,
-        default_values=DEFAULT_PARAM_VALUES,
-        sensitivity_values=SENSITIVITY_VALUES,
-    ).optimize(objective)
-    return {"best_score": result.best_score, "history": result.score_history}
 
 
 def run_bo(surrogate, dataset, budget, seed) -> Dict:
@@ -319,7 +296,7 @@ def save_policy_plots(episodes: list[dict], summary: dict[str, dict], output_jso
         stds = [summary[algo][f"{metric}_std"] for algo in algorithms]
         ax.bar(algorithms, means, yerr=stds, capsize=4, alpha=0.86, color=colors)
         if metric == "final_score":
-            for ref in ("bayesian_opt", "pso"):
+            for ref in ("bayesian_opt",):
                 best = _optimization_best(optimization_results, ref)
                 if best is not None:
                     ax.axhline(best, color=algo_style(ref)[0], linewidth=1.2,
@@ -476,7 +453,7 @@ def save_convergence_plot(results: Dict, output_json: str | Path,
                           svg_horizon: int) -> Optional[Path]:
     """Sample-efficiency plot: best score so far vs surrogate evaluations.
 
-    PSO/BO histories contain one entry per objective evaluation; SVG histories
+    BO histories contain one entry per objective evaluation; SVG histories
     one entry per episode (= svg_horizon surrogate calls). Mean across the
     n_runs with a ±std band, truncated to the shortest run.
     """
@@ -656,11 +633,6 @@ def main():
     for run in range(args.n_runs):
         seed = 42 + run
         print(f"\n{'='*65}\nRun {run+1}/{args.n_runs}  (seed={seed})\n{'='*65}")
-
-        print("PSO...")
-        r = run_pso(surrogate, dataset, args.eval_budget, seed)
-        results.setdefault("pso", []).append(r)
-        print(f"  best={r['best_score']:.3f}")
 
         print("Bayesian Optimization...")
         r = run_bo(surrogate, dataset, args.eval_budget, seed)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Full benchmark on the surrogate: PSO + Bayesian optimization + SVG training
+# Full benchmark on the surrogate: Bayesian optimization + SVG training
 # runs, then the final policy benchmark over all trained checkpoints
 # (50 independent episodes each). Requires a completed train.sh run.
 # See: beam_optimization/scripts/benchmark.py, README.md section 4 ("benchmark").

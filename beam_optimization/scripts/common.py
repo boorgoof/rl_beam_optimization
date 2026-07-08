@@ -41,9 +41,8 @@ ALGO_STYLES: dict[str, tuple[str, str]] = {
     "dyna":         ("#008300", "-"),
     "svg_finale":   ("#4a3aa7", "-"),
     "svg_uniform":  ("#4a3aa7", "--"),
-    # optimization baselines (red / magenta)
+    # optimization baseline (red)
     "bayesian_opt": ("#e34948", "-"),
-    "pso":          ("#e87ba4", "-"),
 }
 
 

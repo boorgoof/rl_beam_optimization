@@ -2,7 +2,7 @@
 # Canonical end-to-end pipeline for the thesis experiments:
 #   1. check      — project health check (fast)
 #   2. train.sh   — all algorithms × 3 seeds on the surrogate (several hours)
-#   3. benchmark.sh — PSO/BO/SVG + policy benchmark on all checkpoints (~1 hour)
+#   3. benchmark.sh — BO/SVG + policy benchmark on all checkpoints (~1 hour)
 #   4. test.sh    — one qualitative rendered episode with the trained SAC
 # Prerequisite: base dataset and surrogates exist (otherwise run setup.sh first).
 # For the optional real-physics validation, run benchmark_tracewin.sh afterwards.

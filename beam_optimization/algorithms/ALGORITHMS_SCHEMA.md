@@ -41,7 +41,6 @@ beam_optimization/algorithms/
 │   ├── mbpo_model_update.py
 │   └── svg.py
 ├── baselines/
-│   ├── pso.py
 │   └── bayesian_opt.py
 ├── networks/
 │   ├── policy_nets.py
@@ -449,19 +448,6 @@ il vettore dei parametri usando una funzione obiettivo:
 objective(params) -> score
 ```
 
-### `PSOOptimizer`
-
-Particle Swarm Optimization.
-
-Mantiene uno swarm di particelle, dove ogni particella e un possibile vettore
-di parametri. Aggiorna velocita e posizione in base al miglior punto personale
-e al miglior punto globale.
-
-Riceve dal caller chiavi parametriche, valori default e sensitivity; non legge
-direttamente la configurazione macchina.
-
-Il risultato viene restituito in `PSOResult`.
-
 ### `BayesianOptimizer`
 
 Ottimizzazione bayesiana con modello surrogato probabilistico della funzione
@@ -470,8 +456,8 @@ obiettivo.
 Prova nuovi parametri bilanciando esplorazione e sfruttamento. Il risultato
 viene restituito in `BOResult`.
 
-Come `PSOOptimizer`, riceve dal caller chiavi parametriche, valori default e
-sensitivity usati per costruire lo spazio di ricerca.
+Riceve dal caller chiavi parametriche, valori default e sensitivity usati per
+costruire lo spazio di ricerca.
 
 ## Flussi Tipici Di Training
 
@@ -577,4 +563,4 @@ detActor  = DeterministicPolicyNetwork
 - Se usa `stocActor`, ragiona su distribuzioni di azioni.
 - Se usa `detActor`, produce direttamente l'azione.
 - `SB3SAC` e SAC, ma con gestione interna Stable Baselines3.
-- Le baseline `PSO` e `BayesianOptimizer` non imparano una policy.
+- `BayesianOptimizer` non impara una policy.

@@ -8,7 +8,6 @@ See TRACEWIN_SETUP.md for system-level prerequisites.
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import time
 from pathlib import Path
@@ -178,7 +177,6 @@ class TraceWinSimulator(BeamSimulator):
         # Reset the calculation directory and prepare the project workspace for TraceWin.
         self._reset_calc_dir()
         runtime_project_file = self._prepare_workspace()
-        self._check_tracewin_params(params)
 
         try:
             # Run TraceWin with the given parameters and timeout.
@@ -220,29 +218,6 @@ class TraceWinSimulator(BeamSimulator):
         finally:
             # TraceWin writes generated files (.cal, *_new.ini) straight into the shared workspace. Remove them now so the workspace is always left clean, whether the run succeeded or raised.
             self._clean_runtime_project_artifacts(Path(self._source_project_dir))
-
-
-    def _check_tracewin_params(self, params: Dict[str, float]) -> None:
-        """Fail early when configured ``ele[i][j]`` keys do not fit the lattice (.dat file)."""
-        dat_path = Path(self.project_file).with_suffix(".dat")
-        if not dat_path.exists():
-            return
-
-        lattice_lines = _tracewin_lattice_element_lines(dat_path)
-        max_element = len(lattice_lines)
-        requested = sorted(_parse_tracewin_param_key(key) for key in params)
-        missing = [item for item in requested if item and item[0] > max_element]
-        if not missing:
-            return
-
-        preview = ", ".join(f"ele[{element}][{param}]" for element, param in missing[:8])
-        suffix = "" if len(missing) <= 8 else f", ... ({len(missing)} total)"
-        raise ValueError(
-            "TraceWin parameter configuration does not match the lattice file. "
-            f"{dat_path} contains {max_element} element lines, but config requested "
-            f"{preview}{suffix}. Use the full ADIGE lattice .dat/.ini pair, or update "
-            "beam_optimization.config.adige.PARAMETERS."
-        )
 
     # Internal methods for building the BeamSimulationResult from TraceWin output.
     # ------------
@@ -312,27 +287,6 @@ def _read_beam_feature_from_tracewin_row(row, feature: str) -> float:
         npart = float(row.get("npart", 0.0))
         return npart / INITIAL_NPART if INITIAL_NPART > 0 else 0.0
     return float(row.get(feature, 0.0))
-
-
-def _tracewin_lattice_element_lines(dat_path: Path) -> list[str]:
-    """Return non-comment TraceWin lattice lines up to END/end."""
-    lines = []
-    with dat_path.open("r", encoding="utf-8", errors="replace") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith(";"):
-                continue
-            if line.lower() == "end":
-                break
-            lines.append(line)
-    return lines
-
-
-def _parse_tracewin_param_key(key: str) -> tuple[int, int] | None:
-    match = re.fullmatch(r"ele\[(\d+)]\[(\d+)]", key)
-    if match is None:
-        return None
-    return int(match.group(1)), int(match.group(2))
 
 
 def _kill_stale_tracewin_processes():

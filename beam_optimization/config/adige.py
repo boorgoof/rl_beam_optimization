@@ -49,28 +49,42 @@ class ParameterSpec:
 
 # List of all tunable parameters in the ADIGE beam line, in order of appearance in the lattice.
 PARAMETERS: Tuple[ParameterSpec, ...] = (
-    # AD.SO.01: NO STABLE PLATEAU — keep old value 2.392330209421035e-05
-    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.365663, sensitivity=2.392330209421035e-05, hw_min=0.0, hw_max=1.5, action_scale_rl=1.209392169621847e+02, reset_scale=1.250000000000000e+01),
-    ParameterSpec("AD.SO.02", "ele[4][5]", marker=4, default=0.168963, sensitivity=0.001118656611648190, hw_min=0.0, hw_max=1.5, action_scale_rl=3.715535705561202e+02, reset_scale=1.249999999999977e+01),
-    ParameterSpec("AD.ST.04.X", "ele[10][1]", marker=10, default=0.0, sensitivity=0.000039214212727210, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=6.150832467222202e+07, reset_scale=1.250000005245751e+01),
-    ParameterSpec("AD.ST.04.Y", "ele[10][2]", marker=10, default=0.0, sensitivity=0.000003814104125242, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=1.035581473401489e+08, reset_scale=1.250000001578913e+01),
-    # AD.1EQ.01: NO STABLE PLATEAU — keep old value 1.079813055934297e+02
-    ParameterSpec("AD.1EQ.01", "ele[12][2]", marker=12, default=-145.835, sensitivity=1.079813055934297e+02, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=2.065434869523612e+02, reset_scale=1.250000000000013e+01),
-    ParameterSpec("AD.1EQ.02", "ele[16][2]", marker=16, default=-106.29, sensitivity=25.985652467588245, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=5.948765842185710e+02, reset_scale=1.250000000000033e+01),
-    ParameterSpec("AD.D.02", "ele[18][5]", marker=18, default=-0.0461848, sensitivity=0.000002083193177854, hw_min=None, hw_max=None, action_scale_rl=2.500000000000000e+01, reset_scale=1.250000000000000e+01),
-    ParameterSpec("AD.EM.6", "ele[21][6]", marker=24, default=-213.9, sensitivity=2.778536745943967, hw_min=None, hw_max=None, action_scale_rl=2.500000000000000e+01, reset_scale=1.250000000000000e+01),
-    ParameterSpec("AD.EM.8", "ele[22][6]", marker=24, default=-16.8, sensitivity=159.39044128452622, hw_min=None, hw_max=None, action_scale_rl=2.500000000000000e+01, reset_scale=1.250000000000000e+01),
-    ParameterSpec("AD.EM.10", "ele[23][6]", marker=24, default=-1.67, sensitivity=91.97699651205787, hw_min=None, hw_max=None, action_scale_rl=2.500000000000000e+01, reset_scale=1.250000000000000e+01),
-    ParameterSpec("AD.EM.12", "ele[24][6]", marker=24, default=-86.9, sensitivity=762.0125046285691, hw_min=None, hw_max=None, action_scale_rl=2.500000000000000e+01, reset_scale=1.250000000000000e+01),
-    ParameterSpec("AD.D.03", "ele[26][5]", marker=26, default=0.0461848, sensitivity=0.000001035462140222, hw_min=None, hw_max=None, action_scale_rl=2.500000000000000e+01, reset_scale=1.250000000000000e+01),
-    ParameterSpec("AD.1EQ.03", "ele[30][2]", marker=30, default=-192.5536, sensitivity=27.144948486793353, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=1.885682490498572e+02, reset_scale=1.250000000000007e+01),
-    ParameterSpec("AD.1EQ.04", "ele[35][2]", marker=35, default=0.0, sensitivity=36.141979966867844, hw_min=-5000.0, hw_max=5000.0, action_scale_rl=2.989465669741847e+02, reset_scale=1.250000000000023e+01),
-    ParameterSpec("AD.ST.05.X", "ele[38][1]", marker=38, default=0.0, sensitivity=0.001232756406546655, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=2.943725756199982e+06, reset_scale=1.249999999819366e+01),
-    ParameterSpec("AD.ST.05.Y", "ele[38][2]", marker=38, default=0.0, sensitivity=0.000010476749079873, hw_min=-2000.0, hw_max=2000.0, action_scale_rl=2.074459428897282e+08, reset_scale=1.250000006313339e+01),
+    #stage 0
+    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.43, sensitivity=2.392330209421035e-05, hw_min=None, hw_max=1.5, action_scale_rl=1, reset_scale=1),
+    #stage 1
+    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.01, sensitivity=0.001118656611648190, hw_min=None, hw_max=1.5, action_scale_rl=1, reset_scale=1),
+    #stage 2
+    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=0.0, sensitivity=0.000039214212727210, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=0.0, sensitivity=0.000003814104125242, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 3
+    ParameterSpec("AD.MS.04.X", "ele[136][1]", marker=136, default=0.0, sensitivity=0.000039214212727210, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.MS.04.Y", "ele[136][2]", marker=136, default=0.0, sensitivity=0.000003814104125242, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 4
+    ParameterSpec("AD.1EQ.01", "ele[152][2]", marker=152, default=0.0, sensitivity=27.144948486793353, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 5
+    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=0.0, sensitivity=36.141979966867844, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 6
+    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.0462087, sensitivity=0.0000010354, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 7
+    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=0.0, sensitivity=2.778536745943967, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=0.0, sensitivity=159.39044128452622, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=0.0, sensitivity=91.97699651205787, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=0.0, sensitivity=762.0125046285691, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 8
+    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.0462087, sensitivity=0.0000010354, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 9
+    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=0.0, sensitivity=27.144948486793353, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 10
+    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=0.0, sensitivity=0.000039214212727210, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=0.0, sensitivity=0.000003814104125242, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 11
+    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-206, sensitivity=36.141979966867844, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    #stage 12
+    
 )
 
-# number of tunable parameters in the ADIGE beam line 
-N_PARAMS: int = len(PARAMETERS) # 16
+# Number of tunable parameters in the ADIGE beam line.
+N_PARAMS: int = len(PARAMETERS)
 
 # Lattice markers where the beam state is recorded.
 # Stage 0 is the input beam; stages 1..11 are surrogate/TraceWin output stages.
@@ -128,21 +142,8 @@ def _build_stage_layout() -> Tuple[Tuple[Tuple[str, ...], ...], Tuple[int, ...]]
     Each stage corresponds to a lattice marker and has a list of parameter keys and a corresponding size (number of parameters in that stage).
 
     Returns:
-    keys = (
-         ("ele[2][5]",), #stage 1, marker 2
-        ("ele[4][5]",), #stage 2, marker 4
-        ("ele[10][1]", "ele[10][2]"), #stage 3, marker 10
-        ("ele[12][2]",), #stage 4, marker 12
-        ("ele[16][2]",), #stage 5, marker 16
-        ("ele[18][5]",), #stage 6, marker 18
-        ("ele[21][6]", "ele[22][6]", "ele[23][6]", "ele[24][6]"), #stage 7, marker 24
-        ("ele[26][5]",), #stage 8, marker 26
-        ("ele[30][2]",), #stage 9, marker 30
-        ("ele[35][2]",), #stage 10, marker 35
-        ("ele[38][1]", "ele[38][2]"), #stage 11, marker 38
-    )
-
-    sizes = (1, 1, 2, 1, 1, 1, 4, 1, 1, 1, 2) 
+    keys: parameter keys grouped by their TraceWin marker.
+    sizes: number of parameters in each marker group.
     '''
     from collections import OrderedDict
     stage_keys: OrderedDict[int, List[str]] = OrderedDict()
@@ -153,12 +154,12 @@ def _build_stage_layout() -> Tuple[Tuple[Tuple[str, ...], ...], Tuple[int, ...]]
     return keys, sizes
 
 
-STAGE_PARAM_KEYS: Tuple[Tuple[str, ...], ...]  # 11 tuples (("ele[2][5]",), ("ele[4][5]",), ("ele[10][1]", "ele[10][2]"), ("ele[12][2]",), ("ele[16][2]",), ("ele[18][5]",), ("ele[21][6]", "ele[22][6]", "ele[23][6]", "ele[24][6]"), ("ele[26][5]",), ("ele[30][2]",), ("ele[35][2]",), ("ele[38][1]", "ele[38][2]"))
-STAGE_PARAM_SIZES: Tuple[int, ...]              # (1,1,2,1,1,1,4,1,1,1,2) → sum=16
+STAGE_PARAM_KEYS: Tuple[Tuple[str, ...], ...]
+STAGE_PARAM_SIZES: Tuple[int, ...]
 STAGE_PARAM_KEYS, STAGE_PARAM_SIZES = _build_stage_layout() 
 
-# Flat ordered list of all 16 TraceWin keys 
-PARAM_KEYS: Tuple[str, ...] = tuple(p.key for p in PARAMETERS) # ele[2][5], ele[4][5], ele[10][1], ele[10][2], ele[12][2], ele[16][2], ele[18][5], ele[21][6], ele[22][6], ele[23][6], ele[24][6], ele[26][5], ele[30][2], ele[35][2], ele[38][1], ele[38][2]
+# Flat ordered list of all configured TraceWin keys.
+PARAM_KEYS: Tuple[str, ...] = tuple(p.key for p in PARAMETERS)
 
 
 # helpers 
@@ -246,12 +247,12 @@ def select_observation_stages_tensor(stages: List[torch.Tensor]) -> torch.Tensor
 
 
 def default_params() -> Dict[str, float]:
-    """Return {key: default_value} for all 16 parameters."""
+    """Return {key: default_value} for all configured parameters."""
     return {p.key: p.default for p in PARAMETERS}
 
 
 def sensitivity_vec() -> np.ndarray:
-    """Return the 16 sensitivity values as a float64 array, in PARAM_KEYS order.
+    """Return sensitivity values as a float64 array, in PARAM_KEYS order.
     
     Example:
 
@@ -282,7 +283,7 @@ def reset_std_vec() -> np.ndarray:
 
 
 def hw_bounds_vec() -> Tuple[np.ndarray | None, np.ndarray | None]:
-    """Return (hw_min_vec, hw_max_vec) as float64 arrays of shape (16,), or None if any bound is missing.
+    """Return (hw_min_vec, hw_max_vec) arrays, or None if any bound is missing.
 
     Returns None for a side if at least one parameter has hw_min (or hw_max) = None.
     Use individual ParameterSpec.hw_min/hw_max when you need per-parameter granularity.
@@ -345,7 +346,7 @@ def clip_param_tensor_to_hw(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def action_bounds() -> Tuple[np.ndarray, np.ndarray]:
-    """Return (low, high) action bounds as (16,) arrays: ±action_step_vec().
+    """Return (low, high) action bounds as arrays: ±action_step_vec().
     
     Example:
     
@@ -357,7 +358,7 @@ def action_bounds() -> Tuple[np.ndarray, np.ndarray]:
 
 
 def params_to_vec(params: Dict[str, float]) -> np.ndarray:
-    """Convert a {key: value} parameter dict to a float32 array of shape (16,).
+    """Convert a {key: value} parameter dict to a float32 array.
     Values are placed in PARAM_KEYS order 
 
     Example:
@@ -368,7 +369,7 @@ def params_to_vec(params: Dict[str, float]) -> np.ndarray:
 
 
 def vec_to_params(vec: np.ndarray) -> Dict[str, float]:
-    """Convert a (16,) array back to {key: value} dict.
+    """Convert a parameter array back to {key: value} dict.
     
         Example:
 
@@ -396,7 +397,7 @@ def params_to_stage_tensors(params: Dict[str, float], device=None) -> List[torch
 
 
 def vec_to_stage_tensors(vec: np.ndarray, device=None) -> List[torch.Tensor]:
-    """Convert a (16,) parameter vector to per-stage tensors for ModularMLP.
+    """Convert a parameter vector to per-stage tensors for ModularMLP.
     Wraps vec_to_params + params_to_stage_tensors.
 
     Example:

@@ -333,7 +333,7 @@ Available commands:
 setup       generate a new TraceWin dataset and train base surrogates
 check       procedural onboarding check, including real TraceWin reset+step
 train       train RL agents on SurrogateEnv, optionally with TraceWin MBPO
-benchmark   compare PSO, Bayesian optimization, SVG, and optional RL checkpoints
+benchmark   compare Bayesian optimization, SVG, and optional RL checkpoints
 test        run one trained policy for one qualitative episode
 ```
 
@@ -632,7 +632,7 @@ Use `benchmark` for numerical comparison on `SurrogateEnv`:
 python -m beam_optimization benchmark --quick
 ```
 
-Full benchmark (identical to `commands/benchmark.sh`): PSO/BO/SVG plus the
+Full benchmark (identical to `commands/benchmark.sh`): BO/SVG plus the
 final policy benchmark over all trained checkpoints:
 
 ```bash
@@ -679,7 +679,7 @@ for each episode, then writes mean/std summaries plus bar and box plots:
 ```text
 benchmark_policy_episodes.csv
 benchmark_policy_summary.csv
-benchmark_policy_bars.png       # per-metric bars ± std, PSO/BO reference lines
+benchmark_policy_bars.png       # per-metric bars ± std, BO reference line
 benchmark_policy_boxplots.png
 benchmark_convergence.png       # best score so far vs surrogate evaluations
 benchmark.png                   # final bar chart of the optimization methods
@@ -701,7 +701,7 @@ All options:
                      (default: DEFAULT_BASE_DATASET)
 --output PATH        JSON results output path (default: DEFAULT_BENCHMARK_OUTPUT)
 --n-runs N           repeated runs per method, different seeds (default: 3)
---eval-budget N      evaluation budget for PSO/Bayesian optimization (default: 3000)
+--eval-budget N      evaluation budget for Bayesian optimization (default: 3000)
 --svg-episodes N     episodes for each SVGAgent variant (default: 500)
 --svg-horizon N      SVGAgent rollout horizon (default: 20)
 --policy-episodes N  independent episodes per trained policy benchmark (default: 50)

@@ -37,7 +37,7 @@ DEFAULT_BENCHMARK_OUTPUT = PROJECT_ROOT / "results/benchmark.json"
 # TraceWin project file used when a command runs the real simulator program
 DEFAULT_TRACEWIN_INI = (
     PROJECT_ROOT
-    / "env/tracewin_env/tracewin/TraceWin_workspace/condensed.ini"
+    / "env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini"
 )
 
 # Working directory for TraceWin output files when running TraceWinEnv.
