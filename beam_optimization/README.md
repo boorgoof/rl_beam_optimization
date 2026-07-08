@@ -58,6 +58,26 @@ cd /path/to/rl_beam_optimization
 source beam_optimization/.venv/bin/activate
 ```
 
+### Jupyter Notebook Setup
+
+`beam_optimization/requirements.txt` also installs `notebook` and `ipykernel`,
+so the repository's `.ipynb` files (e.g. `beam_optimization/env/visualize_environments.ipynb`)
+can be run directly. Register the project's virtual environment as a
+selectable Jupyter kernel (one-time):
+
+```bash
+beam_optimization/.venv/bin/python -m ipykernel install --user --name=beam_optimization --display-name "Python (beam_optimization)"
+```
+
+Then launch Jupyter Notebook:
+
+```bash
+beam_optimization/.venv/bin/jupyter notebook
+```
+
+When opening one of the repository's notebooks, select the
+"Python (beam_optimization)" kernel from the Kernel menu.
+
 After the Python environment is ready, follow the project onboarding flow:
 
 ```text

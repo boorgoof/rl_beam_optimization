@@ -2,6 +2,7 @@
 numpy>=1.24
 torch>=2.0
 pandas>=2.0
+scipy>=1.10
 
 # Environments and RL backends
 gymnasium>=0.29
@@ -13,3 +14,8 @@ scikit-optimize>=0.9
 # Logging and visualization
 tensorboard>=2.13
 matplotlib>=3.7
+Pillow>=10.0
+
+# Notebook support
+notebook>=7.0
+ipykernel>=6.25
