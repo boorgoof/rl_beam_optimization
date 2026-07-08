@@ -53,7 +53,7 @@ class TraceWinEnv(BaseBeamEnv):
         project_file: str,
         calc_dir: str = str(DEFAULT_TRACEWIN_ENV_CALC_DIR),
         max_steps: int = MAX_STEPS,
-        timeout: float = 120.0,
+        timeout: float = 45.0,
         retries: int = 2,
     ):
 
