@@ -40,45 +40,43 @@ class ParameterSpec:
     key: str                     # TraceWin element key, e.g. "ele[2][5]=0.365663". The parameter to specificated is in marker 2 at position 5
     marker: int                  # lattice element index where this param is applied
     default: float               # physical default value
-    sensitivity: float           # Δparam per 25 score points — base physical scale
+    sensitivity: float           # Δparam per 10 score points — base physical scale
     hw_min: float | None = None  # hardware lower bound (from machine specs); None = unknown
     hw_max: float | None = None  # hardware upper bound (from machine specs); None = unknown
-    action_scale_rl: float = 1.0 # per-parameter RL action scale, in sensitivity units
-    reset_scale: float = 0.5     # per-parameter reset stddev scale, in sensitivity units
 
 
 # List of all tunable parameters in the ADIGE beam line, in order of appearance in the lattice.
 PARAMETERS: Tuple[ParameterSpec, ...] = (
     #stage 0
-    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.43, sensitivity=2.392330209421035e-05, hw_min=None, hw_max=1.5, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.43, sensitivity=1.8317e-03, hw_min=0.42580078125, hw_max=0.45978027343749994),
     #stage 1
-    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.01, sensitivity=0.001118656611648190, hw_min=None, hw_max=1.5, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.01, sensitivity=3.6553e-02, hw_min=-0.3284531250000001, hw_max=0.32855957031249994),
     #stage 2
-    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=0.0, sensitivity=0.000039214212727210, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
-    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=0.0, sensitivity=0.000003814104125242, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=0.0, sensitivity=4.4809e-04, hw_min=-1e-3, hw_max=1e-3),
+    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=0.0, sensitivity=1.2222e-04, hw_min=-1e-3, hw_max=1e-3),
     #stage 3
-    ParameterSpec("AD.MS.04.X", "ele[136][1]", marker=136, default=0.0, sensitivity=0.000039214212727210, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
-    ParameterSpec("AD.MS.04.Y", "ele[136][2]", marker=136, default=0.0, sensitivity=0.000003814104125242, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.1EQ.01", "ele[152][2]", marker=152, default=0.0, sensitivity=2.7145e+01, hw_min=-321943320.9976845, hw_max=321959155.9916845),
     #stage 4
-    ParameterSpec("AD.1EQ.01", "ele[152][2]", marker=152, default=0.0, sensitivity=27.144948486793353, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.MS.04.X", "ele[162][1]", marker=162, default=0.0, sensitivity=1.1913e-06, hw_min=-1e-3, hw_max=1e-3),
+    ParameterSpec("AD.MS.04.Y", "ele[162][2]", marker=162, default=0.0, sensitivity=1.7451e-04, hw_min=-1e-3, hw_max=1e-3),
     #stage 5
-    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=0.0, sensitivity=36.141979966867844, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=0.0, sensitivity=3.5874e+01, hw_min=-2671066.7265701294, hw_max=0.0),
     #stage 6
-    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.0462087, sensitivity=0.0000010354, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.0462087, sensitivity=8.7381e-05, hw_min=-0.048214522656249995, hw_max=-0.000426794138749994),
     #stage 7
-    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=0.0, sensitivity=2.778536745943967, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
-    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=0.0, sensitivity=159.39044128452622, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
-    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=0.0, sensitivity=91.97699651205787, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
-    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=0.0, sensitivity=762.0125046285691, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=0.0, sensitivity=4.3740e+02, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=0.0, sensitivity=9.3827e-01, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=0.0, sensitivity=1.8000e+00, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=0.0, sensitivity=4.8600e+01, hw_min=None, hw_max=None),
     #stage 8
-    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.0462087, sensitivity=0.0000010354, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.0462087, sensitivity=3.4672e-05, hw_min=None, hw_max=0.1404070471090973),
     #stage 9
-    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=0.0, sensitivity=27.144948486793353, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=0.0, sensitivity=4.1821e+01, hw_min=-321943320.9976845, hw_max=321959155.9916845),
     #stage 10
-    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=0.0, sensitivity=0.000039214212727210, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
-    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=0.0, sensitivity=0.000003814104125242, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=0.0, sensitivity=1.0349e-03, hw_min=-1e-3, hw_max=1e-3),
+    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=0.0, sensitivity=5.0741e-04, hw_min=-1e-3, hw_max=1e-3),
     #stage 11
-    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-206, sensitivity=36.141979966867844, hw_min=None, hw_max=None, action_scale_rl=1, reset_scale=1),
+    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-206, sensitivity=1.2746e+02, hw_min=-365899839.5, hw_max=365913839.5),
     #stage 12
     
 )
@@ -87,10 +85,10 @@ PARAMETERS: Tuple[ParameterSpec, ...] = (
 N_PARAMS: int = len(PARAMETERS)
 
 # Lattice markers where the beam state is recorded.
-# Stage 0 is the input beam; stages 1..11 are surrogate/TraceWin output stages.
-STAGE_MARKERS: Tuple[int, ...] = (0, 2, 4, 10, 12, 16, 18, 24, 26, 30, 35, 38)
-N_OUTPUT_STAGES: int = len(STAGE_MARKERS) - 1  # 11 output stages, excluding input stage 0
-N_STAGES: int = len(STAGE_MARKERS)             # 12 total stages, including input stage 0
+# Stage 0 is the input beam; stages 1..12 are surrogate/TraceWin output stages.
+STAGE_MARKERS: Tuple[int, ...] = (0, 2, 29, 38, 152, 162, 195, 197, 203, 205, 225, 261, 280)
+N_OUTPUT_STAGES: int = len(STAGE_MARKERS) - 1  # 12 output stages, excluding input stage 0
+N_STAGES: int = len(STAGE_MARKERS)             # 13 total stages, including input stage 0
 
 # Stage visibility for RL observations, in STAGE_MARKERS order.
 # True means the stage is included in the flattened Gym observation.
@@ -98,16 +96,17 @@ N_STAGES: int = len(STAGE_MARKERS)             # 12 total stages, including inpu
 OBSERVATION_STAGE_MASK: Tuple[bool, ...] = (
     True,   # stage 0: beam0
     False,  # marker 2
-    False,  # marker 4
-    False,  # marker 10
-    False,  # marker 12
-    False,  # marker 16
-    False,  # marker 18
-    False,  # marker 24
-    False,  # marker 26
-    False,  # marker 30
-    False,  # marker 35
-    True,   # marker 38: final
+    False,  # marker 29
+    False,  # marker 38
+    False,  # marker 152
+    True,   # marker 162
+    False,  # marker 195
+    False,  # marker 197
+    False,  # marker 203
+    False,  # marker 205
+    False,  # marker 225
+    False,  # marker 261
+    True,   # marker 280: final
 )
 
 # number of particles in the initial beam state (used to compute npart_ratio)
@@ -116,26 +115,39 @@ INITIAL_NPART: int = 10_000
 # Episode horizon: env steps before truncation (used by all beam envs).
 MAX_STEPS: int = 20
 
+DATASET_SCALE: float = 1.0     # dataset gaussian bell width, dataset_std_p = DATASET_SCALE * sensitivity_p
+RESET_SCALE: float =  2.500000000000000e-01      # episode-reset gaussian width, reset_std_p = RESET_SCALE * sensitivity_p
+ACTION_SCALE: float = 4.000000000000000e-02      # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
+
 # Score assigned when a simulation fails (TraceWin error, invalid output).
 # Large and negative so the agent learns to avoid failure regions.
-ERROR_SCORE: float = -99.0
+ERROR_SCORE: float = -999.0
 
 # Beam-quality score weights, shared by score(), score_from_vec() and
 # score_tensor(). Change the reward shaping here and nowhere else.
 SCORE_WEIGHTS: Dict[str, float] = {
     "npart_ratio": 100.0,  # reward for keeping particles
-    "emittance":    20.0,  # penalise transverse emittance growth (ex + ey)
-    "offset":       10.0,  # penalise centroid offset (|x0| + |y0|)
-    "angle":        10.0,  # penalise angular centroid offset (|x'0| + |y'0|)
-    "size":          0.1,  # penalise beam size (SizeX + SizeY)
+    "emittance":   200.0,  # primary objective: ex/ey variation from the input reference
+    "offset":        1.0,  # centroid variation from the +/-1 mm reference
+    "angle":         1.0,  # angular-centroid variation from the +/-1 mrad reference
+    "size":          1.0,  # RMS-size variation from the input reference
 }
 
-# Noise-robust scoring thresholds.
-TRANSMISSION_FULL_CREDIT: float = 0.995
-OFFSET_DEADBAND_MM: float = 0.05
-ANGLE_DEADBAND_MRAD: float = 0.05
+# Reference beam quality from the simulated PARTRAN input (part_rfq.dst).
+SCORE_REFERENCES: Dict[str, float] = {
+    "ex":     0.05,  # mm.mrad
+    "ey":     0.05,  # mm.mrad
+    "x0":     0,         # mm, 
+    "y0":     0,         # mm, |
+    "x'0":    0,         # mrad,
+    "y'0":    0,         # mrad, 
+    "SizeX":  5,    # mm
+    "SizeY":  5,    # mm
+}
 
-
+# IMPORTANT: ParameterSpec.sensitivity values were calibrated with the former
+# score shaping. Re-run the sensitivity/action-scale calibration before using
+# this score for a new RL training campaign.
 def _build_stage_layout() -> Tuple[Tuple[Tuple[str, ...], ...], Tuple[int, ...]]:
     '''
     Parameter grouping in stages: some parameters are applied at the same lattice marker, so they are grouped into a single stage for the surrogate model.
@@ -262,24 +274,19 @@ def sensitivity_vec() -> np.ndarray:
     return np.array([p.sensitivity for p in PARAMETERS], dtype=np.float64)
 
 
-def action_scale_rl_vec() -> np.ndarray:
-    """Return per-parameter RL action scales, in PARAM_KEYS order."""
-    return np.array([p.action_scale_rl for p in PARAMETERS], dtype=np.float64)
-
-
-def reset_scale_vec() -> np.ndarray:
-    """Return per-parameter reset scales, in PARAM_KEYS order."""
-    return np.array([p.reset_scale for p in PARAMETERS], dtype=np.float64)
-
-
 def action_step_vec() -> np.ndarray:
-    """Return max per-step parameter deltas: sensitivity * action_scale_rl."""
-    return sensitivity_vec() * action_scale_rl_vec()
+    """Return max per-step parameter deltas: sensitivity * ACTION_SCALE."""
+    return sensitivity_vec() * ACTION_SCALE
 
 
 def reset_std_vec() -> np.ndarray:
-    """Return reset Gaussian stddevs: sensitivity * reset_scale."""
-    return sensitivity_vec() * reset_scale_vec()
+    """Return reset Gaussian stddevs: sensitivity * RESET_SCALE."""
+    return sensitivity_vec() * RESET_SCALE
+
+
+def dataset_std_vec() -> np.ndarray:
+    """Return dataset Gaussian stddevs: sensitivity * DATASET_SCALE."""
+    return sensitivity_vec() * DATASET_SCALE
 
 
 def hw_bounds_vec() -> Tuple[np.ndarray | None, np.ndarray | None]:
@@ -347,10 +354,10 @@ def clip_param_tensor_to_hw(tensor: torch.Tensor) -> torch.Tensor:
 
 def action_bounds() -> Tuple[np.ndarray, np.ndarray]:
     """Return (low, high) action bounds as arrays: ±action_step_vec().
-    
+
     Example:
-    
-        (-sensitivity_vec() * action_scale_rl_vec(), +sensitivity_vec() * action_scale_rl_vec())
+
+        (-sensitivity_vec() * ACTION_SCALE, +sensitivity_vec() * ACTION_SCALE)
     """
     
     s = action_step_vec()
@@ -407,64 +414,31 @@ def vec_to_stage_tensors(vec: np.ndarray, device=None) -> List[torch.Tensor]:
     return params_to_stage_tensors(vec_to_params(vec), device=device)
 
 
-# Score helpers
-def _deadband_abs(value: float, deadband: float) -> float:
-    return max(abs(float(value)) - deadband, 0.0)
-
-
-def _transmission_score(npart_ratio: float) -> float:
-    transmission = min(float(npart_ratio), 1.0)
-    return 1.0 if transmission >= TRANSMISSION_FULL_CREDIT else transmission
-
-
-def _deadband_abs_tensor(value: torch.Tensor, deadband: float) -> torch.Tensor:
-    return torch.clamp(torch.abs(value) - deadband, min=0.0)
-
-
-def _transmission_score_tensor(npart_ratio: torch.Tensor) -> torch.Tensor:
-    transmission = torch.clamp(npart_ratio, max=1.0)
-    return torch.where(
-        transmission >= TRANSMISSION_FULL_CREDIT,
-        torch.ones_like(transmission),
-        transmission,
-    )
-
-
 # Score function 
 def score(beam_state: Dict[str, float]) -> float:
     """Compute a scalar beam quality score (at a specific stage) from a beam-state dict. Higher is better.
-    
-    Transmission is saturated at 1.0 and receives full credit above
-    TRANSMISSION_FULL_CREDIT. Small centroid offsets/angles inside the
-    configured deadbands are ignored to reduce TraceWin/PARTRAN noise.
 
-    Weights come from SCORE_WEIGHTS. A well-tuned beam (npart_ratio≈1,
-    ex/ey≈0.05, offsets≈0) scores around 95. Failed simulations get
-    ERROR_SCORE instead of calling this function.
+    A beam exactly at ``SCORE_REFERENCES`` with full transmission scores 100.
+    Values better than a reference receive a linear bonus; worse values
+    receive a linear penalty. Failed simulations get ``ERROR_SCORE`` instead
+    of calling this function.
     """
     w = SCORE_WEIGHTS
-    transmission = _transmission_score(beam_state["npart_ratio"])
-    offset_penalty = (
-        _deadband_abs(beam_state["x0"], OFFSET_DEADBAND_MM)
-        + _deadband_abs(beam_state["y0"], OFFSET_DEADBAND_MM)
-    )
-    angle_penalty = (
-        _deadband_abs(beam_state["x'0"], ANGLE_DEADBAND_MRAD)
-        + _deadband_abs(beam_state["y'0"], ANGLE_DEADBAND_MRAD)
-    )
+    ref = SCORE_REFERENCES
+    transmission = float(np.clip(float(beam_state["npart_ratio"]), 0.0, 1.0))
     return (w["npart_ratio"] * transmission
-            - w["emittance"] * (beam_state["ex"] + beam_state["ey"])
-            - w["offset"]    * offset_penalty
-            - w["angle"]     * angle_penalty
-            - w["size"]      * (beam_state["SizeX"] + beam_state["SizeY"]))
+            - w["emittance"] * ((beam_state["ex"] - ref["ex"]) + (beam_state["ey"] - ref["ey"]))
+            - w["offset"]    * ((abs(beam_state["x0"]) - ref["x0"])  + (abs(beam_state["y0"]) - ref["y0"]))
+            - w["angle"]     * ((abs(beam_state["x'0"]) - ref["x'0"]) + (abs(beam_state["y'0"]) - ref["y'0"]))
+            - w["size"]      * ((beam_state["SizeX"] - ref["SizeX"]) + (beam_state["SizeY"] - ref["SizeY"])))
 
 
 def score_from_vec(beam_vec: np.ndarray) -> float:
-    """Score from a (9,) numpy array in BEAM_STATE_FEATURES order.
+    """Score a ``(9,)`` NumPy array in ``BEAM_STATE_FEATURES`` order.
 
     Example:
 
-        (1.0, 0.20, -0.07, 11.8, 11.8, 0.089, 0.089, 0.56, -0.16) → 95.3
+        A vector exactly at SCORE_REFERENCES with npart_ratio=1 scores 100.
     """
     return score({v: float(beam_vec[i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
 
@@ -474,18 +448,15 @@ def score_tensor(beam_state: torch.Tensor) -> torch.Tensor:
     Used by DifferentiableSurrogateEnv (SVG). Same weights as score().
     """
     w = SCORE_WEIGHTS
+    ref = SCORE_REFERENCES
     col = lambda name: beam_state[:, _BS_IDX[name]]
-    transmission = _transmission_score_tensor(col("npart_ratio"))
-    offset_penalty = (
-        _deadband_abs_tensor(col("x0"), OFFSET_DEADBAND_MM)
-        + _deadband_abs_tensor(col("y0"), OFFSET_DEADBAND_MM)
-    )
-    angle_penalty = (
-        _deadband_abs_tensor(col("x'0"), ANGLE_DEADBAND_MRAD)
-        + _deadband_abs_tensor(col("y'0"), ANGLE_DEADBAND_MRAD)
-    )
+    transmission = torch.clamp(col("npart_ratio"), min=0.0, max=1.0)
     return (w["npart_ratio"] * transmission
-            - w["emittance"] * (col("ex") + col("ey"))
-            - w["offset"]    * offset_penalty
-            - w["angle"]     * angle_penalty
-            - w["size"]      * (col("SizeX") + col("SizeY")))
+            - w["emittance"] * ((col("ex") - ref["ex"])
+                                 + (col("ey") - ref["ey"]))
+            - w["offset"]    * ((torch.abs(col("x0")) - ref["x0"])
+                                 + (torch.abs(col("y0")) - ref["y0"]))
+            - w["angle"]     * ((torch.abs(col("x'0")) - ref["x'0"])
+                                 + (torch.abs(col("y'0")) - ref["y'0"]))
+            - w["size"]      * ((col("SizeX") - ref["SizeX"])
+                                 + (col("SizeY") - ref["SizeY"])))

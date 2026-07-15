@@ -16,10 +16,9 @@ import numpy as np
 from beam_optimization.config.adige import (
     PARAM_KEYS,
     PARAMETERS,
-    action_step_vec,
-    action_bounds,
+    clip_params_to_hw,
+    dataset_std_vec,
     default_params,
-    reset_std_vec,
 )
 from beam_optimization.config.paths import DEFAULT_DATASET_ROOT
 from beam_optimization.env.dataset.dataset import BeamDataset
@@ -60,14 +59,10 @@ def sample_parameter_sets(
 ) -> list[Dict[str, float]]:
     """Sample parameter dictionaries around ADIGE defaults.
 
-    The sampling range is default +/- action_step_vec() for each parameter,
-    matching the environment action bounds.
+    Each parameter is drawn from N(default_p, dataset_std_p^2), then clipped to
+    known hardware bounds. See generate_param_sets_gaussian() for details.
     """
-    rng = np.random.default_rng(seed)
-    return [
-        _sample_parameter_set(rng)
-        for _ in range(int(n_samples))
-    ]
+    return generate_param_sets_gaussian(n_samples, oversample_factor=1.0, seed=seed)
 
 
 def dataset_from_tracewin_results(
@@ -295,7 +290,7 @@ class TraceWinDatasetBuilder:
             return dict(self.param_sets[attempt_index])
 
         rng = np.random.default_rng(self.seed + int(attempt_index))
-        return _sample_parameter_set(rng)
+        return _sample_one_gaussian(rng)
 
     def _config_signature(self) -> dict:
         return {
@@ -385,114 +380,58 @@ def build_tracewin_dataset(
     return summary
 
 
-def _sample_parameter_set(
-    rng: np.random.Generator,
-) -> Dict[str, float]:
-    low_delta, high_delta = action_bounds()
+def _sample_one_gaussian(rng: np.random.Generator) -> Dict[str, float]:
     defaults = default_params()
-    deltas = rng.uniform(low_delta, high_delta).astype(np.float32)
-    return {
-        key: float(defaults[key] + delta)
-        for key, delta in zip(PARAM_KEYS, deltas)
+    std = dataset_std_vec()
+    params = {
+        key: float(defaults[key] + rng.normal(0.0, s))
+        for key, s in zip(PARAM_KEYS, std)
     }
+    return clip_params_to_hw(params)
 
 
-def generate_param_sets_lhs(
+def generate_param_sets_gaussian(
     n_samples: int,
     *,
-    core_fraction: float = 0.85,
-    max_steps: int = 20,
-    reset_sigma: float = 3.0,
     oversample_factor: float = 1.5,
-    seed: int = 0,
+    seed: Optional[int] = 0,
 ) -> list[Dict[str, float]]:
-    """Generate parameter sets using Latin Hypercube Sampling with a two-level structure.
+    """Generate parameter sets by sampling jointly from a gaussian around defaults.
 
-    The dataset is split into a dense core zone (where the RL agent will actually
-    operate) and a sparse edge zone (covering the rest of the hardware range for
-    surrogate robustness and reward-hacking prevention).
+    Each parameter p is drawn independently (diagonal covariance) from
+    N(default_p, dataset_std_p^2), with dataset_std_p = DATASET_SCALE * sensitivity_p
+    (see beam_optimization.config.adige). All parameters for a given row are
+    drawn together so the returned sets reflect the actual dataset trust region
+    the surrogate is trained on. Values are clipped to known hardware bounds
+    (no clip where hw_min/hw_max is None).
 
-    Core zone per parameter p:
-        core_half_width = reset_sigma * reset_std_p + action_step_p * max_steps
-        [default_p - core_half_width, default_p + core_half_width]
-
-    Edge zone per parameter p:
-        [hw_min_p, hw_max_p]  if hardware bounds are known
-        [default_p - 2*core_half_width, default_p + 2*core_half_width]  otherwise
-
-    The total number of generated parameter sets is:
-        round(n_samples * oversample_factor)
-
-    The extra samples (oversample_factor > 1.0) absorb TraceWin failures so that
-    the builder can still reach n_samples valid results even if some simulations fail.
-    Pass the returned list directly as param_sets to build_dataset() or
-    TraceWinDatasetBuilder.
+    The total number of generated parameter sets is round(n_samples * oversample_factor);
+    the extra samples absorb TraceWin failures so the builder can still reach
+    n_samples valid results even if some simulations fail. Pass the returned
+    list directly as param_sets to build_tracewin_dataset() or TraceWinDatasetBuilder.
 
     Args:
         n_samples: Target number of valid TraceWin results (used to size the output).
-        core_fraction: Fraction of samples to draw from the core zone (default 0.85).
-        max_steps: Episode length in RL steps (used to compute core zone width).
-        reset_sigma: Gaussian reset sigma multiplier used as design worst case.
         oversample_factor: Generate this many times n_samples to absorb failures.
         seed: Base random seed for reproducibility.
 
     Returns:
-        Shuffled list of {param_key: value} dicts ready for param_sets=...
+        List of {param_key: value} dicts ready for param_sets=...
     """
-    if reset_sigma < 0:
-        raise ValueError(f"reset_sigma must be >= 0, got {reset_sigma}")
-
-    from scipy.stats import qmc
-
+    rng = np.random.default_rng(seed)
     defaults = np.array([p.default for p in PARAMETERS], dtype=np.float64)
-    bounded_min = np.array([p.hw_min is not None for p in PARAMETERS], dtype=bool)
-    bounded_max = np.array([p.hw_max is not None for p in PARAMETERS], dtype=bool)
-    hw_min = np.array([p.hw_min if p.hw_min is not None else 0.0 for p in PARAMETERS], dtype=np.float64)
-    hw_max = np.array([p.hw_max if p.hw_max is not None else 0.0 for p in PARAMETERS], dtype=np.float64)
-
-    # Core zone bounds
-    core_half_width = reset_sigma * reset_std_vec() + action_step_vec() * max_steps
-    core_low  = defaults - core_half_width
-    core_high = defaults + core_half_width
-    core_low = np.where(bounded_min, np.maximum(core_low, hw_min), core_low)
-    core_high = np.where(bounded_max, np.minimum(core_high, hw_max), core_high)
-
-    # Edge zone bounds — hw range when known, else 2× core width as fallback
-    edge_low  = np.where(
-        bounded_min,
-        hw_min,
-        defaults - 2.0 * core_half_width,
-    ).astype(np.float64)
-    edge_high = np.where(
-        bounded_max,
-        hw_max,
-        defaults + 2.0 * core_half_width,
-    ).astype(np.float64)
-
+    std = dataset_std_vec()
     n_total = round(n_samples * oversample_factor)
-    n_core  = round(n_total * core_fraction)
-    n_edge  = n_total - n_core
-    d = len(PARAMETERS)
 
-    all_samples: list[np.ndarray] = []
+    samples = rng.normal(loc=defaults, scale=std, size=(n_total, len(PARAMETERS)))
 
-    if n_core > 0:
-        core_samples_01 = qmc.LatinHypercube(d=d, seed=seed).random(n=n_core)
-        core_samples = qmc.scale(core_samples_01, core_low, core_high)
-        all_samples.append(core_samples)
-
-    if n_edge > 0:
-        edge_samples_01 = qmc.LatinHypercube(d=d, seed=seed + 1).random(n=n_edge)
-        edge_samples = qmc.scale(edge_samples_01, edge_low, edge_high)
-        all_samples.append(edge_samples)
-
-    combined = np.concatenate(all_samples, axis=0)  # (n_total, 16)
-    rng = np.random.default_rng(seed + 2)
-    rng.shuffle(combined)
+    hw_min = np.array([p.hw_min if p.hw_min is not None else -np.inf for p in PARAMETERS], dtype=np.float64)
+    hw_max = np.array([p.hw_max if p.hw_max is not None else np.inf for p in PARAMETERS], dtype=np.float64)
+    samples = np.clip(samples, hw_min, hw_max)
 
     return [
         {key: float(val) for key, val in zip(PARAM_KEYS, row)}
-        for row in combined
+        for row in samples
     ]
 
 

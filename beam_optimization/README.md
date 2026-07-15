@@ -13,19 +13,21 @@ stored in normal Git history.
 
 ## ADIGE Parameter Scales
 
-The RL action bounds and reset perturbations are defined per parameter in
-`beam_optimization/config/adige.py`. Each `ParameterSpec` contains:
+Each parameter's physical `sensitivity` is defined per parameter in
+`beam_optimization/config/adige.py` (`ParameterSpec.sensitivity`: physical
+parameter change for a 1-point score change). The RL action step, the reset
+perturbation, and the surrogate dataset's sampling width are each a single
+scalar shared by every parameter, also in `adige.py`:
 
-- `sensitivity`: physical parameter change for a 1-point score change;
-- `action_scale_rl`: RL step size in sensitivity units;
-- `reset_scale`: reset perturbation size in sensitivity units.
+- `DATASET_SCALE`: dataset gaussian bell width, `dataset_std_p = DATASET_SCALE * sensitivity_p`;
+- `RESET_SCALE`: episode-reset gaussian width, `reset_std_p = RESET_SCALE * sensitivity_p`;
+- `ACTION_SCALE`: max per-step RL action, `step_max_p = ACTION_SCALE * sensitivity_p`.
 
-The effective action bound is `± sensitivity * action_scale_rl`; the reset
-standard deviation is `sensitivity * reset_scale`. The old global
-`--action-scale` / `sigma_factor` knobs are no longer part of the training
-pipeline.
+Hardware bounds (`hw_min`/`hw_max`) never enter these formulas — they are only
+a clip applied when a concrete value is generated (dataset sampling, reset,
+action step).
 
-Sensitivities are measured with `python -m beam_optimization.config.utility.sensitivity`,
+Sensitivities are measured with `python -m beam_optimization sensitivity`,
 which cancels TraceWin's Monte Carlo noise using common random numbers: each
 +δ/−δ pair runs with the same `random_seed`, repeats use different seeds, and a
 startup probe measures the noise floor and checks seed determinism (if the
@@ -82,16 +84,20 @@ After the Python environment is ready, follow the project onboarding flow:
 
 ```text
 1. Configure the local TraceWin workspace, binary and launcher.
-2. Run setup if the base dataset/surrogates are missing or must be regenerated.
-3. Run check to verify the full local installation.
-4. Train policies.
-5. Run benchmark for quantitative comparison.
-6. Run test for one qualitative rendered episode.
+2. Run sensitivity, then paste the printed values into adige.py (sensitivity=).
+3. Run bayesian_opt, then paste the printed values into adige.py (default=).
+4. Run build_dataset and train_surrogate if the base dataset/surrogates are
+   missing or must be regenerated.
+5. Run check to verify the full local installation.
+6. Train policies.
+7. Run benchmark for quantitative comparison.
+8. Run test for one qualitative rendered episode.
 ```
 
 `check` validates the prerequisites described below, including a real
 `TraceWinEnv` reset and step. It does not create datasets or surrogate models;
-if those artifacts are missing it prints the `setup` command to run.
+if those artifacts are missing it prints the `build_dataset`/`train_surrogate`
+commands to run.
 
 ## 2. Local Files Not Stored On GitHub
 
@@ -330,49 +336,148 @@ python -m beam_optimization <command> [options]
 Available commands:
 
 ```text
-setup       generate a new TraceWin dataset and train base surrogates
-check       procedural onboarding check, including real TraceWin reset+step
-train       train RL agents on SurrogateEnv, optionally with TraceWin MBPO
-benchmark   compare Bayesian optimization, SVG, and optional RL checkpoints
-test        run one trained policy for one qualitative episode
+sensitivity         compute ADIGE parameter sensitivity from TraceWin finite differences
+sensitivity2        quick single-seed sensitivity estimate for all parameters
+sensitivity3        targeted AD.1EQ.01/02 search with bound-aware differences
+bayesian_opt        find a candidate new default parameter set on the surrogate
+build_dataset       generate a new TraceWin dataset
+train_surrogate     train new base surrogate checkpoints from an existing dataset
+evaluate_surrogate  evaluate surrogate_*.pt checkpoints on a BeamDataset (MSE/RMSE)
+check               procedural onboarding check, including real TraceWin reset+step
+train_policies      train RL agents on SurrogateEnv, optionally with TraceWin MBPO
+benchmark           compare Bayesian optimization, SVG, and optional RL checkpoints
+test                run one trained policy for one qualitative episode
 ```
 
 Help is available at both levels:
 
 ```bash
 python -m beam_optimization --help
-python -m beam_optimization setup --help
+python -m beam_optimization build_dataset --help
 python -m beam_optimization check --help
 ```
 
-Recommended order:
+Recommended order — the first two steps are manual: run them, read the
+printed values, and paste them into `adige.py` yourself before continuing:
 
 ```text
-setup -> check -> train -> benchmark -> test
+sensitivity -> (update adige.py sensitivity=) ->
+bayesian_opt -> (update adige.py default=) ->
+build_dataset -> train_surrogate -> check -> train_policies -> benchmark -> test
 ```
 
-### `setup`
+### `sensitivity`
 
-Use `setup` when you want to create new offline TraceWin data and train new
-base surrogate checkpoints:
+Computes ADIGE parameter sensitivity from TraceWin finite differences (CRN,
+stability check across delta scales). Prints a stability table and a
+copy-paste `ParameterSpec(...)` block for `adige.py`'s `sensitivity=` field;
+does **not** modify `adige.py` — copy the values in by hand.
 
 ```bash
-python -m beam_optimization setup \
-  --target-samples 100 \
-  --n-surrogates 3
+python -m beam_optimization sensitivity
+```
+
+This is a thin CLI wrapper; the full set of options is documented in
+`beam_optimization/config/utility/sensitivity.py`.
+
+For a faster targeted measurement of only `AD.1EQ.01` and `AD.1EQ.02`, use:
+
+```bash
+python -m beam_optimization sensitivity3
+```
+
+It uses a central difference for `AD.1EQ.01` and a backward one-sided
+difference for `AD.1EQ.02`, whose nominal value lies on its upper hardware
+bound. It prints the proposed sensitivities without modifying `adige.py`.
+
+### `bayesian_opt`
+
+Runs `BayesianOptimizer` (Gaussian Process BO) against a trained surrogate to
+find a candidate new default parameter set. Prints the best parameters found
+(for you to paste into `adige.py`'s `default=` fields) and saves convergence,
+summary, and delta-from-default diagnostic plots.
+
+```bash
+python -m beam_optimization bayesian_opt \
+  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
+  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --n-calls 200 \
+  --n-runs 3
+```
+
+All options:
+
+```text
+--surrogate PATH   surrogate .pt file (default: DEFAULT_SINGLE_SURROGATE_MODEL)
+--dataset PATH     offline BeamDataset used to sample the initial beam0 state
+                   (default: DEFAULT_BASE_DATASET)
+--n-calls N        objective evaluations per run, capped at 200 inside
+                   BayesianOptimizer (default: 200)
+--n-runs N         independent seeds; the best-scoring run's params are
+                   reported (default: 3)
+--seed N           base random seed (default: 42)
+--output PATH      JSON results output path
+```
+
+### `build_dataset`
+
+Use `build_dataset` to create new offline TraceWin data:
+
+```bash
+python -m beam_optimization build_dataset \
+  --workspace /path/TraceWin_workspace \
+  --target-samples 100
 ```
 
 All options:
 
 ```text
 --target-samples N      required, number of valid TraceWin samples to collect
---n-surrogates N        number of new surrogate checkpoints to add (default: 1)
---tracewin INI          TraceWin project file (default: DEFAULT_TRACEWIN_INI)
+--workspace PATH        TraceWin workspace containing CB_newMRMS_RFQ_Fields_1.ini
+                        (mutually exclusive with --tracewin)
+--tracewin INI          explicit TraceWin project file (mutually exclusive with
+                        --workspace; default: DEFAULT_TRACEWIN_INI)
 --dataset-root PATH     root for numbered dataset folders (default: DEFAULT_DATASET_ROOT)
---model-dir PATH        output directory for surrogate_*.pt checkpoints
-                        (default: DEFAULT_BASE_SURROGATE_DIR)
 --calc-dir PATH         TraceWin calc directory (default: "tracewin_calc" inside the
                         newly created numbered dataset directory)
+--seed N                random seed (default: 123)
+--timeout FLOAT         TraceWin timeout per simulation, seconds (default: 180.0)
+--retries N             retries per failed TraceWin simulation (default: 2)
+--retry-sleep FLOAT     sleep between retries, seconds (default: 5.0)
+--no-kill-stale         do not kill stale TraceWin processes before each simulation
+```
+
+If neither `--workspace` nor `--tracewin` is supplied, `build_dataset` uses
+`DEFAULT_TRACEWIN_INI`. `--workspace` changes only the TraceWin project source;
+dataset and calculation output locations still follow `--dataset-root` and
+`--calc-dir`.
+
+`build_dataset` creates a fresh numbered dataset directory under:
+
+```text
+beam_optimization/env/dataset/
+```
+
+### `train_surrogate`
+
+Use `train_surrogate` to train new base surrogate checkpoints from an
+existing train/val dataset (e.g. produced by `build_dataset`):
+
+```bash
+python -m beam_optimization train_surrogate \
+  --train-dataset beam_optimization/env/dataset/base/dataset_train.pt \
+  --val-dataset beam_optimization/env/dataset/base/dataset_val.pt \
+  --n-surrogates 3
+```
+
+All options:
+
+```text
+--train-dataset PATH    required, training split .pt dataset
+--val-dataset PATH      validation split .pt dataset, if available
+--n-surrogates N        number of new surrogate checkpoints to add (default: 1)
+--model-dir PATH        output directory for surrogate_*.pt checkpoints
+                        (default: DEFAULT_BASE_SURROGATE_DIR)
 --seed N                random seed (default: 123)
 --max-epochs N          surrogate training epochs (default: 200)
 --batch-size N          surrogate training batch size (default: 256)
@@ -382,19 +487,9 @@ All options:
 --log-dir PATH          TensorBoard/CSV log root for surrogate training
                         (default: DEFAULT_SURROGATE_LOG_DIR)
 --no-tensorboard        disable surrogate TensorBoard/metrics.csv logging
---timeout FLOAT         TraceWin timeout per simulation, seconds (default: 180.0)
---retries N             retries per failed TraceWin simulation (default: 2)
---retry-sleep FLOAT     sleep between retries, seconds (default: 5.0)
---no-kill-stale         do not kill stale TraceWin processes before each simulation
 ```
 
-`setup` creates a fresh numbered dataset directory under:
-
-```text
-beam_optimization/env/dataset/
-```
-
-and appends new checkpoints to:
+`train_surrogate` appends new checkpoints to:
 
 ```text
 beam_optimization/env/surrogate_env/surrogate/trained_models/base/
@@ -406,9 +501,24 @@ Surrogate logs are written by default under:
 beam_optimization/runs/surrogate/
 ```
 
+### `evaluate_surrogate`
+
+Evaluates every `surrogate_*.pt` checkpoint in a folder against a
+`BeamDataset`, reporting per-stage MSE/RMSE on beam-state predictions:
+
+```bash
+python -m beam_optimization evaluate_surrogate \
+  --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
+  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --output beam_optimization/results/surrogate_eval.json
+```
+
+This is a thin CLI wrapper; the full set of options is documented in
+`beam_optimization/env/surrogate_env/surrogate/model/evaluator.py`.
+
 ### `check`
 
-Use this after configuring TraceWin and after `setup`, or after pulling changes:
+Use this after configuring TraceWin and after `build_dataset`/`train_surrogate`, or after pulling changes:
 
 ```bash
 python -m beam_optimization check
@@ -431,7 +541,8 @@ For example, if `dataset_base.pt` or the base `surrogate_*.pt` files are
 missing, run:
 
 ```bash
-python -m beam_optimization setup --target-samples 100 --n-surrogates 4
+python -m beam_optimization build_dataset --target-samples 100
+python -m beam_optimization train_surrogate --train-dataset <dataset_train.pt> --n-surrogates 4
 ```
 
 All options:
@@ -446,19 +557,19 @@ All options:
                            (sections 3-4); for surrogate-only machines
 ```
 
-### `train`
+### `train_policies`
 
 Quick smoke run:
 
 ```bash
-python -m beam_optimization train --quick
+python -m beam_optimization train_policies --quick
 ```
 
-Full thesis training run (identical to `commands/train.sh`): all algorithms,
+Full thesis training run (identical to `commands/train_policies.sh`): all algorithms,
 3 seeds each, learning curves as mean±std across seeds:
 
 ```bash
-python -m beam_optimization train \
+python -m beam_optimization train_policies \
   --dataset beam_optimization/env/dataset/base/dataset_base.pt \
   --single-surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --base-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/base \
@@ -508,7 +619,7 @@ There is no `--only` flag. To run a subset, skip everything else. For example,
 to run only custom SAC and Stable-Baselines3 SAC:
 
 ```bash
-python -m beam_optimization train \
+python -m beam_optimization train_policies \
   --skip td3 ppo ddpg a2c reinforce trpo dyna svg_finale svg_uniform \
   --output beam_optimization/runs/sac_compare
 ```
@@ -561,7 +672,7 @@ All options:
 TraceWin + online surrogate fine-tuning:
 
 ```bash
-python -m beam_optimization train \
+python -m beam_optimization train_policies \
   --tracewin \
   --online-finetune \
   --updated-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/updated
@@ -571,7 +682,7 @@ By default, online fine-tuning saves the merged offline+online dataset back to
 the file passed with `--dataset`. To keep the base dataset unchanged, pass:
 
 ```bash
-python -m beam_optimization train \
+python -m beam_optimization train_policies \
   --tracewin \
   --online-finetune \
   --update-dataset beam_optimization/runs/all/updated_dataset.pt
@@ -581,7 +692,7 @@ RL training writes TensorBoard events and `metrics.csv` under `--output` by
 default. Disable this with:
 
 ```bash
-python -m beam_optimization train --no-tensorboard
+python -m beam_optimization train_policies --no-tensorboard
 ```
 
 ### TensorBoard
@@ -632,7 +743,7 @@ Use `benchmark` for numerical comparison on `SurrogateEnv`:
 python -m beam_optimization benchmark --quick
 ```
 
-Full benchmark (identical to `commands/benchmark.sh`): BO/SVG plus the
+Full benchmark (identical to `commands/benchmark_policies_surrogateEnv.sh`): BO/SVG plus the
 final policy benchmark over all trained checkpoints:
 
 ```bash
@@ -658,7 +769,7 @@ python -m beam_optimization benchmark \
 ```
 
 Real-physics validation of the best policies (identical to
-`commands/benchmark_tracewin.sh`, ~30 s per TraceWin step):
+`commands/benchmark_policies_tracewinEnv.sh`, ~30 s per TraceWin step):
 
 ```bash
 python -m beam_optimization benchmark \
@@ -847,8 +958,12 @@ beam_optimization/
 ├── results/             # benchmark outputs
 └── scripts/
     ├── common.py        # shared episode runner / evaluation helpers
-    ├── setup.py
-    ├── train.py
+    ├── sensitivity.py
+    ├── bayesian_opt.py
+    ├── build_dataset.py
+    ├── train_surrogate.py
+    ├── evaluate_surrogate.py
+    ├── train_policies.py
     ├── benchmark.py
     ├── test.py
     └── check.py
@@ -857,8 +972,12 @@ beam_optimization/
 The old numbered scripts are not used. Prefer:
 
 ```bash
-python -m beam_optimization setup
-python -m beam_optimization train
+python -m beam_optimization sensitivity
+python -m beam_optimization bayesian_opt
+python -m beam_optimization build_dataset
+python -m beam_optimization train_surrogate
+python -m beam_optimization evaluate_surrogate
+python -m beam_optimization train_policies
 python -m beam_optimization benchmark
 python -m beam_optimization test
 python -m beam_optimization check

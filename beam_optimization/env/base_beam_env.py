@@ -19,9 +19,10 @@ from beam_optimization.config.adige import (
     ERROR_SCORE, MAX_STEPS, PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
     observation_dim, observation_stage_labels, observation_stage_indices,
-    select_observation_stages, clip_params_to_hw,
+    select_observation_stages, clip_params_to_hw, params_to_vec,
 )
 
+from beam_optimization.env.dataset.dataset import param_knn_distance
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 
 
@@ -85,6 +86,7 @@ class BaseBeamEnv(gym.Env, ABC):
         self._obs_history: list[np.ndarray] = []
         self._score_history: list[float] = []
         self._reward_history: list[float] = []
+        self._knn_distance_history: list[float] = []
 
 
     def reset(self, seed=None, options=None):
@@ -123,6 +125,7 @@ class BaseBeamEnv(gym.Env, ABC):
         self._obs_history = [obs.copy()]
         self._score_history = [float(score)]
         self._reward_history = [0.0]
+        self._knn_distance_history = [float(param_knn_distance(params_to_vec(self._current_params))[0])]
 
         info = {"score": score, "step": 0, "reset_randomized": randomize_params, **extra}
         return obs.copy(), info
@@ -158,6 +161,7 @@ class BaseBeamEnv(gym.Env, ABC):
         self._obs_history.append(obs.copy())
         self._score_history.append(float(score))
         self._reward_history.append(float(reward))
+        self._knn_distance_history.append(float(param_knn_distance(params_to_vec(self._current_params))[0]))
 
         # update best score and best parameters if the current score is better than the best score so far.
         if score > self.best_score:
@@ -202,9 +206,12 @@ class BaseBeamEnv(gym.Env, ABC):
             fps: animation frame rate, only used when save_path is given.
 
         Returns:
-            {"params": Figure, "state": Figure, "score": Figure} normally,
-            plus {"params_video": Path, "state_video": Path,
-            "score_video": Path} when save_path is given.
+            {"params": Figure, "state": Figure, "score": Figure, "knn": Figure}
+            normally, plus {"params_video": Path, "state_video": Path,
+            "score_video": Path, "knn_video": Path} when save_path is given.
+            The "knn" figure is a dedicated pair of panels showing the
+            episode's parameter-space KNN distance to the base dataset next
+            to the score trend, so the two can be compared side by side.
         """
         import matplotlib.pyplot as plt
 
@@ -296,9 +303,31 @@ class BaseBeamEnv(gym.Env, ABC):
             ax.legend(fontsize=6, loc="upper left")
         score_fig.tight_layout(rect=(0, 0, 1, 0.86))
 
+        # ── KNN-distance figure: dedicated pair (param KNN distance, score) ─
+        knn_fig, knn_axes = plt.subplots(1, 2, figsize=(8.4, 3.2), squeeze=False)
+        knn_fig.suptitle("Parameter KNN distance vs. score over one full episode", fontweight="bold")
+
+        knn_updaters: list = []
+        for ax, key, values, feature in (
+            (knn_axes[0, 0], "knn_distance", self._knn_distance_history, "knn_distance"),
+            (knn_axes[0, 1], "score", self._score_history, None),
+        ):
+            ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
+            lc, points, segments = self._plot_colored_trend(ax, steps, values, n_init, feature=feature)
+            knn_updaters.append(self._colored_trend_updater(lc, points, segments, steps, values))
+            ax.set_xlim(0, self.max_steps)
+            ax.set_ylim(*self._series_ylim(values))
+            ax.set_title(key, fontsize=10)
+            ax.set_xlabel("step", fontsize=8)
+            ax.set_ylabel("value", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=0.25)
+            ax.legend(fontsize=6, loc="upper left")
+        knn_fig.tight_layout(rect=(0, 0, 1, 0.86))
+
         if not animate:
             plt.show()
-            return {"params": params_fig, "state": state_fig, "score": score_fig}
+            return {"params": params_fig, "state": state_fig, "score": score_fig, "knn": knn_fig}
 
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -306,21 +335,26 @@ class BaseBeamEnv(gym.Env, ABC):
         params_path = save_path.with_name(f"{save_path.stem}_params{suffix}")
         state_path = save_path.with_name(f"{save_path.stem}_state{suffix}")
         score_path = save_path.with_name(f"{save_path.stem}_score{suffix}")
+        knn_path = save_path.with_name(f"{save_path.stem}_knn{suffix}")
 
         self._save_trend_animation(params_fig, params_updaters, n_frames, params_path, fps)
         self._save_trend_animation(state_fig, state_updaters, n_frames, state_path, fps)
         self._save_trend_animation(score_fig, score_updaters, n_frames, score_path, fps)
+        self._save_trend_animation(knn_fig, knn_updaters, n_frames, knn_path, fps)
         plt.close(params_fig)
         plt.close(state_fig)
         plt.close(score_fig)
+        plt.close(knn_fig)
 
         return {
             "params": params_fig,
             "state": state_fig,
             "score": score_fig,
+            "knn": knn_fig,
             "params_video": params_path,
             "state_video": state_path,
             "score_video": score_path,
+            "knn_video": knn_path,
         }
 
     @classmethod

@@ -7,6 +7,8 @@ explicit arguments.
 from __future__ import annotations
 import os
 from pathlib import Path
+from typing import Optional
+from uuid import uuid4
 
 # Absolute path to the package root (the directory that contains this file's
 # parent, i.e. .../beam_optimization).
@@ -15,10 +17,60 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Root folder for flat BeamDataset files.
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "env/dataset"
 
-# Base dataset used by environments/algorithms to sample initial beam states
-# and by online model-update workflows as the offline fine-tuning dataset.
-DEFAULT_BASE_DATASET_DIR = DEFAULT_DATASET_ROOT / "base"
-DEFAULT_BASE_DATASET = DEFAULT_BASE_DATASET_DIR / "dataset_base.pt"
+def latest_numbered_dataset_dir() -> Optional[Path]:
+    """Return the highest-numbered dataset directory under
+    DEFAULT_DATASET_ROOT (e.g. env/dataset/003), or None if none exist yet.
+
+    Mirrors the numbering scheme built by
+    tracewin_dataset_builder.next_numbered_dataset_dir() (numeric-only
+    subdirectory names), without importing it: paths.py has no dependency on
+    the env package and shouldn't gain one.
+    """
+    if not DEFAULT_DATASET_ROOT.exists():
+        return None
+    numbered = [
+        child for child in DEFAULT_DATASET_ROOT.iterdir()
+        if child.is_dir() and child.name.isdigit()
+    ]
+    if not numbered:
+        return None
+    return max(numbered, key=lambda p: int(p.name))
+
+
+def next_numbered_dataset_dir() -> Path:
+    """Return the dataset directory the next build_dataset.sh run would
+    create (e.g. env/dataset/003 if 001 and 002 already exist).
+
+    Mirrors tracewin_dataset_builder.next_numbered_dataset_dir()'s numbering,
+    minus its mkdir side effect and its import (would make config depend on
+    env). Used by default_dataset_path() as the "nothing built yet" case, so
+    callers get a consistent, forward-looking path instead of a dead
+    reference to a hand-maintained "base" dataset.
+    """
+    latest = latest_numbered_dataset_dir()
+    next_idx = int(latest.name) + 1 if latest is not None else 1
+    return DEFAULT_DATASET_ROOT / f"{next_idx:03d}"
+
+
+def default_dataset_path(prefix: str = "all") -> Path:
+    """Return the dataset .pt file scripts should default to.
+
+    Resolves to f"dataset_{prefix}.pt" in the most recently built numbered
+    dataset directory (e.g. env/dataset/003/dataset_all.pt), so that once a
+    fresh dataset is built via build_dataset.sh, every script automatically
+    starts using it. If no numbered dataset exists yet (or it doesn't have
+    this split), returns the path the *next* build would create instead --
+    this won't exist on disk until build_dataset.sh actually runs, so
+    callers that need to fail loudly should check .exists() themselves
+    (like scripts/check.py does) rather than assume the returned path is
+    ready to load.
+    """
+    latest = latest_numbered_dataset_dir()
+    if latest is not None:
+        candidate = latest / f"dataset_{prefix}.pt"
+        if candidate.exists():
+            return candidate
+    return next_numbered_dataset_dir() / f"dataset_{prefix}.pt"
 
 # Surrogate checkpoint folders. "base" is kept as the clean offline reference
 # ensemble. "updated" is the working ensemble fine-tuned by online TraceWin
@@ -40,8 +92,8 @@ DEFAULT_TRACEWIN_INI = (
     / "env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini"
 )
 
-# Working directory for TraceWin output files when running TraceWinEnv.
-DEFAULT_TRACEWIN_ENV_CALC_DIR = Path("/tmp/tracewin_calc")
+# Parent directory for automatically generated TraceWinEnv calculation folders.
+TRACEWIN_ENV_CALC_ROOT = Path("/tmp")
 
 # Folder name used for TraceWin calculation files created during dataset setup.
 DEFAULT_TRACEWIN_CALC_DIR_NAME = "tracewin_calc"
@@ -54,6 +106,11 @@ def configure_matplotlib_cache() -> None:
     """Point matplotlib at a writable cache dir before the first import."""
     MATPLOTLIB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("MPLCONFIGDIR", str(MATPLOTLIB_CACHE_DIR))
+
+
+def new_tracewin_env_calc_dir() -> Path:
+    """Return a unique calculation directory for one TraceWinEnv instance."""
+    return TRACEWIN_ENV_CALC_ROOT / f"tracewin_calc_{os.getpid()}_{uuid4().hex}"
 
 
 def default_tracewin_calc_dir(dataset_dir: Path) -> Path:
@@ -69,3 +126,4 @@ def default_eval_calc_dir(project_file: Path) -> Path:
 # Calc directory and results checkpoint for config/utility/sensitivity.py.
 DEFAULT_SENSITIVITY_CALC_DIR = PROJECT_ROOT / "env/tracewin_env/tracewin/sensitivity_calc"
 DEFAULT_SENSITIVITY_CHECKPOINT = DEFAULT_SENSITIVITY_CALC_DIR / "sensitivity_results.json"
+

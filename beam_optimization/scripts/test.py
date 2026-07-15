@@ -14,11 +14,11 @@ from pathlib import Path
 from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, load_agent
 from beam_optimization.config.adige import MAX_STEPS, N_PARAMS, action_bounds
 from beam_optimization.config.paths import (
-    DEFAULT_BASE_DATASET,
     DEFAULT_BASE_SURROGATE_DIR,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_TRACEWIN_INI,
     configure_matplotlib_cache,
+    default_dataset_path,
     default_eval_calc_dir,
 )
 from beam_optimization.env.surrogate_env import SurrogateEnv
@@ -110,9 +110,11 @@ def save_render(env, args, episode_idx: int, step_idx: int) -> None:
     result["params"].savefig(prefix.with_name(prefix.name + "_params.png"), dpi=args.dpi)
     result["state"].savefig(prefix.with_name(prefix.name + "_state.png"), dpi=args.dpi)
     result["score"].savefig(prefix.with_name(prefix.name + "_score.png"), dpi=args.dpi)
+    result["knn"].savefig(prefix.with_name(prefix.name + "_knn.png"), dpi=args.dpi)
     plt.close(result["params"])
     plt.close(result["state"])
     plt.close(result["score"])
+    plt.close(result["knn"])
 
     if args.env == "tracewin" and args.tracewin_phase_space:
         with warnings.catch_warnings():
@@ -138,7 +140,10 @@ def save_episode_video(env, args, episode_idx: int) -> None:
     prefix = render_dir / f"{args.env}_{args.algo}_ep{episode_idx:03d}_episode"
 
     result = env.render(save_path=str(prefix), fps=args.episode_video_fps)
-    print(f"  saved episode videos: {result['params_video']}, {result['state_video']}, {result['score_video']}")
+    print(
+        f"  saved episode videos: {result['params_video']}, {result['state_video']}, "
+        f"{result['score_video']}, {result['knn_video']}"
+    )
 
 
 def save_phase_space_frame(env, args, episode_idx: int, step_idx: int) -> Path | None:
@@ -247,7 +252,7 @@ def main():
                         help="Start the episode from nominal default parameters instead of a randomized reset.")
 
     parser.add_argument("--surrogate", default=str(DEFAULT_BASE_SURROGATE_DIR))
-    parser.add_argument("--dataset", default=str(DEFAULT_BASE_DATASET))
+    parser.add_argument("--dataset", default=str(default_dataset_path()))
     parser.add_argument("--tracewin-project", default=str(DEFAULT_TRACEWIN_INI))
     parser.add_argument("--calc-dir", default=None)
     parser.add_argument("--tracewin-timeout", type=float, default=120.0)

@@ -22,16 +22,19 @@ from typing import Callable, Optional
 import numpy as np
 
 from beam_optimization.config.paths import (
-    DEFAULT_BASE_DATASET,
     DEFAULT_BASE_SURROGATE_DIR,
     DEFAULT_DATASET_ROOT,
     DEFAULT_TRACEWIN_INI,
     PROJECT_ROOT,
     configure_matplotlib_cache,
+    default_dataset_path,
 )
 
 
-SETUP_COMMAND = "python -m beam_optimization setup --target-samples 100 --n-surrogates 4"
+SETUP_COMMAND = (
+    "python -m beam_optimization build_dataset --target-samples 100 && "
+    "python -m beam_optimization train_surrogate --train-dataset <dataset_train.pt> --n-surrogates 4"
+)
 INSTALL_COMMAND = (
     "beam_optimization/.venv/bin/pip install -r beam_optimization/requirements.txt"
 )
@@ -499,16 +502,17 @@ def main() -> int:
     def _dataset():
         from beam_optimization.env.dataset import BeamDataset
 
-        if not DEFAULT_BASE_DATASET.exists():
+        dataset_path = default_dataset_path()
+        if not dataset_path.exists():
             raise CheckFailure(
-                f"Base dataset not found: {DEFAULT_BASE_DATASET}",
+                f"Base dataset not found: {dataset_path}",
                 action=_setup_action(),
                 path_command=_setup_command(),
             )
-        dataset = BeamDataset.load(DEFAULT_BASE_DATASET)
+        dataset = BeamDataset.load(dataset_path)
         if len(dataset) <= 0:
             raise CheckFailure(
-                f"Base dataset is empty: {DEFAULT_BASE_DATASET}",
+                f"Base dataset is empty: {dataset_path}",
                 action=_setup_action(),
                 path_command=_setup_command(),
             )
@@ -525,7 +529,7 @@ def main() -> int:
                 path_command=_setup_command(),
             )
         state["dataset"] = dataset
-        return f"loaded {len(dataset):,} samples from {DEFAULT_BASE_DATASET}"
+        return f"loaded {len(dataset):,} samples from {dataset_path}"
 
     dataset_ok = checker.check(
         "Load and validate dataset_base.pt",

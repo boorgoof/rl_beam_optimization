@@ -31,7 +31,7 @@ Note: the input beam (stage 0) is fixed by the .ini project file.
 from __future__ import annotations
 
 from beam_optimization.config.adige import MAX_STEPS
-from beam_optimization.config.paths import DEFAULT_TRACEWIN_ENV_CALC_DIR
+from beam_optimization.config.paths import new_tracewin_env_calc_dir
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
 
@@ -41,7 +41,8 @@ class TraceWinEnv(BaseBeamEnv):
 
     Args:
         project_file:  Path to the TraceWin .ini project file.
-        calc_dir:      Working directory for TraceWin output files.
+        calc_dir:      Working directory for TraceWin output files. When omitted,
+                       a unique temporary directory is assigned to this instance.
         max_steps:     Episode length (number of TraceWin calls per episode).
         observation:    Selected by OBSERVATION_STAGE_MASK in adige.py.
         timeout:       Seconds before aborting a single TraceWin call.
@@ -51,11 +52,14 @@ class TraceWinEnv(BaseBeamEnv):
     def __init__(
         self,
         project_file: str,
-        calc_dir: str = str(DEFAULT_TRACEWIN_ENV_CALC_DIR),
+        calc_dir: str | None = None,
         max_steps: int = MAX_STEPS,
         timeout: float = 45.0,
         retries: int = 2,
     ):
+
+        if calc_dir is None:
+            calc_dir = str(new_tracewin_env_calc_dir())
 
         # Store the simulator kwargs for later use in _build_simulator() for the TraceWin simulator
         self._simulator_kwargs = {

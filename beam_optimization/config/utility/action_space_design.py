@@ -1,302 +1,203 @@
-"""Offline calibration of per-parameter RL action/reset scales.
+"""Offline calibration of the three global RL/dataset scales for ADIGE.
 
-All scales are expressed in units of the current adige.py sensitivity
-(1-point convention: sensitivity = Δparam per 1 score point), so
-step_max = action_scale_rl * sensitivity is a physical parameter delta.
-The math is convention-agnostic; only the fallback constants below assume
-the 1-point convention.
+Three scalars are shared by every parameter (in sensitivity units), derived in
+this order because each depends on the previous one:
+
+    dataset_scale -> reset_scale -> action_scale
+
+dataset_scale is chosen freely first (how wide the surrogate's trust region
+should be). reset_scale and action_scale are then derived so that, in the
+worst case, a reset plus a full episode trajectory never leaves the dataset's
+gaussian bell:
+
+    k_sigma * reset_scale + action_scale * max_steps <= k_sigma_dataset * dataset_scale
+
+Because sensitivity cancels out of this inequality, the constraint — and the
+three scales themselves — are identical for every parameter; only the derived
+per-parameter physical quantities (dataset_std_p, reset_std_p, step_max_p,
+trajectory_max_p) depend on each parameter's sensitivity.
+
+Hardware bounds (hw_min/hw_max) never enter these formulas — they are only a
+clip applied when a concrete value is generated (dataset sampling, reset,
+action step), not a constraint on the scales themselves.
 """
 from __future__ import annotations
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import numpy as np
 from beam_optimization.config.adige import MAX_STEPS, PARAMETERS, sensitivity_vec
 
 
-def _available_margin(param) -> float | None:
-    """Return distance from default to nearest hardware edge, or None if unknown."""
-    if param.hw_min is None or param.hw_max is None:
-        return None
-    return min(param.hw_max - param.default, param.default - param.hw_min)
-
-
-def _positive_or_zero(value: float) -> float:
-    return max(0.0, float(value))
-
-
-def compute_action_scale_rl(
+def compute_scales(
     *,
-    target_trajectory_fraction: float = 0.4,
-    target_steps: int = 10,
+    dataset_scale: float = 5,
+    k_sigma_dataset: float = 3,
+    f_reset: float = 0.25,
+    k_sigma: float = 3,
+    target_scale: Optional[float] = None,
     max_steps: int = MAX_STEPS,
-    margin: float = 1.3,
-    reset_fraction: float = 0.3,
-    fallback_scale: float = 25.0,  # 1-point units: one action step ≈ 25 score points
-) -> np.ndarray:
-    """Compute recommended action_scale_rl per parameter.
+) -> dict:
+    """Compute the three global scalars, in order: dataset_scale (given), reset_scale, action_scale.
 
-    The hardware-safe margin is split into reset and step budgets:
+    Args:
+        dataset_scale: Chosen first, freely — width of the dataset's gaussian bell.
+        k_sigma_dataset: How many dataset stddevs define the trust-region edge.
+        f_reset: Fraction of the trust region budget reserved for the reset (rest goes to the trajectory).
+        k_sigma: Worst-case reset excursion, in reset stddevs.
+        target_scale: Fraction of dataset_scale the agent should typically cover in ~10 steps.
+            Defaults to 0.4 * dataset_scale.
+        max_steps: Episode horizon in RL steps.
 
-        reset_budget = reset_fraction * available_margin / margin
-        step_budget = (1 - reset_fraction) * available_margin / margin
-
-    The final action scale is:
-
-        min(target_trajectory / (target_steps * sensitivity),
-            step_budget / (max_steps * sensitivity))
-
-    ``available_margin`` is the distance from the default to the nearest hardware
-    edge, not half of the full hardware range. ``margin`` is a safety divisor:
-    larger values are more conservative.
-
-    Parameters without hardware bounds fall back to ``fallback_scale``.
+    Returns:
+        dict with dataset_scale, reset_scale, action_scale, action_scale_max.
     """
-    if target_steps <= 0:
-        raise ValueError(f"target_steps must be > 0, got {target_steps}")
+    if dataset_scale <= 0:
+        raise ValueError(f"dataset_scale must be > 0, got {dataset_scale}")
+    if k_sigma_dataset <= 0:
+        raise ValueError(f"k_sigma_dataset must be > 0, got {k_sigma_dataset}")
+    if not 0.0 < f_reset < 1.0:
+        raise ValueError(f"f_reset must be in (0, 1), got {f_reset}")
+    if k_sigma <= 0:
+        raise ValueError(f"k_sigma must be > 0, got {k_sigma}")
     if max_steps <= 0:
         raise ValueError(f"max_steps must be > 0, got {max_steps}")
-    if margin <= 0:
-        raise ValueError(f"margin must be > 0, got {margin}")
-    if not 0.0 <= reset_fraction <= 1.0:
-        raise ValueError(f"reset_fraction must be in [0, 1], got {reset_fraction}")
 
-    sens = sensitivity_vec()
+    if target_scale is None:
+        target_scale = 0.4 * dataset_scale
 
-    result = np.empty(len(PARAMETERS), dtype=np.float64)
-    for i, p in enumerate(PARAMETERS):
-        s = sens[i]
-        available = _available_margin(p)
-        if available is None:
-            result[i] = fallback_scale
-            continue
-        if available <= 0 or s <= 0:
-            result[i] = 0.0
-            continue
+    reset_scale = f_reset * k_sigma_dataset * dataset_scale / k_sigma
+    action_scale_max = (1.0 - f_reset) * k_sigma_dataset * dataset_scale / max_steps
+    action_scale_candidate = target_scale / 10.0
+    action_scale = min(action_scale_candidate, action_scale_max)
 
-        target_trajectory = target_trajectory_fraction * available
-        candidate = target_trajectory / (target_steps * s)
-
-        step_budget = (1.0 - reset_fraction) * available / margin
-        cap = _positive_or_zero(step_budget / (s * max_steps))
-        result[i] = _positive_or_zero(min(candidate, cap))
-
-    return result
-
-
-def compute_reset_scale(
-    action_scale_rl: np.ndarray | None = None,
-    *,
-    margin: float = 1.3,
-    reset_sigma: float = 3.0,
-    reset_fraction: float = 0.3,
-    fallback_reset_scale: float = 12.5,  # 1-point units (= 0.5 in the old 25-point convention)
-) -> np.ndarray:
-    """Compute recommended reset_scale per parameter.
-
-    Reset is allocated a fixed fraction of the hardware-safe margin:
-
-        reset_budget = reset_fraction * available_margin / margin
-        reset_scale = reset_budget / (reset_sigma * sensitivity)
-
-    Parameters without hardware bounds use ``fallback_reset_scale``.
-    """
-    if margin <= 0:
-        raise ValueError(f"margin must be > 0, got {margin}")
-    if reset_sigma < 0:
-        raise ValueError(f"reset_sigma must be >= 0, got {reset_sigma}")
-    if not 0.0 <= reset_fraction <= 1.0:
-        raise ValueError(f"reset_fraction must be in [0, 1], got {reset_fraction}")
-
-    sens = sensitivity_vec()
-
-    result = np.empty(len(PARAMETERS), dtype=np.float64)
-    for i, p in enumerate(PARAMETERS):
-        s = sens[i]
-        available = _available_margin(p)
-        if available is None:
-            result[i] = fallback_reset_scale
-            continue
-        if available <= 0 or s <= 0 or reset_sigma == 0:
-            result[i] = 0.0
-            continue
-
-        reset_budget = reset_fraction * available / margin
-        result[i] = _positive_or_zero(reset_budget / (reset_sigma * s))
-
-    return result
-
-
-def dataset_core_bounds(
-    action_scale_rl: np.ndarray,
-    reset_scale: np.ndarray,
-    *,
-    max_steps: int = MAX_STEPS,
-    reset_sigma: float = 3.0,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute the dense core sampling zone for the surrogate dataset.
-
-    The core zone covers a conservative reset excursion plus the maximum RL
-    trajectory inside one episode:
-
-        core_half_width =
-            reset_sigma * reset_scale_p * sensitivity_p
-            + action_scale_rl_p * sensitivity_p * max_steps
-    """
-    if max_steps <= 0:
-        raise ValueError(f"max_steps must be > 0, got {max_steps}")
-    if reset_sigma < 0:
-        raise ValueError(f"reset_sigma must be >= 0, got {reset_sigma}")
-
-    sens = sensitivity_vec()
-    action_scale_arr = np.asarray(action_scale_rl, dtype=np.float64)
-    reset_scale_arr = np.asarray(reset_scale, dtype=np.float64)
-    if action_scale_arr.shape != sens.shape:
-        raise ValueError(f"action_scale_rl must have shape {sens.shape}, got {action_scale_arr.shape}")
-    if reset_scale_arr.shape != sens.shape:
-        raise ValueError(f"reset_scale must have shape {sens.shape}, got {reset_scale_arr.shape}")
-
-    defaults = np.array([p.default for p in PARAMETERS], dtype=np.float64)
-    half_width = reset_sigma * reset_scale_arr * sens + action_scale_arr * sens * max_steps
-    return defaults - half_width, defaults + half_width
+    return {
+        "dataset_scale": dataset_scale,
+        "reset_scale": reset_scale,
+        "action_scale": action_scale,
+        "action_scale_max": action_scale_max,
+    }
 
 
 def verify_constraints(
-    action_scale_rl: np.ndarray,
-    reset_scale: np.ndarray,
+    *,
+    dataset_scale: float,
+    reset_scale: float,
+    action_scale: float,
+    k_sigma_dataset: float = 2.5,
+    k_sigma: float = 2.5,
     max_steps: int = MAX_STEPS,
-    margin: float = 1.3,
-    reset_sigma: float = 3.0,
 ) -> List[str]:
-    """Check hardware safety constraints for each parameter.
+    """Check the single global trust-region constraint and flag tight hardware clips.
 
-    Constraint:
+    The core constraint is parameter-independent (sensitivity cancels out):
 
-        reset_sigma * reset_scale * sensitivity
-        + action_scale_rl * sensitivity * max_steps
-        <= available_margin / margin
+        k_sigma * reset_scale + action_scale * max_steps <= k_sigma_dataset * dataset_scale
 
-    where ``available_margin`` is distance from default to the nearest hardware
-    edge. Parameters without bounds are reported as non-verifiable.
+    In addition, for parameters with known hardware bounds, warn if the
+    dataset's gaussian bell (k_sigma_dataset * dataset_std_p) would be
+    significantly clipped by hw_min/hw_max — this is only a diagnostic, since
+    hardware is never a constraint on the scales themselves.
     """
-    if margin <= 0:
-        raise ValueError(f"margin must be > 0, got {margin}")
-
-    sens = sensitivity_vec()
-    action_scale_arr = np.asarray(action_scale_rl, dtype=np.float64)
-    reset_scale_arr = np.asarray(reset_scale, dtype=np.float64)
     warnings: List[str] = []
 
+    lhs = k_sigma * reset_scale + action_scale * max_steps
+    rhs = k_sigma_dataset * dataset_scale
+    if lhs > rhs:
+        warnings.append(
+            f"VIOLATION — k_sigma*reset_scale + action_scale*max_steps = {lhs:.6g} "
+            f"> k_sigma_dataset*dataset_scale = {rhs:.6g}"
+        )
+
+    sens = sensitivity_vec()
+    dataset_half_width = k_sigma_dataset * dataset_scale * sens
     for i, p in enumerate(PARAMETERS):
-        s = sens[i]
-        reset_worst = reset_sigma * reset_scale_arr[i] * s
-        trajectory = action_scale_arr[i] * s * max_steps
-        total_excursion = reset_worst + trajectory
-
-        available = _available_margin(p)
-        if available is None:
+        half_width = dataset_half_width[i]
+        if p.hw_min is not None and p.default - p.hw_min < half_width:
             warnings.append(
-                f"  {p.name}: hw bounds unknown — cannot verify safety constraint "
-                f"(total excursion = {total_excursion:.4g} param units)"
+                f"  {p.name}: hw_min clips the dataset bell — "
+                f"default-hw_min={p.default - p.hw_min:.4g} < k_sigma_dataset*dataset_std={half_width:.4g}"
             )
-            continue
-        if available <= 0:
+        if p.hw_max is not None and p.hw_max - p.default < half_width:
             warnings.append(
-                f"  {p.name}: INVALID — default={p.default:.4g} is outside or on hw bounds "
-                f"[{p.hw_min:.4g}, {p.hw_max:.4g}]"
-            )
-            continue
-
-        limit = available / margin
-        if reset_worst > limit:
-            warnings.append(
-                f"  {p.name}: RESET TOO LARGE — reset_worst {reset_worst:.4g} > "
-                f"limit {limit:.4g}; action_scale_rl cap is 0"
-            )
-        elif total_excursion > limit:
-            warnings.append(
-                f"  {p.name}: VIOLATION — total excursion {total_excursion:.4g} > "
-                f"limit {limit:.4g} (available_margin={available:.4g}, safety_margin={margin})"
+                f"  {p.name}: hw_max clips the dataset bell — "
+                f"hw_max-default={p.hw_max - p.default:.4g} < k_sigma_dataset*dataset_std={half_width:.4g}"
             )
 
     return warnings
 
 
-def _fmt(value: float | None, width: int, precision: int = 4) -> str:
-    if value is None or not np.isfinite(value):
-        return f"{'--':>{width}}"
-    return f"{value:>{width}.{precision}g}"
-
-
 def report(
-    action_scale_rl: np.ndarray | None = None,
-    reset_scale: np.ndarray | None = None,
     *,
+    dataset_scale: float = 5.0,
+    k_sigma_dataset: float = 2.5,
+    f_reset: float = 0.25,
+    k_sigma: float = 2.5,
+    target_scale: Optional[float] = None,
     max_steps: int = MAX_STEPS,
-    margin: float = 1.3,
-    target_trajectory_fraction: float = 0.4,
-    target_steps: int = 10,
-    reset_sigma: float = 3.0,
-    reset_fraction: float = 0.3,
 ) -> None:
-    """Print a compact calibration report and a ParameterSpec copy-paste block."""
-    if reset_scale is None:
-        reset_scale = compute_reset_scale(
-            margin=margin,
-            reset_sigma=reset_sigma,
-            reset_fraction=reset_fraction,
-        )
-    else:
-        reset_scale = np.asarray(reset_scale, dtype=np.float64)
-
-    if action_scale_rl is None:
-        action_scale_rl = compute_action_scale_rl(
-            target_trajectory_fraction=target_trajectory_fraction,
-            target_steps=target_steps,
-            max_steps=max_steps,
-            margin=margin,
-            reset_fraction=reset_fraction,
-        )
-    else:
-        action_scale_rl = np.asarray(action_scale_rl, dtype=np.float64)
-
-    sens = sensitivity_vec()
-    step_max = action_scale_rl * sens
-    trajectory_max = step_max * max_steps
+    """Print the calibration report and a copy-paste block for adige.py."""
+    scales = compute_scales(
+        dataset_scale=dataset_scale,
+        k_sigma_dataset=k_sigma_dataset,
+        f_reset=f_reset,
+        k_sigma=k_sigma,
+        target_scale=target_scale,
+        max_steps=max_steps,
+    )
+    reset_scale = scales["reset_scale"]
+    action_scale = scales["action_scale"]
 
     print("\nAction Space Design")
-    print(f"max_steps={max_steps}  reset_fraction={reset_fraction}  reset_sigma={reset_sigma}")
+    print(
+        f"dataset_scale={dataset_scale}  k_sigma_dataset={k_sigma_dataset}  "
+        f"f_reset={f_reset}  k_sigma={k_sigma}  max_steps={max_steps}"
+    )
+    print(
+        f"-> reset_scale={reset_scale:.6g}  action_scale={action_scale:.6g} "
+        f"(action_scale_max={scales['action_scale_max']:.6g})"
+    )
     print()
 
+    sens = sensitivity_vec()
+    dataset_std = dataset_scale * sens
+    reset_std = reset_scale * sens
+    step_max = action_scale * sens
+    trajectory_max = step_max * max_steps
+
     header = (
-        f"{'Parameter':<14} {'action_scale_rl':>18} {'reset_scale':>14} "
+        f"{'Parameter':<14} {'dataset_std':>14} {'reset_std':>14} "
         f"{'step_max':>14} {'trajectory_max':>18}"
     )
     sep = "-" * len(header)
     print(sep)
     print(header)
     print(sep)
-
     for i, p in enumerate(PARAMETERS):
         print(
-            f"{p.name:<14} {action_scale_rl[i]:>18.6g} {reset_scale[i]:>14.6g} "
+            f"{p.name:<14} {dataset_std[i]:>14.6g} {reset_std[i]:>14.6g} "
             f"{step_max[i]:>14.6g} {trajectory_max[i]:>18.6g}"
         )
-
     print(sep)
+
+    warnings = verify_constraints(
+        dataset_scale=dataset_scale,
+        reset_scale=reset_scale,
+        action_scale=action_scale,
+        k_sigma_dataset=k_sigma_dataset,
+        k_sigma=k_sigma,
+        max_steps=max_steps,
+    )
+    if warnings:
+        print("\nWarnings:")
+        for w in warnings:
+            print(w)
 
     bar = "─" * 80
     print(f"\n{bar}")
     print("Copy-paste block for adige.py:")
     print(bar)
-    for i, p in enumerate(PARAMETERS):
-        hw_min_s = "None" if p.hw_min is None else repr(p.hw_min)
-        hw_max_s = "None" if p.hw_max is None else repr(p.hw_max)
-        print(
-            f'    ParameterSpec("{p.name}", "{p.key}", marker={p.marker}, '
-            f'default={p.default!r}, sensitivity={p.sensitivity:.15e}, '
-            f'hw_min={hw_min_s}, hw_max={hw_max_s}, '
-            f'action_scale_rl={action_scale_rl[i]:.15e}, '
-            f'reset_scale={reset_scale[i]:.15e}),'
-        )
+    print(f"DATASET_SCALE: float = {dataset_scale!r}")
+    print(f"RESET_SCALE: float = {reset_scale:.15e}")
+    print(f"ACTION_SCALE: float = {action_scale:.15e}")
     print(bar)
 
 
@@ -307,37 +208,36 @@ if __name__ == "__main__":
         description="Print the action space design calibration report for ADIGE."
     )
     parser.add_argument(
+        "--dataset-scale", type=float, default=5.0,
+        help="Dataset gaussian bell width, chosen first (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--k-sigma-dataset", type=float, default=2.5,
+        help="Number of dataset stddevs defining the trust-region edge (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--f-reset", type=float, default=0.25,
+        help="Fraction of the trust-region budget reserved for reset (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--k-sigma", type=float, default=2.5,
+        help="Worst-case reset excursion, in reset stddevs (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--target-scale", type=float, default=None,
+        help="Fraction of dataset_scale the agent should cover in ~10 steps (default: 0.4*dataset_scale)"
+    )
+    parser.add_argument(
         "--max-steps", type=int, default=MAX_STEPS,
         help="Episode length in RL steps (default: %(default)s)"
-    )
-    parser.add_argument(
-        "--target-steps", type=int, default=10,
-        help="Number of steps expected to cover the target trajectory (default: %(default)s)"
-    )
-    parser.add_argument(
-        "--margin", type=float, default=1.3,
-        help="Safety divisor for hw constraint; larger is more conservative (default: %(default)s)"
-    )
-    parser.add_argument(
-        "--target-traj", type=float, default=0.4,
-        metavar="FRACTION",
-        help="Fraction of available margin used as typical useful trajectory (default: %(default)s)"
-    )
-    parser.add_argument(
-        "--reset-sigma", type=float, default=3.0,
-        help="Gaussian reset sigma multiplier used as worst-case design bound (default: %(default)s)"
-    )
-    parser.add_argument(
-        "--reset-fraction", type=float, default=0.3,
-        help="Fraction of hardware-safe margin reserved for reset randomization (default: %(default)s)"
     )
     args = parser.parse_args()
 
     report(
+        dataset_scale=args.dataset_scale,
+        k_sigma_dataset=args.k_sigma_dataset,
+        f_reset=args.f_reset,
+        k_sigma=args.k_sigma,
+        target_scale=args.target_scale,
         max_steps=args.max_steps,
-        margin=args.margin,
-        target_trajectory_fraction=args.target_traj,
-        target_steps=args.target_steps,
-        reset_sigma=args.reset_sigma,
-        reset_fraction=args.reset_fraction,
     )

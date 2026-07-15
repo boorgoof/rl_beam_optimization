@@ -69,9 +69,10 @@ beam_optimization/env/tracewin_env/tracewin/pyTraceWin_wrapper/TraceWin_program/
 # Local launcher with machine-specific permissions/user setup
 beam_optimization/env/tracewin_env/tracewin/pyTraceWin_wrapper/run_tracewin_with_permissions.sh
 
-# Local TraceWin physical workspace: input distributions and field maps are large.
-# Keep it on disk, but do not store it in normal Git history.
-beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/
+# Local TraceWin physical workspaces: input distributions and field maps are large.
+# Keep them on disk, but do not store them in normal Git history. The wildcard
+# also covers variants such as TraceWin_workspace_2 and TraceWin_workspace_old.
+beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace*/
 
 # Data
 data/raw/

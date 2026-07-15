@@ -20,10 +20,11 @@ get_training_batch(), right before training/evaluation needs it.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
+from scipy.spatial import cKDTree
 from torch.utils.data import Dataset as TorchDataset
 
 from beam_optimization.config.adige import (
@@ -32,6 +33,7 @@ from beam_optimization.config.adige import (
     STAGE_PARAM_SIZES,
     score_from_vec,
 )
+from beam_optimization.config.paths import default_dataset_path
 
 
 _X_COLS = list(BEAM_STATE_FEATURES) + [
@@ -51,6 +53,8 @@ class BeamDataset(TorchDataset):
         self._X: torch.Tensor = torch.empty((0, 25), dtype=torch.float32)
         self._Y: torch.Tensor = torch.empty((0, 99), dtype=torch.float32)
         self._scores: torch.Tensor = torch.empty(0, dtype=torch.float32)
+        self._param_knn_tree: Optional[cKDTree] = None
+        self._param_knn_std: Optional[np.ndarray] = None
 
     def __len__(self) -> int:
         return int(self._X.shape[0])
@@ -148,9 +152,36 @@ class BeamDataset(TorchDataset):
         """Return all flat parameter vectors as a tensor with shape (N, 16)."""
         return self._X[:, 9:]
 
+    def param_knn_distance(self, param_vecs, k: int = 5) -> np.ndarray:
+        """Mean distance from each row of `param_vecs` (N, 16) to its k nearest
+        parameter vectors in this dataset.
+
+        Distances are computed after standardizing every parameter by this
+        dataset's per-parameter std, so no single parameter's scale (e.g.
+        volts vs. millimeters) dominates the result. The k-d tree and std are
+        built once and cached on the instance.
+        """
+        if self._param_knn_tree is None:
+            ref = self.get_param_vecs().numpy()
+            std = ref.std(axis=0)
+            std[std == 0] = 1.0
+            self._param_knn_std = std
+            self._param_knn_tree = cKDTree(ref / std)
+
+        query = np.atleast_2d(np.asarray(param_vecs, dtype=np.float64)) / self._param_knn_std
+        dists, _ = self._param_knn_tree.query(query, k=k)
+        if dists.ndim == 1:
+            dists = dists[:, None]
+        return dists.mean(axis=1)
+
     @classmethod
     def load(cls, path: str | Path) -> "BeamDataset":
-        """Load a flat .pt dataset (keys X, Y and optionally scores)."""
+        """Load a flat .pt dataset and recompute scores with current config.
+
+        Stored scores are derived data and may have been produced by an older
+        score function. Recomputing them from the final nine columns of ``Y``
+        keeps existing datasets consistent whenever score shaping changes.
+        """
         raw = torch.load(str(path), map_location="cpu", weights_only=False)
         if "X" not in raw or "Y" not in raw:
             raise ValueError(f"Unknown .pt dataset format in {path}. Expected keys 'X'/'Y'.")
@@ -158,13 +189,10 @@ class BeamDataset(TorchDataset):
         ds = cls()
         ds._X = raw["X"].float()
         ds._Y = raw["Y"].float()
-        if "scores" in raw:
-            ds._scores = raw["scores"].float().reshape(-1)
-        else:
-            ds._scores = torch.tensor(
-                [score_from_vec(ds._Y[i, -9:].numpy()) for i in range(len(ds._X))],
-                dtype=torch.float32,
-            )
+        ds._scores = torch.tensor(
+            [score_from_vec(ds._Y[i, -9:].numpy()) for i in range(len(ds._X))],
+            dtype=torch.float32,
+        )
 
         print(f"[BeamDataset] {len(ds):,} samples loaded from {path}")
         return ds
@@ -194,3 +222,22 @@ class BeamDataset(TorchDataset):
             str(path),
         )
         print(f"[BeamDataset] {len(self):,} samples saved to {path}")
+
+
+_default_dataset_cache: Optional[BeamDataset] = None
+
+
+def param_knn_distance(param_vecs, dataset: Optional[BeamDataset] = None, k: int = 5) -> np.ndarray:
+    """Mean distance from each row of `param_vecs` (N, 16) to its k nearest
+    parameter vectors in `dataset` (the default dataset when not given).
+
+    Falls back to a process-wide cached load of the default dataset when
+    `dataset` is None, so repeated calls (e.g. once per env step during a
+    test episode) don't reload the file from disk every time.
+    """
+    global _default_dataset_cache
+    if dataset is None:
+        if _default_dataset_cache is None:
+            _default_dataset_cache = BeamDataset.load(default_dataset_path())
+        dataset = _default_dataset_cache
+    return dataset.param_knn_distance(param_vecs, k=k)

@@ -42,11 +42,11 @@ import torch
 
 from beam_optimization.algorithms import make_agent
 from beam_optimization.config.paths import (
-    DEFAULT_BASE_DATASET,
     DEFAULT_BENCHMARK_OUTPUT,
     DEFAULT_SINGLE_SURROGATE_MODEL,
     DEFAULT_TRACEWIN_INI,
     configure_matplotlib_cache,
+    default_dataset_path,
 )
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
@@ -97,7 +97,11 @@ def run_bo(surrogate, dataset, budget, seed) -> Dict:
         default_values=DEFAULT_PARAM_VALUES,
         sensitivity_values=SENSITIVITY_VALUES,
     ).optimize(objective)
-    return {"best_score": result.best_score, "history": result.score_history}
+    return {
+        "best_score": result.best_score,
+        "history": result.score_history,
+        "best_params": result.best_params,
+    }
 
 
 def run_svg(surrogate, dataset, n_episodes, horizon, seed, stage_weights) -> Dict:
@@ -575,7 +579,7 @@ def save_summary_plot(results: Dict, output_json: str | Path) -> Path:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--surrogate",    default=str(DEFAULT_SINGLE_SURROGATE_MODEL))
-    parser.add_argument("--dataset",      default=str(DEFAULT_BASE_DATASET))
+    parser.add_argument("--dataset",      default=str(default_dataset_path()))
     parser.add_argument("--output",       default=str(DEFAULT_BENCHMARK_OUTPUT))
     parser.add_argument("--n-runs",       type=int, default=3)
     parser.add_argument("--eval-budget",  type=int, default=3000)

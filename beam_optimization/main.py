@@ -9,10 +9,16 @@ from typing import Sequence
 # associate commands with their module names so that we can run them with runpy
 COMMAND_MODULES = {
     "check": "beam_optimization.scripts.check",
-    "setup": "beam_optimization.scripts.setup",
-    "test": "beam_optimization.scripts.test",
-    "train": "beam_optimization.scripts.train",
+    "sensitivity": "beam_optimization.scripts.sensitivity",
+    "sensitivity2": "beam_optimization.scripts.sensitivity2",
+    "sensitivity3": "beam_optimization.scripts.sensitivity3",
+    "build_dataset": "beam_optimization.scripts.build_dataset",
+    "train_surrogate": "beam_optimization.scripts.train_surrogate",
+    "evaluate_surrogate": "beam_optimization.scripts.evaluate_surrogate",
+    "bayesian_opt": "beam_optimization.scripts.bayesian_opt",
+    "train_policies": "beam_optimization.scripts.train_policies",
     "benchmark": "beam_optimization.scripts.benchmark",
+    "test": "beam_optimization.scripts.test",
 }
 
 
@@ -25,9 +31,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Beam optimization command line tools.",
     )
     # add the command argument and the remaining arguments
-    # for example if the user runs `python -m beam_optimization train --episodes 100`, 
-    # then `train` is the command 
-    # and `--episodes 100` are the remaining arguments
+    # for example if the user runs `python -m beam_optimization train_policies --rl-steps 100`,
+    # then `train_policies` is the command
+    # and `--rl-steps 100` are the remaining arguments
     parser.add_argument(
         "command",
         nargs="?",

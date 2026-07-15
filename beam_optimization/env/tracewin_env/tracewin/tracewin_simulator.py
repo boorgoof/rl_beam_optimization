@@ -48,6 +48,8 @@ class TraceWinSimulator(BeamSimulator):
                        (e.g. {"random_seed": 42} for reproducible Monte Carlo).
         num_threads:   TraceWin nbr_thread (None = all CPUs). Use 1 for
                        bit-reproducible runs.
+        initial_npart: Number of particles used to normalize npart_ratio.
+                       Defaults to the project-wide INITIAL_NPART.
     """
 
     def __init__(
@@ -60,6 +62,7 @@ class TraceWinSimulator(BeamSimulator):
         kill_stale: bool = True,
         tracewin_params: Optional[Dict[str, object]] = None,
         num_threads: Optional[int] = None,
+        initial_npart: int = INITIAL_NPART,
     ):
         # Initialize the TraceWinSimulator with the given parameters.
         project_path = Path(project_file).resolve()
@@ -72,6 +75,7 @@ class TraceWinSimulator(BeamSimulator):
         # Mutable on purpose: sensitivity analysis updates random_seed per run.
         self.tracewin_params: Dict[str, object] = dict(tracewin_params or {})
         self.num_threads = num_threads
+        self.initial_npart = int(initial_npart)
         self._source_project_dir = str(project_path.parent)
         self._project_filename = project_path.name
         self._sim_count   = 0
@@ -213,6 +217,7 @@ class TraceWinSimulator(BeamSimulator):
                     "project_file": self.project_file,
                     "calc_dir": self.calc_dir,
                     "sim_count": self._sim_count,
+                    "initial_npart": self.initial_npart,
                 },
             )
         finally:
@@ -241,12 +246,16 @@ class TraceWinSimulator(BeamSimulator):
                 continue
             row = hits.iloc[-1]
             for vi, var in enumerate(BEAM_STATE_FEATURES):
-                beam_states[si, vi] = _read_beam_feature_from_tracewin_row(row, var)
+                beam_states[si, vi] = _read_beam_feature_from_tracewin_row(
+                    row,
+                    var,
+                    self.initial_npart,
+                )
 
         # Final beam state from last row
         last = df.iloc[-1]
         final_beam = {
-            var: _read_beam_feature_from_tracewin_row(last, var)
+            var: _read_beam_feature_from_tracewin_row(last, var, self.initial_npart)
             for var in BEAM_STATE_FEATURES
         }
 
@@ -266,6 +275,7 @@ class TraceWinSimulator(BeamSimulator):
                 "project_file": self.project_file,
                 "calc_dir": self.calc_dir,
                 "sim_count": self._sim_count,
+                "initial_npart": self.initial_npart,
             },
         )
 
@@ -281,11 +291,15 @@ def _normalize_tracewin_marker(value) -> int | float:
         return value
 
 
-def _read_beam_feature_from_tracewin_row(row, feature: str) -> float:
+def _read_beam_feature_from_tracewin_row(
+    row,
+    feature: str,
+    initial_npart: int = INITIAL_NPART,
+) -> float:
     """Read one beam-state feature from a TraceWin output DataFrame row."""
     if feature == "npart_ratio":
         npart = float(row.get("npart", 0.0))
-        return npart / INITIAL_NPART if INITIAL_NPART > 0 else 0.0
+        return npart / initial_npart if initial_npart > 0 else 0.0
     return float(row.get(feature, 0.0))
 
 

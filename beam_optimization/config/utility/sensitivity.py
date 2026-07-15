@@ -1,53 +1,86 @@
 """
 Sensitivity analysis for ADIGE beam line parameters.
 
-Computes the sensitivity of the score to each tunable parameter via central
-finite differences, using TraceWin as the physics simulator. The values are
-expressed in the same convention used by adige.py:
+Computes one fixed sensitivity value per parameter from TraceWin finite
+differences. For each parameter, starting from a small family-appropriate
+delta, it runs `repeats` common-random-number (CRN) pairs — same seed for
+p+delta and p-delta within a pair, different seed across pairs — and takes
+the median of the paired differences:
 
-    sensitivity_p = TARGET_SCORE_CHANGE * 2δ / |score(p+δ) - score(p-δ)|
+    d_i = score(p+delta) - score(p-delta)     [same seed within a pair]
+    sensitivity_p = TARGET_SCORE_CHANGE * 2*delta / |median(d_i)|
 
-This is the inverse of the standard derivative (Δscore/Δparam), scaled by
-TARGET_SCORE_CHANGE. It represents how much you need to move parameter p to
-change the score by TARGET_SCORE_CHANGE points — the natural unit for action
-step sizing in the RL environment.
+The median of the differences is inverted once, rather than taking the
+median of per-pair sensitivities (which blows up whenever a single d_i is
+near zero). If the differences are too dispersed across seeds (relative
+spread = stdev(d_i)/|median(d_i)| above --spread-threshold) or too close to
+zero, delta is escalated (`delta *= escalation_factor`) and remeasured, up to
+--max-iterations or the parameter's hardware bounds. Among the deltas tried,
+the smallest one that reaches a stable measurement is kept — not necessarily
+the largest.
 
-TraceWin Monte Carlo noise is handled with common random numbers (CRN): the
-+δ and -δ runs of each pair share the same TraceWin random_seed, so the noise
-is correlated and cancels in the difference; each repeat uses a different seed
-so the paired differences are independent samples. A startup probe measures
-the nominal-score noise floor and checks whether TraceWin is deterministic at
-fixed seed (if not, rerun with --tracewin-threads 1). A sensitivity is accepted
-only when the aggregated |Δscore| clears a signal-to-noise threshold.
+The script always returns a numeric sensitivity for every parameter, along
+with a status describing how it was obtained ("stable", "unstable",
+"single_pair", "weak_signal", "hardware_limited", or "fallback_old_value" if
+every simulation failed). With TARGET_SCORE_CHANGE = 1, sensitivity is the
+parameter change that moves the score by about 1 point.
 
 Run as a script:
     python -m beam_optimization.config.utility.sensitivity
 
-The script prints a human-readable stability table and a copy-paste block ready
-to replace the sensitivity= values in adige.py. It does NOT modify any files.
+Prints one table and does not modify any files.
 """
 from __future__ import annotations
 
 import copy
 import json
 import statistics
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from beam_optimization.config.adige import PARAMETERS, default_params
+from beam_optimization.config.adige import (
+    BEAM_STATE_FEATURES,
+    PARAMETERS,
+    default_params,
+)
 
 
-# Sensitivity convention: parameter change that moves the score by exactly
-# this many points. 1.0 = the plain inverse derivative |dp/dscore|.
 TARGET_SCORE_CHANGE: float = 1.0
-CHECKPOINT_VERSION: int = 2
+CHECKPOINT_VERSION: int = 5
+NPART_RATIO_INDEX: int = BEAM_STATE_FEATURES.index("npart_ratio")
+STATUS_RANK = {"stable": 0, "unstable": 1, "single_pair": 2, "weak_signal": 3}
 
 
 def _set_seed(simulator, seed: int) -> None:
-    """Fix the TraceWin random seed when the simulator supports it (CRN)."""
+    """Fix the TraceWin random seed when the simulator supports it."""
     if hasattr(simulator, "tracewin_params"):
         simulator.tracewin_params["random_seed"] = int(seed)
+
+
+def _initial_npart_ratio(result) -> Optional[float]:
+    if not result.success or result.beam_states is None:
+        return None
+    if len(result.beam_states) == 0:
+        return None
+    return float(result.beam_states[0, NPART_RATIO_INDEX])
+
+
+def _verify_tracewin_particles(result, expected_npart: int, particle_key: str) -> None:
+    """Fail early if TraceWin ignored the requested particle count."""
+    ratio = _initial_npart_ratio(result)
+    if ratio is None:
+        return
+    if 0.95 <= ratio <= 1.05:
+        return
+
+    apparent_npart = ratio * expected_npart
+    raise RuntimeError(
+        "TraceWin particle-count override appears to be ignored or inconsistent. "
+        f"Requested {particle_key}={expected_npart}, but the first output stage has "
+        f"npart_ratio={ratio:.4f} (about {apparent_npart:.0f} particles when "
+        f"normalized by {expected_npart}). Try --tracewin-particle-key Nbr_part "
+        "or inspect the TraceWin command-line option name."
+    )
 
 
 def probe_noise(
@@ -55,21 +88,21 @@ def probe_noise(
     *,
     base_seed: int = 42,
     n_probes: int = 5,
+    expected_initial_npart: Optional[int] = None,
+    tracewin_particle_key: str = "nbr_part1",
+    verify_particles: bool = True,
     verbose: bool = True,
 ) -> Optional[float]:
-    """Measure the Monte Carlo noise floor and check seed determinism.
+    """Measure nominal-score noise and fixed-seed reproducibility.
 
-    Runs the nominal parameters twice with the SAME seed (determinism check:
-    if the two scores differ, TraceWin is not reproducible at fixed seed —
-    typically a multithreading effect; rerun with --tracewin-threads 1) and
-    then n_probes times with DIFFERENT seeds to estimate sigma_noise, the
-    standard deviation of the nominal score across noise realizations.
-
-    Returns sigma_noise, or None if the probe was skipped/failed.
+    Purely informational (printed for context) — does not gate sensitivity
+    acceptance, which instead relies on the dispersion of the paired
+    differences themselves.
     """
     if n_probes <= 0:
         return None
     defaults = default_params()
+    particles_verified = False
 
     if verbose:
         print(f"Noise probe: determinism check (2 runs, seed={base_seed}) ...", flush=True)
@@ -78,23 +111,29 @@ def probe_noise(
         _set_seed(simulator, base_seed)
         res = simulator.simulate(copy.copy(defaults))
         if res.success:
+            if (
+                verify_particles
+                and not particles_verified
+                and expected_initial_npart is not None
+            ):
+                _verify_tracewin_particles(res, expected_initial_npart, tracewin_particle_key)
+                particles_verified = True
             same_seed_scores.append(float(res.score_val))
+
     if len(same_seed_scores) == 2:
         drift = abs(same_seed_scores[0] - same_seed_scores[1])
         if drift == 0.0:
-            print("  TraceWin is deterministic at fixed seed ✓ (identical scores)")
+            print("  TraceWin is deterministic at fixed seed (identical scores)")
         elif drift < 0.05:
-            # Residual multithreaded floating-point jitter: orders of magnitude
-            # below the seed-to-seed noise, harmless for CRN cancellation.
             print(
                 f"  TraceWin reproducible at fixed seed up to thread jitter "
-                f"(|Δscore| = {drift:.2e}) ✓ — fine for CRN."
+                f"(|delta score| = {drift:.2e})"
             )
         else:
             print(
                 f"  WARNING: TraceWin is NOT reproducible at fixed seed "
-                f"(|Δscore| = {drift:.4f} between identical runs).\n"
-                f"  CRN cancellation will be partial — rerun with --tracewin-threads 1."
+                f"(|delta score| = {drift:.4f} between identical runs).\n"
+                f"  CRN cancellation will be partial; rerun with --tracewin-threads 1."
             )
     else:
         print("  WARNING: determinism probe failed (TraceWin run did not succeed).")
@@ -106,13 +145,21 @@ def probe_noise(
         _set_seed(simulator, base_seed + 1000 + i)
         res = simulator.simulate(copy.copy(defaults))
         if res.success:
+            if (
+                verify_particles
+                and not particles_verified
+                and expected_initial_npart is not None
+            ):
+                _verify_tracewin_particles(res, expected_initial_npart, tracewin_particle_key)
+                particles_verified = True
             scores.append(float(res.score_val))
+
     if len(scores) < 2:
         print("  WARNING: noise probe failed; sigma_noise unknown.")
         return None
     sigma = statistics.pstdev(scores)
     print(
-        f"  nominal score = {statistics.fmean(scores):.4f} ± {sigma:.4f} "
+        f"  nominal score = {statistics.fmean(scores):.4f} +/- {sigma:.4f} "
         f"(n={len(scores)} seeds)"
     )
     return sigma
@@ -121,245 +168,369 @@ def probe_noise(
 def compute_sensitivity(
     simulator,
     *,
-    delta_scales: List[float] | None = None,
-    repeats: int = 1,
-    min_score_diff: float = 1e-9,
-    snr_min: float = 3.0,
+    repeats: int = 10,
+    escalation_factor: float = 3.0,
+    max_iterations: int = 8,
+    min_score_diff: float = 0.5,
+    spread_threshold: float = 0.5,
     base_seed: int = 42,
-    aggregation: str = "median",
     checkpoint_path: str | Path | None = None,
     resume: bool = True,
     verbose: bool = True,
-) -> tuple[Dict[str, List[Optional[float]]], Dict[str, List[Optional[float]]]]:
-    """Compute per-parameter sensitivity via CRN-paired central differences.
+) -> Dict[str, dict]:
+    """Compute one fixed sensitivity value per parameter.
 
-    For each parameter p and each delta_scale s, perturbs p by δ = s * sensitivity_current
-    (keeping all other parameters at their nominal defaults). Each repeat i runs
-    the +δ and -δ simulations with the SAME TraceWin seed (base_seed + i), so
-    Monte Carlo noise cancels in the paired difference Δ_i = score(+δ) - score(-δ);
-    different repeats use different seeds, giving independent samples of Δ.
-
-        sensitivity_p = TARGET_SCORE_CHANGE * 2δ / |aggregate(Δ_i)|
-
-    Repeating at multiple δ scales lets you verify gradient stability:
-      - ratio sens(δ) / sens(δ/2) near 1.0 → gradient is linear, values are reliable
-      - large ratio → δ too large (nonlinear regime) or too small (numerical noise)
-
-    Args:
-        simulator: Any object with a .simulate(params: dict) method returning a
-                   result with .score_val (float) and .success (bool). If it also
-                   exposes .tracewin_params (TraceWinSimulator does), the CRN
-                   seed is set through it.
-        delta_scales: Fractions of the current sensitivity to use as δ.
-                      Defaults to [1.0, 0.5, 0.25].
-        repeats: Number of CRN pairs per (parameter, scale). Use >= 3 so the
-                 SNR acceptance test has a spread estimate.
-        min_score_diff: Minimum accepted aggregated |Δscore|.
-        snr_min: With >= 2 repeats, require |Δ| >= snr_min * std(Δ_i)/sqrt(n).
-        base_seed: First TraceWin seed; repeat i uses base_seed + i.
-        aggregation: "median" or "mean" aggregation of the paired differences.
-        checkpoint_path: Optional JSON file updated after each completed
-                         parameter/scale.
-        resume: If True and checkpoint_path exists, reuse completed values.
-        verbose: Print progress to stdout during the (potentially long) run.
-
-    Returns:
-        (results, snrs): both map param name → list (one entry per delta_scale).
-        results holds sensitivity values, snrs the measured signal-to-noise
-        ratio |Δ| / (std(Δ_i)/sqrt(n)). None = failed / below threshold.
+    For each parameter, escalates delta (starting small, family-appropriate)
+    until the median of `repeats` CRN paired differences is both away from
+    zero and stable across seeds (relative spread <= spread_threshold).
+    Always returns a numeric sensitivity per parameter — falling back to the
+    value already in adige.py if no pair ever succeeds.
     """
-    if delta_scales is None:
-        delta_scales = [1.0, 0.5, 0.25]
+    if escalation_factor <= 1.0:
+        raise ValueError(f"escalation_factor must be > 1.0, got {escalation_factor}")
+    if max_iterations < 1:
+        raise ValueError(f"max_iterations must be >= 1, got {max_iterations}")
     if repeats < 1:
-        raise ValueError("repeats must be >= 1")
-    if aggregation not in {"median", "mean"}:
-        raise ValueError("aggregation must be 'median' or 'mean'")
+        raise ValueError(f"repeats must be >= 1, got {repeats}")
+    if min_score_diff <= 0:
+        raise ValueError(f"min_score_diff must be > 0, got {min_score_diff}")
+    if spread_threshold <= 0:
+        raise ValueError(f"spread_threshold must be > 0, got {spread_threshold}")
 
-    defaults = default_params()
-    checkpoint = Path(checkpoint_path) if checkpoint_path is not None else None
-    results: Dict[str, List[Optional[float]]] = {}
-    snrs: Dict[str, List[Optional[float]]] = {}
-    if checkpoint is not None and resume:
-        results, snrs = _load_checkpoint(checkpoint, delta_scales, base_seed)
-    n_total = len(PARAMETERS) * len(delta_scales) * 2 * repeats
-    run_count = 0
-
-    def _checkpoint_save():
-        if checkpoint is not None:
-            _save_checkpoint(checkpoint, delta_scales, base_seed, results, snrs)
-
-    for p in PARAMETERS:
-        sens_list: List[Optional[float]] = list(results.get(p.name, []))
-        snr_list: List[Optional[float]] = list(snrs.get(p.name, []))
-        while len(snr_list) < len(sens_list):
-            snr_list.append(None)
-
-        for scale_idx, scale in enumerate(delta_scales):
-            if scale_idx < len(sens_list):
-                if verbose:
-                    print(
-                        f"  [resume] {p.name:<14}  scale={scale}  "
-                        f"sens={_format_optional_sensitivity(sens_list[scale_idx])}",
-                        flush=True,
-                    )
-                continue
-
-            delta = scale * p.sensitivity
-
-            params_plus  = copy.copy(defaults)
-            params_minus = copy.copy(defaults)
-            params_plus[p.key]  = p.default + delta
-            params_minus[p.key] = p.default - delta
-
-            diffs: List[float] = []
-
-            for repeat_idx in range(repeats):
-                seed = base_seed + repeat_idx
-                _set_seed(simulator, seed)
-
-                run_count += 1
-                if verbose:
-                    print(
-                        f"  [{run_count:3d}/{n_total}] {p.name:<14}  +δ  "
-                        f"(scale={scale}, seed={seed})",
-                        flush=True,
-                    )
-                res_plus = simulator.simulate(params_plus)
-
-                run_count += 1
-                if verbose:
-                    print(
-                        f"  [{run_count:3d}/{n_total}] {p.name:<14}  -δ  "
-                        f"(scale={scale}, seed={seed})",
-                        flush=True,
-                    )
-                _set_seed(simulator, seed)
-                res_minus = simulator.simulate(params_minus)
-
-                if res_plus.success and res_minus.success:
-                    diffs.append(float(res_plus.score_val) - float(res_minus.score_val))
-
-            if not diffs:
-                if verbose:
-                    print(f"    WARNING: all pairs failed for {p.name} at scale={scale}")
-                sens_list.append(None)
-                snr_list.append(None)
-                results[p.name] = sens_list
-                snrs[p.name] = snr_list
-                _checkpoint_save()
-                continue
-
-            diff_agg = _aggregate_scores(diffs, aggregation)
-            score_diff = abs(diff_agg)
-            diff_sem = (
-                statistics.pstdev(diffs) / (len(diffs) ** 0.5) if len(diffs) >= 2 else 0.0
-            )
-            snr = score_diff / diff_sem if diff_sem > 0 else float("inf")
-
-            too_small = score_diff < min_score_diff
-            too_noisy = len(diffs) >= 2 and diff_sem > 0 and snr < snr_min
-            if too_small or too_noisy:
-                if verbose:
-                    reason = "below min_score_diff" if too_small else f"SNR {snr:.1f} < {snr_min:g}"
-                    print(
-                        f"    WARNING: rejected for {p.name} at scale={scale} ({reason}; "
-                        f"|Δ| = {score_diff:.4f}, σ(Δ)/√n = {diff_sem:.4f}, "
-                        f"Δ_i = {[round(d, 4) for d in diffs]})"
-                    )
-                sens_list.append(None)
-                snr_list.append(None if diff_sem == 0 else snr)
-                results[p.name] = sens_list
-                snrs[p.name] = snr_list
-                _checkpoint_save()
-                continue
-
-            sensitivity_val = TARGET_SCORE_CHANGE * (2.0 * abs(delta)) / score_diff
-            if verbose:
-                deriv = score_diff / (2.0 * abs(delta))
-                snr_str = "∞" if snr == float("inf") else f"{snr:.1f}"
-                print(
-                    f"    sens = {sensitivity_val:.6e}  "
-                    f"(|Δ| = {score_diff:.4f}, σ(Δ)/√n = {diff_sem:.4f}, SNR = {snr_str}, "
-                    f"Δscore/Δparam = {deriv:.4f}, "
-                    f"Δ_i = {[round(d, 4) for d in diffs]})"
-                )
-            sens_list.append(sensitivity_val)
-            snr_list.append(None if snr == float("inf") else snr)
-            results[p.name] = sens_list
-            snrs[p.name] = snr_list
-            _checkpoint_save()
-
-        results[p.name] = sens_list
-        snrs[p.name] = snr_list
-
-    return results, snrs
-
-
-def _aggregate_scores(scores: List[float], aggregation: str) -> float:
-    if aggregation == "mean":
-        return statistics.fmean(scores)
-    return statistics.median(scores)
-
-
-def _format_optional_sensitivity(value: Optional[float]) -> str:
-    return "FAILED" if value is None else f"{value:.6e}"
-
-
-def _optional_float_lists(raw: dict) -> Dict[str, List[Optional[float]]]:
-    return {
-        name: [None if value is None else float(value) for value in values]
-        for name, values in raw.items()
+    # Settings that must match exactly to resume a checkpoint.
+    config = {
+        "escalation_factor": float(escalation_factor),
+        "max_iterations": int(max_iterations),
+        "repeats": int(repeats),
+        "min_score_diff": float(min_score_diff),
+        "spread_threshold": float(spread_threshold),
+        "base_seed": int(base_seed),
     }
 
+    checkpoint = Path(checkpoint_path) if checkpoint_path is not None else None
+    records: Dict[str, dict] = {}
+    if checkpoint is not None and resume:
+        records = _load_checkpoint(checkpoint, config)
 
-def _load_checkpoint(
-    checkpoint_path: Path,
-    delta_scales: List[float],
+    defaults = default_params()
+    n_total = _estimate_total_runs(max_iterations, repeats)
+    run_count = 0
+
+    def _checkpoint_save() -> None:
+        if checkpoint is not None:
+            _save_checkpoint(checkpoint, config, records)
+
+    for p in PARAMETERS:
+        if p.name in records:
+            if verbose:
+                print(
+                    f"  [resume] {p.name:<14} already present "
+                    f"(status={records[p.name].get('status')})",
+                    flush=True,
+                )
+            continue
+
+        run_count, record = _search_sensitivity_for_param(
+            simulator,
+            p,
+            defaults,
+            repeats=repeats,
+            escalation_factor=escalation_factor,
+            max_iterations=max_iterations,
+            min_score_diff=min_score_diff,
+            spread_threshold=spread_threshold,
+            base_seed=base_seed,
+            run_count=run_count,
+            n_total=n_total,
+            verbose=verbose,
+        )
+        records[p.name] = record
+        _checkpoint_save()
+
+    return records
+
+
+def _search_sensitivity_for_param(
+    simulator,
+    p,
+    defaults: Dict[str, float],
+    *,
+    repeats: int,
+    escalation_factor: float,
+    max_iterations: int,
+    min_score_diff: float,
+    spread_threshold: float,
     base_seed: int,
-) -> tuple[Dict[str, List[Optional[float]]], Dict[str, List[Optional[float]]]]:
+    run_count: int,
+    n_total: int,
+    verbose: bool,
+) -> tuple[int, dict]:
+    delta = _initial_delta(p)
+    candidates: List[dict] = []
+    hw_limited = False
+
+    if verbose:
+        print(f"\n{p.name}: starting delta = {_format_delta(delta)}", flush=True)
+
+    for _iteration in range(1, max_iterations + 1):
+        if not _is_valid_central_delta(p, delta):
+            hw_limited = True
+            if verbose:
+                print(
+                    f"    delta={_format_delta(delta)} would exceed hardware bounds; stopping"
+                )
+            break
+
+        run_count, diffs = _measure_at_delta(
+            simulator,
+            p,
+            defaults,
+            delta,
+            repeats=repeats,
+            base_seed=base_seed,
+            run_count=run_count,
+            n_total=n_total,
+            verbose=verbose,
+        )
+        if diffs is None:
+            if verbose:
+                print(f"    delta={_format_delta(delta)}: all {repeats} repeats failed on TraceWin")
+            delta *= escalation_factor
+            continue
+
+        n = len(diffs)
+        d_med = statistics.median(diffs)
+
+        if abs(d_med) < min_score_diff:
+            relative_spread = statistics.stdev(diffs) / abs(d_med) if n >= 2 and d_med != 0 else None
+            candidates.append(
+                {
+                    "delta": delta,
+                    "median_diff": d_med,
+                    "n_pairs": n,
+                    "relative_spread": relative_spread,
+                    "status": "weak_signal",
+                }
+            )
+            if verbose:
+                print(
+                    f"    delta={_format_delta(delta)}: median_diff={d_med:.4f} "
+                    "too close to zero; escalating"
+                )
+            delta *= escalation_factor
+            continue
+
+        if n == 1:
+            candidates.append(
+                {
+                    "delta": delta,
+                    "median_diff": d_med,
+                    "n_pairs": n,
+                    "relative_spread": None,
+                    "status": "single_pair",
+                }
+            )
+            if verbose:
+                print(f"    delta={_format_delta(delta)}: only 1 valid pair; escalating")
+            delta *= escalation_factor
+            continue
+
+        relative_spread = statistics.stdev(diffs) / abs(d_med)
+        status = "stable" if relative_spread <= spread_threshold else "unstable"
+        candidates.append(
+            {
+                "delta": delta,
+                "median_diff": d_med,
+                "n_pairs": n,
+                "relative_spread": relative_spread,
+                "status": status,
+            }
+        )
+        if verbose:
+            print(
+                f"    delta={_format_delta(delta)}: median_diff={d_med:.4f} n={n} "
+                f"relative_spread={relative_spread:.2f} -> {status}"
+            )
+        if status == "stable":
+            break
+        delta *= escalation_factor
+
+    if not candidates:
+        if verbose:
+            print(f"    WARNING: no valid measurement for {p.name}; keeping old sensitivity")
+        return run_count, {
+            "sensitivity": p.sensitivity,
+            "delta": None,
+            "median_diff": None,
+            "n_pairs": 0,
+            "relative_spread": None,
+            "status": "fallback_old_value",
+        }
+
+    best = min(
+        candidates,
+        key=lambda c: (
+            STATUS_RANK[c["status"]],
+            c["relative_spread"] if c["relative_spread"] is not None else float("inf"),
+        ),
+    )
+    if hw_limited and best["status"] != "stable":
+        best["status"] = "hardware_limited"
+
+    effective_diff = max(abs(best["median_diff"]), min_score_diff)
+    best["sensitivity"] = TARGET_SCORE_CHANGE * 2.0 * abs(best["delta"]) / effective_diff
+
+    if verbose:
+        print(
+            f"    SELECTED delta={_format_delta(best['delta'])} "
+            f"sensitivity={best['sensitivity']:.6e} status={best['status']}"
+        )
+
+    return run_count, best
+
+
+def _measure_at_delta(
+    simulator,
+    p,
+    defaults: Dict[str, float],
+    delta: float,
+    *,
+    repeats: int,
+    base_seed: int,
+    run_count: int,
+    n_total: int,
+    verbose: bool,
+) -> tuple[int, Optional[List[float]]]:
+    """Run up to `repeats` CRN pairs at a fixed delta, tolerating partial failures.
+
+    Returns the list of valid paired differences (possibly shorter than
+    `repeats`), or None if every pair failed.
+    """
+    diffs: List[float] = []
+    for repeat_idx in range(repeats):
+        seed = base_seed + repeat_idx
+        run_count, diff = _run_pair(
+            simulator,
+            p,
+            defaults,
+            delta,
+            seed=seed,
+            run_count=run_count,
+            n_total=n_total,
+            label="measure",
+            verbose=verbose,
+        )
+        if diff is not None:
+            diffs.append(diff)
+    return run_count, (diffs if diffs else None)
+
+
+def _run_pair(
+    simulator,
+    p,
+    defaults: Dict[str, float],
+    delta: float,
+    *,
+    seed: int,
+    run_count: int,
+    n_total: int,
+    label: str,
+    verbose: bool,
+) -> tuple[int, Optional[float]]:
+    params_plus = copy.copy(defaults)
+    params_minus = copy.copy(defaults)
+    params_plus[p.key] = p.default + delta
+    params_minus[p.key] = p.default - delta
+
+    _set_seed(simulator, seed)
+    run_count += 1
+    if verbose:
+        print(
+            f"  [{run_count:4d}/{n_total}] {p.name:<14} +delta "
+            f"({label}, delta={_format_delta(delta)}, seed={seed})",
+            flush=True,
+        )
+    res_plus = simulator.simulate(params_plus)
+
+    _set_seed(simulator, seed)
+    run_count += 1
+    if verbose:
+        print(
+            f"  [{run_count:4d}/{n_total}] {p.name:<14} -delta "
+            f"({label}, delta={_format_delta(delta)}, seed={seed})",
+            flush=True,
+        )
+    res_minus = simulator.simulate(params_minus)
+
+    if res_plus.success and res_minus.success:
+        return run_count, float(res_plus.score_val) - float(res_minus.score_val)
+    return run_count, None
+
+
+def _initial_delta(p) -> float:
+    """Smallest physically-motivated starting delta for this parameter's family."""
+    if p.name.startswith("AD.SO"):
+        return 1e-4
+    if p.name.startswith("AD.MS"):
+        return 1e-6
+    if p.name.startswith("AD.D"):
+        return 1e-7
+    if p.name.startswith("AD.1EQ") or p.name.startswith("AD.EM"):
+        return 0.1
+    return max(abs(float(p.default)), 1.0) * 1e-5
+
+
+def _is_valid_central_delta(p, delta: float) -> bool:
+    lower = p.hw_min
+    upper = p.hw_max
+    if p.name.startswith("AD.SO") and lower is None:
+        lower = 0.0
+    minus = p.default - delta
+    plus = p.default + delta
+    if lower is not None and minus < lower:
+        return False
+    if upper is not None and plus > upper:
+        return False
+    return True
+
+
+def _estimate_total_runs(max_iterations: int, repeats: int) -> int:
+    """Upper bound on TraceWin runs, assuming every parameter uses all iterations."""
+    return len(PARAMETERS) * max_iterations * repeats * 2
+
+
+def _format_delta(value: float) -> str:
+    return f"{value:.3g}"
+
+
+def _load_checkpoint(checkpoint_path: Path, config: dict) -> Dict[str, dict]:
     if not checkpoint_path.exists():
-        return {}, {}
+        return {}
     with open(checkpoint_path) as f:
         payload = json.load(f)
 
     if payload.get("version") != CHECKPOINT_VERSION:
         raise ValueError(
             f"Checkpoint {checkpoint_path} has version {payload.get('version')}, "
-            f"this script writes version {CHECKPOINT_VERSION} (CRN-paired differences). "
-            "Use --no-resume or a new --checkpoint."
+            f"this script writes version {CHECKPOINT_VERSION}. Use --no-resume "
+            "or a new --checkpoint."
         )
-    saved_scales = [float(value) for value in payload.get("delta_scales", [])]
-    if saved_scales != [float(value) for value in delta_scales]:
+    saved_config = payload.get("config", {})
+    if saved_config != config:
         raise ValueError(
-            f"Checkpoint {checkpoint_path} was created with delta_scales={saved_scales}, "
-            f"but this run uses delta_scales={delta_scales}. Use --no-resume or a new --checkpoint."
-        )
-    if int(payload.get("base_seed", base_seed)) != int(base_seed):
-        raise ValueError(
-            f"Checkpoint {checkpoint_path} was created with base_seed={payload.get('base_seed')}, "
-            f"but this run uses base_seed={base_seed}. Use --no-resume or a new --checkpoint."
+            f"Checkpoint {checkpoint_path} was created with config={saved_config}, "
+            f"but this run uses config={config}. Use --no-resume or a new --checkpoint."
         )
 
-    return (
-        _optional_float_lists(payload.get("results", {})),
-        _optional_float_lists(payload.get("snrs", {})),
-    )
+    return payload.get("records", {})
 
 
-def _save_checkpoint(
-    checkpoint_path: Path,
-    delta_scales: List[float],
-    base_seed: int,
-    results: Dict[str, List[Optional[float]]],
-    snrs: Dict[str, List[Optional[float]]],
-) -> None:
+def _save_checkpoint(checkpoint_path: Path, config: dict, records: Dict[str, dict]) -> None:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": CHECKPOINT_VERSION,
-        "base_seed": int(base_seed),
-        "delta_scales": [float(value) for value in delta_scales],
-        "results": results,
-        "snrs": snrs,
+        "config": config,
+        "records": records,
     }
     tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
     with open(tmp_path, "w") as f:
@@ -367,64 +538,11 @@ def _save_checkpoint(
     tmp_path.replace(checkpoint_path)
 
 
-def _select_stable_sensitivity(
-    vals: List[Optional[float]],
-    *,
-    stability_low: float,
-    stability_high: float,
-) -> Optional[float]:
-    """Use the median of values that belong to at least one stable adjacent pair."""
-    stable_indices: set[int] = set()
-    for i in range(len(vals) - 1):
-        a = vals[i]
-        b = vals[i + 1]
-        if a is None or b is None or b == 0:
-            continue
-        ratio = a / b
-        if stability_low <= ratio <= stability_high:
-            stable_indices.add(i)
-            stable_indices.add(i + 1)
-
-    if not stable_indices:
-        return None
-
-    stable_vals = [vals[i] for i in sorted(stable_indices) if vals[i] is not None]
-    return statistics.median(stable_vals) if stable_vals else None
-
-
-def print_sensitivity_report(
-    results: Dict[str, List[Optional[float]]],
-    delta_scales: List[float] | None = None,
-    stability_low: float = 0.7,
-    stability_high: float = 1.3,
-    snrs: Dict[str, List[Optional[float]]] | None = None,
-    sigma_noise: Optional[float] = None,
-) -> None:
-    """Print a stability table and a copy-paste block ready for adige.py.
-
-    Table columns:
-        name | default | current_sensitivity | sens(δ×…) per scale | stability | SNR
-
-    Stability ratio = sens(δ×a) / sens(δ×b) for adjacent scales. Values near
-    1.0 mean the gradient is stable and the result is reliable. A '!' flag
-    marks parameters with no adjacent ratio inside [stability_low, high].
-    SNR = worst measured |Δ| / (σ(Δ)/√n) among the accepted scales.
-
-    The copy-paste block uses the median of values that belong to a stable
-    adjacent-scale plateau. If no plateau exists, it keeps the old value.
-    """
-    if delta_scales is None:
-        delta_scales = [1.0, 0.5, 0.25]
-    snrs = snrs or {}
-
-    scale_headers = [f"sens(δ×{s})" for s in delta_scales]
-    col_w = 14
-
-    # ── stability table ───────────────────────────────────────────────────────
+def print_sensitivity_report(records: Dict[str, dict]) -> None:
+    """Print a single table with one fixed sensitivity value per parameter."""
     header = (
-        f"{'Parameter':<14} {'default':>12} {'current_sens':>14}"
-        + "".join(f" {h:>{col_w}}" for h in scale_headers)
-        + f" {'stability':>10} {'SNR':>8}"
+        f"{'Parameter':<14} {'default':>12} {'old_sens':>12} {'new_sens':>12} "
+        f"{'delta':>12} {'median_diff':>12} {'pairs':>6} {'spread':>8} {'status':>18}"
     )
     sep = "=" * len(header)
     print(f"\n{sep}")
@@ -432,77 +550,35 @@ def print_sensitivity_report(
     print(sep)
 
     for p in PARAMETERS:
-        vals = results.get(p.name, [None] * len(delta_scales))
-        sens_strs = [f"{v:.6e}" if v is not None else "    FAILED" for v in vals]
+        record = records.get(p.name, {})
+        new_sens = record.get("sensitivity")
+        delta = record.get("delta")
+        median_diff = record.get("median_diff")
+        n_pairs = record.get("n_pairs")
+        relative_spread = record.get("relative_spread")
+        status = record.get("status", "n/a")
 
-        stab_str = "         —"
-        ratios = [
-            vals[i] / vals[i + 1]
-            for i in range(len(vals) - 1)
-            if vals[i] is not None and vals[i + 1] not in (None, 0)
-        ]
-        if ratios:
-            stable = any(stability_low <= r <= stability_high for r in ratios)
-            ratio_preview = min(ratios, key=lambda r: abs(r - 1.0))
-            flag = "  " if stable else " !"
-            stab_str = f"{ratio_preview:>9.3f}{flag}"
-
-        snr_vals = [
-            s for s, v in zip(snrs.get(p.name, []), vals)
-            if s is not None and v is not None
-        ]
-        snr_str = f"{min(snr_vals):>8.1f}" if snr_vals else "       —"
+        new_sens_str = "-" if new_sens is None else f"{new_sens:.4e}"
+        delta_str = "-" if delta is None else _format_delta(delta)
+        median_diff_str = "-" if median_diff is None else f"{median_diff:.4f}"
+        pairs_str = "-" if n_pairs is None else str(n_pairs)
+        spread_str = "-" if relative_spread is None else f"{relative_spread * 100:.0f}%"
 
         row = (
-            f"{p.name:<14} {p.default:>12.6g} {p.sensitivity:>14.6e}"
-            + "".join(f" {s:>{col_w}}" for s in sens_strs)
-            + f" {stab_str} {snr_str}"
+            f"{p.name:<14} {p.default:>12.6g} {p.sensitivity:>12.4e} {new_sens_str:>12} "
+            f"{delta_str:>12} {median_diff_str:>12} {pairs_str:>6} {spread_str:>8} "
+            f"{status:>18}"
         )
         print(row)
 
     print(sep)
     print(
-        "\nstability = best adjacent ratio sens(δ×a) / sens(δ×b).  "
-        f"Near 1.0 → stable.  '!' → no adjacent ratio inside [{stability_low}, {stability_high}]."
+        "status: stable = converged with low dispersion; unstable = escalated to "
+        "max_iterations still above spread_threshold; single_pair = only one CRN pair "
+        "ever succeeded; weak_signal = median difference too close to zero; "
+        "fallback_old_value = every pair failed, kept the adige.py value; "
+        "hardware_limited = hit the hardware bound before stabilizing."
     )
-    print("SNR = worst |Δscore| / (σ(Δ)/√n) among accepted scales (CRN-paired differences).")
-    if sigma_noise is not None:
-        print(f"Nominal-score noise floor (different seeds): σ = {sigma_noise:.4f}")
-    print()
-
-    # ── copy-paste block ──────────────────────────────────────────────────────
-    bar = "─" * 80
-    print(bar)
-    print(
-        "Copy-paste block for adige.py  "
-        f"(sensitivity = parameter change for {TARGET_SCORE_CHANGE:g} score points; "
-        "uses stable adjacent-scale plateau only):"
-    )
-    print(bar)
-    for p in PARAMETERS:
-        vals = results.get(p.name, [])
-        new_sens = _select_stable_sensitivity(
-            vals,
-            stability_low=stability_low,
-            stability_high=stability_high,
-        )
-
-        hw_min_s = "None" if p.hw_min is None else repr(p.hw_min)
-        hw_max_s = "None" if p.hw_max is None else repr(p.hw_max)
-
-        if new_sens is None:
-            print(
-                f"    # {p.name}: NO STABLE PLATEAU — keep old value {p.sensitivity:.15e}"
-            )
-            new_sens = p.sensitivity
-        print(
-            f'    ParameterSpec("{p.name}", "{p.key}", marker={p.marker}, '
-            f'default={p.default!r}, sensitivity={new_sens:.15e}, '
-            f'hw_min={hw_min_s}, hw_max={hw_max_s}, '
-            f'action_scale_rl={p.action_scale_rl:.15e}, '
-            f'reset_scale={p.reset_scale:.15e}),'
-        )
-    print(bar)
 
 
 if __name__ == "__main__":
@@ -520,169 +596,109 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Compute ADIGE parameter sensitivity from TraceWin finite differences. "
-            f"Here sensitivity means parameter change for {TARGET_SCORE_CHANGE:g} score points. "
-            "Prints a stability table and a copy-paste block — does NOT modify adige.py."
+            f"Sensitivity means parameter change for {TARGET_SCORE_CHANGE:g} score point. "
+            "Always prints one fixed sensitivity value per parameter, with a status "
+            "describing how reliable it is. Does NOT modify adige.py."
         )
     )
+    parser.add_argument("--ini", default=str(DEFAULT_TRACEWIN_INI))
+    parser.add_argument("--calc-dir", default=str(DEFAULT_SENSITIVITY_CALC_DIR))
     parser.add_argument(
-        "--ini",
-        default=str(DEFAULT_TRACEWIN_INI),
-        help="Path to TraceWin .ini project file (default: %(default)s)",
+        "--escalation-factor", type=float, default=3.0,
+        help="Multiply delta by this factor when the measurement is not yet stable (default: %(default)s)",
     )
     parser.add_argument(
-        "--calc-dir",
-        default=str(DEFAULT_SENSITIVITY_CALC_DIR),
-        help="Temporary calculation directory for TraceWin outputs",
+        "--max-iterations", type=int, default=8,
+        help="Max escalation steps per parameter before giving up (default: %(default)s)",
     )
     parser.add_argument(
-        "--delta-scales",
-        nargs="+",
-        type=float,
-        default=[10.0, 4.0, 1.5, 0.5],
-        metavar="S",
+        "--repeats", type=int, default=10,
+        help="CRN pairs evaluated per delta attempt (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--min-score-diff", type=float, default=0.5,
+        help="Median |delta score| below this is treated as a weak signal (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--spread-threshold", type=float, default=0.5,
         help=(
-            "Multiples of the current (1-point) sensitivity used as δ. "
-            "δ×S moves the score by ≈2S points; CRN keeps even small deltas "
-            "above the noise (default: 50 12 3 1)"
+            "Max relative dispersion (stdev/|median|) of the paired differences "
+            "accepted as stable (default: %(default)s)"
         ),
     )
+    parser.add_argument("--base-seed", type=int, default=42)
     parser.add_argument(
-        "--repeats",
+        "--noise-probes", type=int, default=5,
+        help="Informational only: nominal-score noise probes, do not gate results (default: %(default)s)",
+    )
+    parser.add_argument("--tracewin-threads", type=int, default=None, metavar="N")
+    parser.add_argument(
+        "--tracewin-particles",
         type=int,
-        default=3,
-        help="CRN pairs (+δ/-δ with the same seed) per parameter/scale (default: %(default)s)",
+        default=10000,
+        help="TraceWin macro-particles for sensitivity only (default: %(default)s)",
     )
     parser.add_argument(
-        "--min-score-diff",
-        type=float,
-        default=0.5,
-        help=(
-            "Minimum accepted aggregated |score(+δ)-score(-δ)|. "
-            "Smaller differences are treated as noise (default: %(default)s)"
-        ),
+        "--tracewin-particle-key",
+        default="nbr_part1",
+        help="TraceWin CLI key used to override particle count (default: %(default)s)",
     )
-    parser.add_argument(
-        "--base-seed",
-        type=int,
-        default=42,
-        help="First TraceWin random_seed; repeat i uses base_seed + i (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--snr-min",
-        type=float,
-        default=3.0,
-        help=(
-            "Reject a sensitivity when |Δ| < snr_min * σ(Δ)/√n over the CRN "
-            "pairs (default: %(default)s)"
-        ),
-    )
-    parser.add_argument(
-        "--noise-probes",
-        type=int,
-        default=5,
-        help=(
-            "Nominal runs with different seeds to measure the noise floor "
-            "(plus a 2-run determinism check). 0 skips the probe (default: %(default)s)"
-        ),
-    )
-    parser.add_argument(
-        "--tracewin-threads",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "TraceWin nbr_thread (default: all CPUs). Use 1 if the determinism "
-            "probe reports non-reproducible runs at fixed seed."
-        ),
-    )
-    parser.add_argument(
-        "--aggregation",
-        choices=["median", "mean"],
-        default="median",
-        help="How to aggregate repeated scores (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--stability-low",
-        type=float,
-        default=0.7,
-        help="Lower accepted adjacent stability ratio (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--stability-high",
-        type=float,
-        default=1.3,
-        help="Upper accepted adjacent stability ratio (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=180.0,
-        help="TraceWin timeout per simulation in seconds (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        default=str(DEFAULT_SENSITIVITY_CHECKPOINT),
-        help=(
-            "JSON checkpoint updated after each completed parameter/scale "
-            "(default: %(default)s)"
-        ),
-    )
-    parser.add_argument(
-        "--no-resume",
-        action="store_true",
-        help="Ignore an existing checkpoint and recompute from scratch.",
-    )
+    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--checkpoint", default=str(DEFAULT_SENSITIVITY_CHECKPOINT))
+    parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
 
-    print(f"TraceWin project : {args.ini}")
-    print(f"Calc dir         : {args.calc_dir}")
-    print(f"Checkpoint       : {args.checkpoint}")
-    print(f"Resume           : {not args.no_resume}")
-    print(f"Delta scales     : {args.delta_scales}")
-    print(f"Repeats (CRN)    : {args.repeats}")
-    print(f"Base seed        : {args.base_seed}")
-    print(f"SNR min          : {args.snr_min}")
-    print(f"TraceWin threads : {args.tracewin_threads or 'all CPUs'}")
-    print(f"Aggregation      : {args.aggregation}")
-    print(f"Min score diff   : {args.min_score_diff}")
-    print(f"Target Δscore    : {TARGET_SCORE_CHANGE:g}")
-    print(f"Stability window : [{args.stability_low}, {args.stability_high}]")
-    print(f"Parameters       : {len(PARAMETERS)}")
-    print(f"Total TW runs    : {len(PARAMETERS) * len(args.delta_scales) * 2 * args.repeats}"
-          f" (+ {2 + max(0, args.noise_probes)} probe runs)")
+    tracewin_params = {args.tracewin_particle_key: int(args.tracewin_particles)}
+
+    total_runs = _estimate_total_runs(args.max_iterations, args.repeats)
+    probe_runs = 2 + max(0, args.noise_probes) if args.noise_probes > 0 else 0
+
+    print(f"TraceWin project      : {args.ini}")
+    print(f"Calc dir              : {args.calc_dir}")
+    print(f"Checkpoint            : {args.checkpoint}")
+    print(f"Resume                : {not args.no_resume}")
+    print(f"Escalation factor     : {args.escalation_factor}")
+    print(f"Max iterations        : {args.max_iterations}")
+    print(f"Repeats (CRN)         : {args.repeats}")
+    print(f"Min score diff        : {args.min_score_diff}")
+    print(f"Spread threshold      : {args.spread_threshold}")
+    print(f"Base seed             : {args.base_seed}")
+    print(f"TraceWin threads      : {args.tracewin_threads or 'all CPUs'}")
+    print(f"TraceWin particles    : {args.tracewin_particles}")
+    print(f"TraceWin particle key : {args.tracewin_particle_key}")
+    print(f"Target score change   : {TARGET_SCORE_CHANGE:g}")
+    print(f"Parameters            : {len(PARAMETERS)}")
+    print(f"Total TW runs         : up to {total_runs} (worst case) + {probe_runs} probe runs")
     print()
 
     simulator = TraceWinSimulator(
         project_file=args.ini,
         calc_dir=args.calc_dir,
         timeout=args.timeout,
+        tracewin_params=tracewin_params,
         num_threads=args.tracewin_threads,
+        initial_npart=args.tracewin_particles,
     )
 
-    sigma_noise = probe_noise(
+    probe_noise(
         simulator,
         base_seed=args.base_seed,
         n_probes=args.noise_probes,
+        expected_initial_npart=args.tracewin_particles,
+        tracewin_particle_key=args.tracewin_particle_key,
     )
 
-    sensitivity_results, sensitivity_snrs = compute_sensitivity(
+    records = compute_sensitivity(
         simulator,
-        delta_scales=args.delta_scales,
         repeats=args.repeats,
+        escalation_factor=args.escalation_factor,
+        max_iterations=args.max_iterations,
         min_score_diff=args.min_score_diff,
-        snr_min=args.snr_min,
+        spread_threshold=args.spread_threshold,
         base_seed=args.base_seed,
-        aggregation=args.aggregation,
         checkpoint_path=args.checkpoint,
         resume=not args.no_resume,
         verbose=True,
     )
 
-    print_sensitivity_report(
-        sensitivity_results,
-        delta_scales=args.delta_scales,
-        stability_low=args.stability_low,
-        stability_high=args.stability_high,
-        snrs=sensitivity_snrs,
-        sigma_noise=sigma_noise,
-    )
+    print_sensitivity_report(records)

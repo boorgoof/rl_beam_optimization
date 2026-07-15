@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from beam_optimization.config.adige import N_OUTPUT_STAGES
+from beam_optimization.config.paths import default_dataset_path
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
@@ -137,7 +138,11 @@ def main() -> None:
         description="Evaluate all surrogate_*.pt models in a folder on a BeamDataset."
     )
     parser.add_argument("--model-dir", required=True, help="Folder containing surrogate_*.pt files.")
-    parser.add_argument("--dataset", required=True, help="Validation/test .pt dataset path.")
+    parser.add_argument(
+        "--dataset",
+        default=str(default_dataset_path(prefix="val")),
+        help="Validation/test .pt dataset path.",
+    )
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--device", default=None)
     parser.add_argument("--output", default=None, help="Optional JSON output path.")
