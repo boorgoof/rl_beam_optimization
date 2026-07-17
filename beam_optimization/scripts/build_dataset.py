@@ -9,39 +9,12 @@ from pathlib import Path
 from beam_optimization.config.paths import (
     DEFAULT_DATASET_ROOT,
     DEFAULT_TRACEWIN_INI,
+    TRACEWIN_PROJECT_FILENAME,
     default_tracewin_calc_dir,
+    resolve_tracewin_project,
 )
 from beam_optimization.env.dataset import TraceWinDatasetBuilder, next_numbered_dataset_dir
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
-
-
-TRACEWIN_PROJECT_FILENAME = "CB_newMRMS_RFQ_Fields_1.ini"
-
-
-def resolve_tracewin_project(
-    *,
-    workspace: str | None = None,
-    tracewin: str | None = None,
-) -> tuple[Path, Path]:
-    """Return the resolved ``(workspace, project_file)`` selected by the CLI."""
-    if workspace is not None and tracewin is not None:
-        raise ValueError("--workspace and --tracewin are mutually exclusive")
-
-    if workspace is not None:
-        workspace_path = Path(workspace).expanduser().resolve()
-        if not workspace_path.is_dir():
-            raise ValueError(
-                f"TraceWin workspace does not exist or is not a directory: {workspace_path}"
-            )
-        project_file = workspace_path / TRACEWIN_PROJECT_FILENAME
-    else:
-        project_file = Path(tracewin or DEFAULT_TRACEWIN_INI).expanduser().resolve()
-        workspace_path = project_file.parent
-
-    if not project_file.is_file():
-        raise ValueError(f"TraceWin project file not found: {project_file}")
-
-    return workspace_path, project_file
 
 
 def main() -> None:
@@ -86,8 +59,8 @@ def main() -> None:
         default=None,
         metavar="PATH",
         help=(
-            "TraceWin calculation directory. Default: tracewin_calc inside "
-            "the newly created numbered dataset directory."
+            "TraceWin calculation directory. Default: tracewin_calc_<dataset> "
+            "inside the TraceWin workspace."
         ),
     )
     parser.add_argument("--seed", type=int, default=123)
@@ -111,7 +84,11 @@ def main() -> None:
 
     dataset_root = Path(args.dataset_root)
     dataset_dir = next_numbered_dataset_dir(dataset_root)
-    calc_dir = Path(args.calc_dir) if args.calc_dir else default_tracewin_calc_dir(dataset_dir)
+    calc_dir = (
+        Path(args.calc_dir)
+        if args.calc_dir
+        else default_tracewin_calc_dir(tracewin_workspace, dataset_dir)
+    )
 
     print(f"TraceWin workspace: {tracewin_workspace}")
     print(f"TraceWin project:   {tracewin_project}")

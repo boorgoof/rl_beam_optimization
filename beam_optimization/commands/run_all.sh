@@ -6,7 +6,7 @@
 #   4. test_policy_surrogateEnv.sh        — one qualitative rendered episode with the trained SAC
 #
 # Prerequisites (run manually, in order, editing adige.py between steps 1-2):
-#   sensitivity.sh -> (paste sensitivity= values into adige.py)
+#   optional/sensitivity.sh -> (paste sensitivity= values into adige.py)
 #   bayesian_opt.sh -> (paste default= values into adige.py)
 #   build_dataset.sh
 #   train_surrogate.sh

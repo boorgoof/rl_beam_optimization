@@ -6,11 +6,11 @@ already converted flat samples.
 
 On disk and in memory the native format is:
 
-    X:      Tensor (N, 25)
-            columns 0..8  = initial beam state features
-            columns 9..24 = machine parameters in adige.PARAMETERS order
-    Y:      Tensor (N, 99)
-            11 output stages flattened as 11 * 9 beam-state features
+    X:      Tensor (N, 9 + N_PARAMS)
+            columns 0..8       = initial beam state features
+            columns 9..8+N_PARAMS = machine parameters in adige.PARAMETERS order
+    Y:      Tensor (N, N_OUTPUT_STAGES * 9)
+            N_OUTPUT_STAGES output stages flattened as N_OUTPUT_STAGES * 9 beam-state features
     scores: Tensor (N,)
             scalar score of the final beam state
 
@@ -28,7 +28,11 @@ from scipy.spatial import cKDTree
 from torch.utils.data import Dataset as TorchDataset
 
 from beam_optimization.config.adige import (
+    BEAM_STATE_DIM,
     BEAM_STATE_FEATURES,
+    N_OUTPUT_STAGES,
+    N_PARAMS,
+    PARAMETERS,
     STAGE_MARKERS,
     STAGE_PARAM_SIZES,
     score_from_vec,
@@ -36,22 +40,18 @@ from beam_optimization.config.adige import (
 from beam_optimization.config.paths import default_dataset_path
 
 
-_X_COLS = list(BEAM_STATE_FEATURES) + [
-    "AD.SO.01", "AD.SO.02", "AD.ST.04.X", "AD.ST.04.Y",
-    "AD.1EQ.01", "AD.1EQ.02", "AD.D.02",
-    "AD.EM.6", "AD.EM.8", "AD.EM.10", "AD.EM.12",
-    "AD.D.03", "AD.1EQ.03", "AD.1EQ.04",
-    "AD.ST.05.X", "AD.ST.05.Y",
-]
-_Y_COLS = [f"{v}_s{s}" for s in range(1, 12) for v in BEAM_STATE_FEATURES]
+_X_COLS = list(BEAM_STATE_FEATURES) + [p.name for p in PARAMETERS]
+_Y_COLS = [f"{v}_s{s}" for s in range(1, N_OUTPUT_STAGES + 1) for v in BEAM_STATE_FEATURES]
+_X_WIDTH = BEAM_STATE_DIM + N_PARAMS
+_Y_WIDTH = N_OUTPUT_STAGES * BEAM_STATE_DIM
 
 
 class BeamDataset(TorchDataset):
     """Flat dataset for surrogate training and online fine-tuning."""
 
     def __init__(self):
-        self._X: torch.Tensor = torch.empty((0, 25), dtype=torch.float32)
-        self._Y: torch.Tensor = torch.empty((0, 99), dtype=torch.float32)
+        self._X: torch.Tensor = torch.empty((0, _X_WIDTH), dtype=torch.float32)
+        self._Y: torch.Tensor = torch.empty((0, _Y_WIDTH), dtype=torch.float32)
         self._scores: torch.Tensor = torch.empty(0, dtype=torch.float32)
         self._param_knn_tree: Optional[cKDTree] = None
         self._param_knn_std: Optional[np.ndarray] = None
@@ -68,12 +68,12 @@ class BeamDataset(TorchDataset):
 
     @property
     def X(self) -> torch.Tensor:
-        """Flat input tensor with shape (N, 25)."""
+        """Flat input tensor with shape (N, 9 + N_PARAMS)."""
         return self._X
 
     @property
     def Y(self) -> torch.Tensor:
-        """Flat target tensor with shape (N, 99)."""
+        """Flat target tensor with shape (N, N_OUTPUT_STAGES * 9)."""
         return self._Y
 
     @property
@@ -84,8 +84,8 @@ class BeamDataset(TorchDataset):
     def append_flat_sample(self, x, y, score) -> None:
         """Append one already-converted flat sample."""
         self.append_flat_samples(
-            np.asarray(x, dtype=np.float32).reshape(1, 25),
-            np.asarray(y, dtype=np.float32).reshape(1, 99),
+            np.asarray(x, dtype=np.float32).reshape(1, _X_WIDTH),
+            np.asarray(y, dtype=np.float32).reshape(1, _Y_WIDTH),
             np.asarray([score], dtype=np.float32),
         )
 
@@ -104,10 +104,10 @@ class BeamDataset(TorchDataset):
         else:
             S_t = S_t.reshape(-1)
 
-        if X_t.ndim != 2 or X_t.shape[1] != 25:
-            raise ValueError(f"X must have shape (N, 25), got {tuple(X_t.shape)}")
-        if Y_t.ndim != 2 or Y_t.shape[1] != 99:
-            raise ValueError(f"Y must have shape (N, 99), got {tuple(Y_t.shape)}")
+        if X_t.ndim != 2 or X_t.shape[1] != _X_WIDTH:
+            raise ValueError(f"X must have shape (N, {_X_WIDTH}), got {tuple(X_t.shape)}")
+        if Y_t.ndim != 2 or Y_t.shape[1] != _Y_WIDTH:
+            raise ValueError(f"Y must have shape (N, {_Y_WIDTH}), got {tuple(Y_t.shape)}")
         if X_t.shape[0] != Y_t.shape[0] or X_t.shape[0] != S_t.shape[0]:
             raise ValueError(
                 "X, Y, and scores must contain the same number of samples: "
@@ -138,7 +138,7 @@ class BeamDataset(TorchDataset):
             offset += size
 
         beam_states = [X_b[:, :9].contiguous()]
-        for stage_idx in range(11):
+        for stage_idx in range(N_OUTPUT_STAGES):
             start = stage_idx * 9
             beam_states.append(Y_b[:, start:start + 9].contiguous())
 

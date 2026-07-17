@@ -74,6 +74,7 @@ class BaseBeamEnv(gym.Env, ABC):
         self._current_params = default_params()
         self._current_obs    = np.zeros(obs_dim, dtype=np.float32)
         self._current_score  = ERROR_SCORE
+        self._current_result: BeamSimulationResult | None = None
         self._previous_obs   = None
         self._last_action    = None
         self._last_reward    = 0.0
@@ -115,10 +116,11 @@ class BaseBeamEnv(gym.Env, ABC):
         result = self.simulator.simulate(params)
 
         obs, score, extra = self._result_to_obs_score_info(result)
-        self._current_obs   = obs
-        self._current_score = score
-        self._previous_obs  = None
-        self._last_action   = None
+        self._current_obs    = obs
+        self._current_score  = score
+        self._current_result = result
+        self._previous_obs   = None
+        self._last_action    = None
         self._last_reward   = 0.0
 
         self._params_history = [dict(self._current_params)]
@@ -151,11 +153,12 @@ class BaseBeamEnv(gym.Env, ABC):
         reward = score - prev_score
 
         # update episode state
-        self._current_obs   = obs
-        self._current_score = score
-        self._previous_obs  = prev_obs
-        self._last_action   = action.copy()
-        self._last_reward   = float(reward)
+        self._current_obs    = obs
+        self._current_score  = score
+        self._current_result = result
+        self._previous_obs   = prev_obs
+        self._last_action    = action.copy()
+        self._last_reward    = float(reward)
 
         self._params_history.append(dict(self._current_params))
         self._obs_history.append(obs.copy())

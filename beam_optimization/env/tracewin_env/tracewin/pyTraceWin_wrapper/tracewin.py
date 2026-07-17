@@ -151,7 +151,14 @@ class TraceWin:
 
     @staticmethod
     def _kill_remote_tracewin_processes() -> None:
-        """Best-effort cleanup for TraceWin processes left alive over SSH."""
+        """Best-effort cleanup for TraceWin processes left alive over SSH.
+
+        Also kills any bare Xvfb display server orphaned by a killed
+        xvfb-run: xvfb-run normally cleans up its own Xvfb child on exit,
+        but when it is killed abruptly (a TraceWin timeout, or this same
+        pkill hitting the xvfb-run wrapper below) that cleanup trap never
+        runs, leaking the Xvfb process.
+        """
         try:
             subprocess.run(
                 [
@@ -161,7 +168,8 @@ class TraceWin:
                     "-o", "ConnectTimeout=5",
                     "comunian@localhost",
                     "pkill -u comunian -x TraceWin || true; "
-                    "pkill -u comunian -f '[x]vfb-run.*TraceWin' || true",
+                    "pkill -u comunian -f '[x]vfb-run.*TraceWin' || true; "
+                    "pkill -u comunian -f '[X]vfb :[0-9]+ -screen 0 640x480x24 -nolisten tcp' || true",
                 ],
                 timeout=10,
                 capture_output=True,

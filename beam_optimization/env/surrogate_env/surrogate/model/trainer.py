@@ -270,12 +270,13 @@ class SurrogateTrainer:
         return float(np.mean(losses)) if losses else float("inf")
 
     def _checkpoint_path(self, local_index: int) -> Path:
+        dataset_name = Path(self.train_dataset_path).resolve().parent.name
         if self.overwrite:
-            return self.output_dir / f"surrogate_{local_index}.pt"
+            return self.output_dir / f"surrogate_{dataset_name}_{local_index}.pt"
 
         index = 0
         while True:
-            candidate = self.output_dir / f"surrogate_{index}.pt"
+            candidate = self.output_dir / f"surrogate_{dataset_name}_{index}.pt"
             if not candidate.exists():
                 return candidate
             index += 1

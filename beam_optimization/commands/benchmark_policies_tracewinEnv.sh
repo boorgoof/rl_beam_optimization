@@ -14,7 +14,6 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
 fi
 
 python -m beam_optimization benchmark \
-  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --output beam_optimization/results/benchmark_tracewin.json \
   --quick \
   --tracewin \
@@ -22,5 +21,7 @@ python -m beam_optimization benchmark \
   --sac beam_optimization/runs/all/sac/sac_agent.pt \
   --mbpo beam_optimization/runs/all/dyna/dyna_agent.pt \
   --svg-finale beam_optimization/runs/all/svg_finale/svg_agent.pt
-  # --dataset defaults to the latest numbered dataset in env/dataset/ (falls
-  # back to env/dataset/base/dataset_base.pt); pass --dataset <path> to pin one
+  # --surrogate defaults to the first surrogate_*.pt found in
+  # trained_models/base/; pass --surrogate <path> to pin one
+  # --dataset defaults to the latest numbered dataset in env/dataset/ (or
+  # the next one to be built, if none exist yet); pass --dataset <path> to pin one

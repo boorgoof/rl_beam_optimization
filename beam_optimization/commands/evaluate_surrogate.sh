@@ -15,5 +15,5 @@ python -m beam_optimization evaluate_surrogate \
   --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --output beam_optimization/results/surrogate_eval.json
   # --dataset defaults to the latest numbered dataset's val split in
-  # env/dataset/ (falls back to env/dataset/base/dataset_base.pt); pass
+  # env/dataset/ (or the next one to be built, if none exist yet); pass
   # --dataset <path> to pin one

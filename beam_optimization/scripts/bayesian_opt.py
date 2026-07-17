@@ -1,145 +1,711 @@
-"""
-Bayesian Optimization command — finds a new candidate default parameter set.
+"""Bayesian Optimization directly against TraceWin.
 
-Runs BayesianOptimizer (algorithms/baselines/bayesian_opt.py) against a
-trained surrogate for --n-runs independent seeds, prints the best parameter
-set found (for you to copy by hand into adige.py's default= fields), and
-saves diagnostic plots.
-
-Usage:
-    python -m beam_optimization bayesian_opt \\
-        --surrogate env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \\
-        --dataset   env/dataset/base/dataset_base.pt \\
-        --n-calls   200 \\
-        --n-runs    3
+The Gaussian Process is warm-started with real TraceWin rows from a
+BeamDataset. Every new point proposed by the optimizer is evaluated by
+TraceWin. A deterministic per-evaluation seed sequence is used only when
+``--tracewin-seed-base`` is explicitly provided.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 
-from beam_optimization.config.adige import PARAMETERS, sensitivity_vec
+import numpy as np
+
+from beam_optimization.algorithms.baselines.bayesian_opt import (
+    hardware_aware_bounds,
+    select_warm_start,
+)
+from beam_optimization.config.adige import (
+    ERROR_SCORE,
+    PARAMETERS,
+    PARAM_KEYS,
+    sensitivity_vec,
+)
 from beam_optimization.config.paths import (
-    DEFAULT_SINGLE_SURROGATE_MODEL,
+    DEFAULT_TRACEWIN_INI,
     configure_matplotlib_cache,
     default_dataset_path,
+    resolve_tracewin_project,
 )
-from beam_optimization.env.dataset import BeamDataset
-from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
-from beam_optimization.scripts.benchmark import (
-    print_table,
-    run_bo,
-    save_convergence_plot,
-    save_summary_plot,
+from beam_optimization.env.dataset import BeamDataset, tracewin_result_to_flat_sample
+from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import (
+    TraceWinSimulator,
 )
 
 
-def _print_best_params(best_params: dict) -> None:
-    print("\nBest parameter set found (copy the values you want into adige.py defaults):")
-    header = f"{'Parameter':<14} {'best':>14} {'default':>14} {'delta/sensitivity':>18}"
-    sep = "-" * len(header)
-    print(sep)
+REPORT_VERSION = 1
+DEFAULT_OUTPUT = "beam_optimization/results/bayesian_opt.json"
+DEFAULT_NEW_SAMPLES_OUTPUT = (
+    "beam_optimization/results/bayesian_opt_tracewin_samples.pt"
+)
+DEFAULT_MERGED_DATASET_OUTPUT = (
+    "beam_optimization/results/dataset_with_bayesian.pt"
+)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _default_calc_root(workspace: Path, output: Path) -> Path:
+    digest = hashlib.sha256(str(output).encode("utf-8")).hexdigest()[:12]
+    return Path(workspace) / f"tracewin_bayesian_{digest}"
+
+
+def _json_safe(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Cannot JSON-serialize {type(value).__name__}")
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, default=_json_safe),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _params_from_vector(vector) -> dict[str, float]:
+    return {key: float(value) for key, value in zip(PARAM_KEYS, vector)}
+
+
+def _vector_from_params(params: dict[str, float]) -> list[float]:
+    return [float(params[key]) for key in PARAM_KEYS]
+
+
+def _warm_start_payload(selection) -> list[dict]:
+    return [
+        {
+            "dataset_index": int(index),
+            "selection": label,
+            "params": _params_from_vector(vector),
+            "score": float(score),
+        }
+        for index, label, vector, score in zip(
+            selection.indices,
+            selection.labels,
+            selection.param_vectors,
+            selection.scores,
+        )
+    ]
+
+
+def _report_config(
+    args,
+    *,
+    dataset_path: Path,
+    project_file: Path,
+    calc_root: Path,
+    bounds: list[tuple[float, float]],
+) -> dict:
+    return {
+        "dataset": str(dataset_path),
+        "project": str(project_file),
+        "calc_root": str(calc_root),
+        "n_calls": args.n_calls,
+        "n_runs": args.n_runs,
+        "warm_best": args.warm_best,
+        "warm_diverse": args.warm_diverse,
+        "bounds_scale": args.bounds_scale,
+        "bounds": {
+            parameter.name: [float(lower), float(upper)]
+            for parameter, (lower, upper) in zip(PARAMETERS, bounds)
+        },
+        "seed": args.seed,
+        "tracewin_seed_base": args.tracewin_seed_base,
+        "tracewin_particles": args.tracewin_particles,
+        "tracewin_threads": args.tracewin_threads,
+        "timeout": args.timeout,
+        "retries": args.retries,
+        "new_samples_output": str(Path(args.new_samples_output).resolve()),
+        "merged_dataset_output": str(Path(args.merged_dataset_output).resolve()),
+    }
+
+
+def _new_report(
+    config: dict,
+    warm_start: list[dict],
+    *,
+    mode: str = "tracewin",
+) -> dict:
+    return {
+        "version": REPORT_VERSION,
+        "mode": mode,
+        "status": "running",
+        "created_at": _utc_now(),
+        "updated_at": _utc_now(),
+        "config": config,
+        "warm_start": warm_start,
+        "runs": [],
+        "best_result": None,
+    }
+
+
+def _load_or_create_report(
+    output: Path,
+    *,
+    config: dict,
+    warm_start: list[dict],
+    mode: str = "tracewin",
+) -> dict:
+    if not output.exists():
+        return _new_report(config, warm_start, mode=mode)
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    if report.get("version") != REPORT_VERSION or report.get("mode") != mode:
+        raise ValueError(
+            f"{output} is not a compatible TraceWin Bayesian checkpoint. "
+            "Move it or select a different --output path."
+        )
+    if report.get("config") != config:
+        raise ValueError(
+            f"{output} was created with a different configuration. "
+            "Use matching arguments or a different --output path."
+        )
+    if report.get("warm_start") != warm_start:
+        raise ValueError(
+            f"{output} does not match the warm-start rows selected from the dataset."
+        )
+    report["status"] = "running"
+    report["updated_at"] = _utc_now()
+    return report
+
+
+def _ensure_run(report: dict, run_index: int, optimizer_seed: int) -> dict:
+    while len(report["runs"]) <= run_index:
+        index = len(report["runs"])
+        report["runs"].append(
+            {
+                "run_index": index,
+                "optimizer_seed": int(optimizer_seed if index == run_index else 0),
+                "status": "running",
+                "evaluations": [],
+                "best_score": None,
+                "best_params": None,
+            }
+        )
+    run = report["runs"][run_index]
+    expected_seed = int(optimizer_seed)
+    if run["optimizer_seed"] != expected_seed:
+        raise ValueError(
+            f"Run {run_index} checkpoint seed {run['optimizer_seed']} "
+            f"does not match requested seed {expected_seed}"
+        )
+    run["status"] = "running"
+    return run
+
+
+def _completed_evaluation_count(report: dict) -> int:
+    return sum(len(run.get("evaluations", [])) for run in report.get("runs", []))
+
+
+def _random_unused_tracewin_seed(report: dict) -> int:
+    used = {
+        int(evaluation["tracewin_seed"])
+        for run in report.get("runs", [])
+        for evaluation in run.get("evaluations", [])
+        if evaluation.get("tracewin_seed") is not None
+    }
+    while True:
+        seed = secrets.randbelow(2**31)
+        if seed not in used:
+            return seed
+
+
+def _load_new_samples(path: Path, report: dict) -> BeamDataset:
+    expected = sum(
+        1
+        for run in report.get("runs", [])
+        for evaluation in run.get("evaluations", [])
+        if evaluation.get("success")
+    )
+    if path.exists():
+        dataset = BeamDataset.load(path)
+        if len(dataset) != expected:
+            raise ValueError(
+                f"{path} contains {len(dataset)} rows, but the Bayesian checkpoint "
+                f"records {expected} successful TraceWin evaluations."
+            )
+        return dataset
+    if expected:
+        raise ValueError(
+            f"{path} is missing, but the Bayesian checkpoint records "
+            f"{expected} successful TraceWin evaluations."
+        )
+    return BeamDataset()
+
+
+def _build_optimizer(
+    bounds: list[tuple[float, float]],
+    *,
+    optimizer_seed: int,
+    warm_start: list[dict],
+    evaluations: list[dict],
+    initial_points: int = 0,
+    initial_point_generator: str = "random",
+):
+    try:
+        from skopt import Optimizer
+        from skopt.space import Real
+    except ImportError as exc:
+        raise ImportError(
+            "scikit-optimize is required: pip install scikit-optimize"
+        ) from exc
+
+    dimensions = [
+        Real(lower, upper, name=key)
+        for key, (lower, upper) in zip(PARAM_KEYS, bounds)
+    ]
+    optimizer = Optimizer(
+        dimensions=dimensions,
+        base_estimator="GP",
+        n_initial_points=initial_points,
+        initial_point_generator=initial_point_generator,
+        acq_func="EI",
+        random_state=optimizer_seed,
+        avoid_duplicates=True,
+    )
+    if warm_start:
+        x_values = [_vector_from_params(entry["params"]) for entry in warm_start]
+        y_values = [-float(entry["score"]) for entry in warm_start]
+        optimizer.tell(x_values, y_values)
+    for evaluation in evaluations:
+        # Replay ask() to restore Sobol/acquisition RNG state exactly on resume,
+        # then tell() the persisted point and objective.
+        optimizer.ask()
+        optimizer.tell(
+            _vector_from_params(evaluation["params"]),
+            -float(evaluation["score"]),
+        )
+    return optimizer
+
+
+def _best_entry(report: dict) -> dict | None:
+    candidates = [
+        {
+            "origin": "warm_start",
+            "run_index": None,
+            "evaluation_index": None,
+            "tracewin_seed": None,
+            **entry,
+        }
+        for entry in report["warm_start"]
+    ]
+    candidates.extend(
+        {
+            "origin": "online_tracewin",
+            "run_index": run["run_index"],
+            **evaluation,
+        }
+        for run in report["runs"]
+        for evaluation in run["evaluations"]
+        if evaluation["success"]
+    )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda entry: float(entry["score"]))
+
+
+def _update_report_bests(report: dict) -> None:
+    for run in report["runs"]:
+        valid = [
+            evaluation
+            for evaluation in run["evaluations"]
+            if evaluation["success"]
+        ]
+        if valid:
+            best = max(valid, key=lambda entry: float(entry["score"]))
+            run["best_score"] = float(best["score"])
+            run["best_params"] = best["params"]
+        else:
+            run["best_score"] = None
+            run["best_params"] = None
+    report["best_result"] = _best_entry(report)
+    report["updated_at"] = _utc_now()
+
+
+def _save_datasets(
+    source_dataset: BeamDataset | None,
+    new_dataset: BeamDataset,
+    *,
+    new_samples_output: Path,
+    merged_dataset_output: Path | None,
+) -> None:
+    new_dataset.save_flat(new_samples_output)
+    if source_dataset is not None and merged_dataset_output is not None:
+        source_dataset.merge(new_dataset).save_flat(merged_dataset_output)
+
+
+def run_tracewin_bayesian(
+    *,
+    simulator_factory,
+    source_dataset: BeamDataset | None,
+    bounds: list[tuple[float, float]],
+    report: dict,
+    output: Path,
+    new_samples_output: Path,
+    merged_dataset_output: Path | None,
+    n_calls: int,
+    n_runs: int,
+    seed: int,
+    tracewin_seed_base: int | None,
+    initial_points: int = 0,
+    initial_point_generator: str = "random",
+    random_tracewin_seeds: bool = False,
+) -> dict:
+    """Run or resume the ask/tell loop, persisting after every evaluation."""
+    new_dataset = _load_new_samples(new_samples_output, report)
+    _write_json_atomic(output, report)
+
+    for run_index in range(n_runs):
+        optimizer_seed = seed + run_index
+        run = _ensure_run(report, run_index, optimizer_seed)
+        optimizer = _build_optimizer(
+            bounds,
+            optimizer_seed=optimizer_seed,
+            warm_start=report["warm_start"],
+            evaluations=run["evaluations"],
+            initial_points=initial_points,
+            initial_point_generator=initial_point_generator,
+        )
+        simulator = simulator_factory(run_index)
+
+        while len(run["evaluations"]) < n_calls:
+            call_index = len(run["evaluations"])
+            evaluation_index = _completed_evaluation_count(report)
+            if tracewin_seed_base is not None:
+                tracewin_seed = tracewin_seed_base + evaluation_index
+            elif random_tracewin_seeds:
+                tracewin_seed = _random_unused_tracewin_seed(report)
+            else:
+                tracewin_seed = None
+
+            if tracewin_seed is None:
+                simulator.tracewin_params.pop("random_seed", None)
+            else:
+                simulator.tracewin_params["random_seed"] = int(tracewin_seed)
+
+            vector = optimizer.ask()
+            params = _params_from_vector(vector)
+            print(
+                f"\nRun {run_index + 1}/{n_runs} | "
+                f"TraceWin call {call_index + 1}/{n_calls} | "
+                f"evaluation={evaluation_index} "
+                f"seed={tracewin_seed if tracewin_seed is not None else 'unset'}",
+                flush=True,
+            )
+            result = simulator.simulate(params)
+            score = float(result.score_val if result.success else ERROR_SCORE)
+            optimizer.tell(vector, -score)
+
+            evaluation = {
+                "evaluation_index": evaluation_index,
+                "call_index": call_index,
+                "phase": (
+                    initial_point_generator
+                    if call_index < initial_points
+                    else "bayesian"
+                ),
+                "tracewin_seed": (
+                    None if tracewin_seed is None else int(tracewin_seed)
+                ),
+                "params": params,
+                "score": score,
+                "success": bool(result.success),
+                "error": result.error,
+                "timestamp": result.timestamp.isoformat(),
+            }
+            run["evaluations"].append(evaluation)
+
+            if result.success:
+                x, y, sample_score = tracewin_result_to_flat_sample(result)
+                new_dataset.append_flat_sample(x, y, sample_score)
+                _save_datasets(
+                    source_dataset,
+                    new_dataset,
+                    new_samples_output=new_samples_output,
+                    merged_dataset_output=merged_dataset_output,
+                )
+
+            _update_report_bests(report)
+            _write_json_atomic(output, report)
+            status = "ok" if result.success else f"failed: {result.error}"
+            print(f"  score={score:.6g} ({status})", flush=True)
+
+        run["status"] = "complete"
+        _update_report_bests(report)
+        _write_json_atomic(output, report)
+
+    report["status"] = "complete"
+    _update_report_bests(report)
+    _write_json_atomic(output, report)
+    return report
+
+
+def _print_best_params(best_result: dict) -> None:
+    print("\nBest real TraceWin parameter set:")
+    print(
+        f"origin={best_result['origin']} score={best_result['score']:.6g} "
+        f"seed={best_result.get('tracewin_seed')}"
+    )
+    header = (
+        f"{'Parameter':<14} {'best':>14} {'default':>14} "
+        f"{'delta/sensitivity':>18}"
+    )
+    separator = "-" * len(header)
+    print(separator)
     print(header)
-    print(sep)
-    sens = sensitivity_vec()
-    for i, p in enumerate(PARAMETERS):
-        value = best_params[p.key]
-        delta_sens = (value - p.default) / sens[i] if sens[i] != 0 else float("nan")
-        print(f"{p.name:<14} {value:>14.6g} {p.default:>14.6g} {delta_sens:>18.3g}")
-    print(sep)
+    print(separator)
+    sensitivities = sensitivity_vec()
+    for index, parameter in enumerate(PARAMETERS):
+        value = best_result["params"][parameter.key]
+        delta_sensitivity = (
+            (value - parameter.default) / sensitivities[index]
+            if sensitivities[index] != 0
+            else float("nan")
+        )
+        print(
+            f"{parameter.name:<14} {value:>14.6g} "
+            f"{parameter.default:>14.6g} {delta_sensitivity:>18.3g}"
+        )
+    print(separator)
 
 
-def save_delta_plot(best_params: dict, output_json: str | Path) -> Path:
-    """Bar chart of (best - default) / sensitivity per parameter.
-
-    Normalizing by sensitivity makes the 16 physically heterogeneous
-    parameters comparable on one axis (score-point-equivalent units).
-    """
+def save_delta_plot(
+    best_result: dict,
+    output_json: str | Path,
+    *,
+    prefix: str = "bayesian_opt",
+) -> Path:
     configure_matplotlib_cache()
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    sens = sensitivity_vec()
-    names = [p.name for p in PARAMETERS]
+    sensitivities = sensitivity_vec()
+    names = [parameter.name for parameter in PARAMETERS]
     deltas = [
-        (best_params[p.key] - p.default) / sens[i] if sens[i] != 0 else 0.0
-        for i, p in enumerate(PARAMETERS)
+        (
+            best_result["params"][parameter.key] - parameter.default
+        ) / sensitivities[index]
+        for index, parameter in enumerate(PARAMETERS)
     ]
+    figure, axis = plt.subplots(figsize=(max(8.0, 0.55 * len(names)), 5.0))
+    colors = ["#4c78a8" if delta >= 0 else "#e34948" for delta in deltas]
+    axis.bar(names, deltas, color=colors, alpha=0.86)
+    axis.axhline(0.0, color="#333333", linewidth=0.9)
+    axis.set_title("TraceWin Bayesian Optimization — shift from default")
+    axis.set_ylabel("(best - default) / sensitivity")
+    axis.grid(axis="y", alpha=0.25)
+    axis.tick_params(axis="x", rotation=45)
+    figure.tight_layout()
+    path = Path(output_json).parent / f"{prefix}_delta.png"
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+    return path
 
-    fig, ax = plt.subplots(figsize=(max(8.0, 0.55 * len(names)), 5.0))
-    colors = ["#4c78a8" if d >= 0 else "#e34948" for d in deltas]
-    ax.bar(names, deltas, color=colors, alpha=0.86)
-    ax.axhline(0.0, color="#333333", linewidth=0.9)
-    ax.set_title("Bayesian Optimization — shift from default (sensitivity units)")
-    ax.set_ylabel("(best - default) / sensitivity")
-    ax.set_xlabel("Parameter")
-    ax.grid(axis="y", alpha=0.25)
-    ax.tick_params(axis="x", rotation=45)
-    fig.tight_layout()
 
-    path = Path(output_json).parent / "bayesian_opt_delta.png"
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
+def save_convergence_plot(
+    report: dict,
+    output_json: str | Path,
+    *,
+    prefix: str = "bayesian_opt",
+) -> Path | None:
+    histories = [
+        [evaluation["score"] for evaluation in run["evaluations"]]
+        for run in report["runs"]
+        if run["evaluations"]
+    ]
+    if not histories:
+        return None
+
+    configure_matplotlib_cache()
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots(figsize=(8.4, 5.0))
+    for run_index, history in enumerate(histories):
+        best_so_far = np.maximum.accumulate(np.asarray(history, dtype=float))
+        axis.plot(
+            np.arange(1, len(history) + 1),
+            best_so_far,
+            linewidth=1.8,
+            label=f"run {run_index + 1}",
+        )
+    axis.set_xlabel("New TraceWin evaluations")
+    axis.set_ylabel("Best observed score")
+    axis.set_title("TraceWin Bayesian Optimization convergence")
+    axis.grid(alpha=0.25)
+    axis.legend()
+    figure.tight_layout()
+    path = Path(output_json).parent / f"{prefix}_convergence.png"
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
     return path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--surrogate", default=str(DEFAULT_SINGLE_SURROGATE_MODEL))
     parser.add_argument("--dataset", default=str(default_dataset_path()))
-    parser.add_argument("--n-calls", type=int, default=200,
-                        help="Objective evaluations per run (capped at 200 inside BayesianOptimizer).")
-    parser.add_argument("--n-runs", type=int, default=3,
-                        help="Independent seeds; the best-scoring run's params are reported.")
+    tracewin_source = parser.add_mutually_exclusive_group()
+    tracewin_source.add_argument("--workspace", default=None, metavar="PATH")
+    tracewin_source.add_argument(
+        "--tracewin",
+        default=None,
+        metavar="INI",
+        help=f"TraceWin project file (default: {DEFAULT_TRACEWIN_INI})",
+    )
+    parser.add_argument("--calc-dir", default=None, metavar="PATH")
+    parser.add_argument("--n-calls", type=int, default=100)
+    parser.add_argument("--n-runs", type=int, default=1)
+    parser.add_argument("--warm-best", type=int, default=10)
+    parser.add_argument("--warm-diverse", type=int, default=30)
+    parser.add_argument("--bounds-scale", type=float, default=10.0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output", default="beam_optimization/results/bayesian_opt.json")
+    parser.add_argument(
+        "--tracewin-seed-base",
+        type=int,
+        default=None,
+        help=(
+            "Deterministic first TraceWin seed. If omitted, no random_seed "
+            "parameter is passed to TraceWin."
+        ),
+    )
+    parser.add_argument("--tracewin-particles", type=int, default=10_000)
+    parser.add_argument("--tracewin-threads", type=int, default=None, metavar="N")
+    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--new-samples-output", default=DEFAULT_NEW_SAMPLES_OUTPUT)
+    parser.add_argument(
+        "--merged-dataset-output",
+        default=DEFAULT_MERGED_DATASET_OUTPUT,
+    )
     args = parser.parse_args()
 
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    if args.n_calls <= 0 or args.n_runs <= 0:
+        parser.error("--n-calls and --n-runs must be positive")
+    if args.warm_best < 0 or args.warm_diverse < 0:
+        parser.error("--warm-best and --warm-diverse must be non-negative")
 
-    print(f"Surrogate: {args.surrogate}")
-    surrogate = ModularMLP.load(args.surrogate)
-    surrogate.eval()
-
-    print(f"Dataset:   {args.dataset}")
-    dataset = BeamDataset.load(args.dataset)
-
-    results: dict = {"bayesian_opt": []}
-    for run in range(args.n_runs):
-        seed = args.seed + run
-        print(f"\nRun {run + 1}/{args.n_runs}  (seed={seed})")
-        r = run_bo(surrogate, dataset, args.n_calls, seed)
-        results["bayesian_opt"].append(r)
-        print(f"  best={r['best_score']:.3f}")
-
-    print_table(results)
-
-    best_run = max(results["bayesian_opt"], key=lambda r: r["best_score"])
-    _print_best_params(best_run["best_params"])
-
-    with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "runs": [
-                    {"best_score": r["best_score"], "best_params": r["best_params"]}
-                    for r in results["bayesian_opt"]
-                ],
-            },
-            f,
-            indent=2,
+    try:
+        workspace, project_file = resolve_tracewin_project(
+            workspace=args.workspace,
+            tracewin=args.tracewin,
         )
-    print(f"\nJSON summary saved -> {args.output}")
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    convergence_path = save_convergence_plot(results, args.output, svg_horizon=1)
-    if convergence_path is not None:
-        print(f"Convergence plot saved -> {convergence_path}")
-    summary_path = save_summary_plot(results, args.output)
-    print(f"Summary plot saved     -> {summary_path}")
-    delta_path = save_delta_plot(best_run["best_params"], args.output)
-    print(f"Delta plot saved       -> {delta_path}")
+    dataset_path = Path(args.dataset).expanduser().resolve()
+    if not dataset_path.is_file():
+        parser.error(f"Dataset not found: {dataset_path}")
+    source_dataset = BeamDataset.load(dataset_path)
+
+    bounds = hardware_aware_bounds(PARAMETERS, args.bounds_scale)
+    selection = select_warm_start(
+        source_dataset.get_param_vecs().numpy(),
+        source_dataset.scores.numpy(),
+        parameters=PARAMETERS,
+        bounds=bounds,
+        n_best=args.warm_best,
+        n_diverse=args.warm_diverse,
+        seed=args.seed,
+    )
+    requested_warm = args.warm_best + args.warm_diverse
+    if len(selection.indices) < requested_warm:
+        print(
+            f"WARNING: requested {requested_warm} warm-start rows, but only "
+            f"{len(selection.indices)} valid unique rows are available.",
+            flush=True,
+        )
+
+    output = Path(args.output).expanduser().resolve()
+    calc_root = (
+        Path(args.calc_dir).expanduser().resolve()
+        if args.calc_dir
+        else _default_calc_root(workspace, output)
+    )
+    new_samples_output = Path(args.new_samples_output).expanduser().resolve()
+    merged_dataset_output = Path(args.merged_dataset_output).expanduser().resolve()
+    config = _report_config(
+        args,
+        dataset_path=dataset_path,
+        project_file=project_file,
+        calc_root=calc_root,
+        bounds=bounds,
+    )
+    warm_start = _warm_start_payload(selection)
+    try:
+        report = _load_or_create_report(
+            output,
+            config=config,
+            warm_start=warm_start,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    print(f"TraceWin workspace : {workspace}")
+    print(f"TraceWin project   : {project_file}")
+    print(f"Dataset            : {dataset_path}")
+    print(f"Warm start         : {len(warm_start)} known TraceWin points")
+    print(f"New calls          : {args.n_calls} per run × {args.n_runs} run(s)")
+    print(f"Bounds scale       : {args.bounds_scale} sensitivity units")
+    print(
+        "TraceWin seeds     : "
+        + (
+            "unset (TraceWin default behavior)"
+            if args.tracewin_seed_base is None
+            else f"{args.tracewin_seed_base} + evaluation index"
+        )
+    )
+    print(f"Checkpoint         : {output}")
+
+    def simulator_factory(run_index: int) -> TraceWinSimulator:
+        return TraceWinSimulator(
+            project_file=str(project_file),
+            calc_dir=str(calc_root / f"run_{run_index:03d}"),
+            timeout=args.timeout,
+            retries=args.retries,
+            tracewin_params={"nbr_part1": args.tracewin_particles},
+            num_threads=args.tracewin_threads,
+            initial_npart=args.tracewin_particles,
+        )
+
+    report = run_tracewin_bayesian(
+        simulator_factory=simulator_factory,
+        source_dataset=source_dataset,
+        bounds=bounds,
+        report=report,
+        output=output,
+        new_samples_output=new_samples_output,
+        merged_dataset_output=merged_dataset_output,
+        n_calls=args.n_calls,
+        n_runs=args.n_runs,
+        seed=args.seed,
+        tracewin_seed_base=args.tracewin_seed_base,
+    )
+    _print_best_params(report["best_result"])
+    convergence = save_convergence_plot(report, output)
+    delta = save_delta_plot(report["best_result"], output)
+    print(f"\nJSON checkpoint       -> {output}")
+    print(f"New TraceWin samples  -> {new_samples_output}")
+    print(f"Merged dataset        -> {merged_dataset_output}")
+    if convergence is not None:
+        print(f"Convergence plot      -> {convergence}")
+    print(f"Delta plot            -> {delta}")
 
 
 if __name__ == "__main__":

@@ -77,7 +77,21 @@ def default_dataset_path(prefix: str = "all") -> Path:
 # updates and is used only when explicitly requested by MBPOWithModelUpdate.
 DEFAULT_BASE_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/trained_models/base"
 DEFAULT_UPDATED_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/trained_models/updated"
-DEFAULT_SINGLE_SURROGATE_MODEL = DEFAULT_BASE_SURROGATE_DIR / "surrogate_0.pt"
+
+
+def default_single_surrogate_model() -> Path:
+    """Return one surrogate checkpoint for callers that need a single model
+    (not an ensemble) -- SB3-SAC training, Bayesian optimization.
+
+    Checkpoints are named surrogate_<dataset>_<index>.pt (dataset-qualified,
+    see SurrogateTrainer._checkpoint_path()), so there's no fixed filename to
+    point at: pick the first surrogate_*.pt found in DEFAULT_BASE_SURROGATE_DIR
+    (sorted by name), or a not-yet-existing placeholder path if none exist yet.
+    """
+    candidates = sorted(DEFAULT_BASE_SURROGATE_DIR.glob("surrogate_*.pt"))
+    if candidates:
+        return candidates[0]
+    return DEFAULT_BASE_SURROGATE_DIR / "surrogate_0.pt"
 
 # Root directory where training scripts write RL agent checkpoints and logs.
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "runs/all"
@@ -86,14 +100,15 @@ DEFAULT_SURROGATE_LOG_DIR = PROJECT_ROOT / "runs/surrogate"
 # JSON file written by the benchmark command.
 DEFAULT_BENCHMARK_OUTPUT = PROJECT_ROOT / "results/benchmark.json"
 
+# JSON reports written by the TraceWin calibration commands.
+DEFAULT_SENSITIVITY_OUTPUT = PROJECT_ROOT / "results/sensitivity.json"
+DEFAULT_PARAMETER_BOUNDS_OUTPUT = PROJECT_ROOT / "results/parameter_bounds.json"
+
 # TraceWin project file used when a command runs the real simulator program
 DEFAULT_TRACEWIN_INI = (
     PROJECT_ROOT
     / "env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini"
 )
-
-# Parent directory for automatically generated TraceWinEnv calculation folders.
-TRACEWIN_ENV_CALC_ROOT = Path("/tmp")
 
 # Folder name used for TraceWin calculation files created during dataset setup.
 DEFAULT_TRACEWIN_CALC_DIR_NAME = "tracewin_calc"
@@ -108,14 +123,22 @@ def configure_matplotlib_cache() -> None:
     os.environ.setdefault("MPLCONFIGDIR", str(MATPLOTLIB_CACHE_DIR))
 
 
-def new_tracewin_env_calc_dir() -> Path:
-    """Return a unique calculation directory for one TraceWinEnv instance."""
-    return TRACEWIN_ENV_CALC_ROOT / f"tracewin_calc_{os.getpid()}_{uuid4().hex}"
+def new_tracewin_env_calc_dir(workspace_dir: Path) -> Path:
+    """Return a unique calculation directory for one TraceWinEnv instance.
+
+    Always placed inside the TraceWin workspace directory, never outside it.
+    """
+    return workspace_dir / f"tracewin_calc_{os.getpid()}_{uuid4().hex}"
 
 
-def default_tracewin_calc_dir(dataset_dir: Path) -> Path:
-    """Return the default TraceWin calc directory for a generated dataset."""
-    return dataset_dir / DEFAULT_TRACEWIN_CALC_DIR_NAME
+def default_tracewin_calc_dir(workspace_dir: Path, dataset_dir: Path) -> Path:
+    """Return the default TraceWin calc directory for a generated dataset.
+
+    Always placed inside the TraceWin workspace directory (never inside the
+    dataset directory itself), named after the dataset it belongs to so
+    concurrent/sequential builds don't collide.
+    """
+    return workspace_dir / f"{DEFAULT_TRACEWIN_CALC_DIR_NAME}_{dataset_dir.name}"
 
 
 def default_eval_calc_dir(project_file: Path) -> Path:
@@ -123,7 +146,32 @@ def default_eval_calc_dir(project_file: Path) -> Path:
     return project_file.parent / "calc"
 
 
-# Calc directory and results checkpoint for config/utility/sensitivity.py.
-DEFAULT_SENSITIVITY_CALC_DIR = PROJECT_ROOT / "env/tracewin_env/tracewin/sensitivity_calc"
-DEFAULT_SENSITIVITY_CHECKPOINT = DEFAULT_SENSITIVITY_CALC_DIR / "sensitivity_results.json"
+# Filename of the TraceWin project inside a workspace directory, and the
+# shared resolver every command that accepts --workspace/--tracewin uses.
+TRACEWIN_PROJECT_FILENAME = "CB_newMRMS_RFQ_Fields_1.ini"
 
+
+def resolve_tracewin_project(
+    *,
+    workspace: str | None = None,
+    tracewin: str | None = None,
+) -> tuple[Path, Path]:
+    """Return the resolved ``(workspace, project_file)`` selected by the CLI."""
+    if workspace is not None and tracewin is not None:
+        raise ValueError("--workspace and --tracewin are mutually exclusive")
+
+    if workspace is not None:
+        workspace_path = Path(workspace).expanduser().resolve()
+        if not workspace_path.is_dir():
+            raise ValueError(
+                f"TraceWin workspace does not exist or is not a directory: {workspace_path}"
+            )
+        project_file = workspace_path / TRACEWIN_PROJECT_FILENAME
+    else:
+        project_file = Path(tracewin or DEFAULT_TRACEWIN_INI).expanduser().resolve()
+        workspace_path = project_file.parent
+
+    if not project_file.is_file():
+        raise ValueError(f"TraceWin project file not found: {project_file}")
+
+    return workspace_path, project_file

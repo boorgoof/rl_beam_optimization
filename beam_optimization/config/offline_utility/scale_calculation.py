@@ -1,4 +1,4 @@
-"""Offline calibration of the three global RL/dataset scales for ADIGE.
+"""Offline calculation of the three global RL/dataset scales for ADIGE.
 
 Three scalars are shared by every parameter (in sensitivity units), derived in
 this order because each depends on the previous one:
@@ -26,13 +26,22 @@ from typing import List, Optional
 import numpy as np
 from beam_optimization.config.adige import MAX_STEPS, PARAMETERS, sensitivity_vec
 
+# Single source of truth for every default in this module: compute_scales(),
+# verify_constraints(), report(), and the CLI argparse defaults all reference
+# these constants, so changing a default here changes it everywhere (there
+# used to be separate, silently-diverging defaults in each function).
+DEFAULT_DATASET_SCALE: float = 0.1
+DEFAULT_K_SIGMA_DATASET: float = 2.5
+DEFAULT_F_RESET: float = 0.25
+DEFAULT_K_SIGMA: float = 2.5
+
 
 def compute_scales(
     *,
-    dataset_scale: float = 5,
-    k_sigma_dataset: float = 3,
-    f_reset: float = 0.25,
-    k_sigma: float = 3,
+    dataset_scale: float = DEFAULT_DATASET_SCALE,
+    k_sigma_dataset: float = DEFAULT_K_SIGMA_DATASET,
+    f_reset: float = DEFAULT_F_RESET,
+    k_sigma: float = DEFAULT_K_SIGMA,
     target_scale: Optional[float] = None,
     max_steps: int = MAX_STEPS,
 ) -> dict:
@@ -82,8 +91,8 @@ def verify_constraints(
     dataset_scale: float,
     reset_scale: float,
     action_scale: float,
-    k_sigma_dataset: float = 2.5,
-    k_sigma: float = 2.5,
+    k_sigma_dataset: float = DEFAULT_K_SIGMA_DATASET,
+    k_sigma: float = DEFAULT_K_SIGMA,
     max_steps: int = MAX_STEPS,
 ) -> List[str]:
     """Check the single global trust-region constraint and flag tight hardware clips.
@@ -127,10 +136,10 @@ def verify_constraints(
 
 def report(
     *,
-    dataset_scale: float = 5.0,
-    k_sigma_dataset: float = 2.5,
-    f_reset: float = 0.25,
-    k_sigma: float = 2.5,
+    dataset_scale: float = DEFAULT_DATASET_SCALE,
+    k_sigma_dataset: float = DEFAULT_K_SIGMA_DATASET,
+    f_reset: float = DEFAULT_F_RESET,
+    k_sigma: float = DEFAULT_K_SIGMA,
     target_scale: Optional[float] = None,
     max_steps: int = MAX_STEPS,
 ) -> None:
@@ -146,7 +155,7 @@ def report(
     reset_scale = scales["reset_scale"]
     action_scale = scales["action_scale"]
 
-    print("\nAction Space Design")
+    print("\nScale Calculation")
     print(
         f"dataset_scale={dataset_scale}  k_sigma_dataset={k_sigma_dataset}  "
         f"f_reset={f_reset}  k_sigma={k_sigma}  max_steps={max_steps}"
@@ -208,19 +217,19 @@ if __name__ == "__main__":
         description="Print the action space design calibration report for ADIGE."
     )
     parser.add_argument(
-        "--dataset-scale", type=float, default=5.0,
+        "--dataset-scale", type=float, default=DEFAULT_DATASET_SCALE,
         help="Dataset gaussian bell width, chosen first (default: %(default)s)"
     )
     parser.add_argument(
-        "--k-sigma-dataset", type=float, default=2.5,
+        "--k-sigma-dataset", type=float, default=DEFAULT_K_SIGMA_DATASET,
         help="Number of dataset stddevs defining the trust-region edge (default: %(default)s)"
     )
     parser.add_argument(
-        "--f-reset", type=float, default=0.25,
+        "--f-reset", type=float, default=DEFAULT_F_RESET,
         help="Fraction of the trust-region budget reserved for reset (default: %(default)s)"
     )
     parser.add_argument(
-        "--k-sigma", type=float, default=2.5,
+        "--k-sigma", type=float, default=DEFAULT_K_SIGMA,
         help="Worst-case reset excursion, in reset stddevs (default: %(default)s)"
     )
     parser.add_argument(

@@ -9,7 +9,7 @@ State / Observation:
     Stage 0 is fixed by the .ini project file, not sampled.
 
 Action:
-    Delta on all 16 parameters, bounded by per-parameter action_step_vec().
+    Delta on all configured parameters, bounded by per-parameter action_step_vec().
 
 Reward:
     score(t+1) - score(t) 
@@ -29,6 +29,8 @@ Episode design (consistent with the rest of the project):
 Note: the input beam (stage 0) is fixed by the .ini project file.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 from beam_optimization.config.adige import MAX_STEPS
 from beam_optimization.config.paths import new_tracewin_env_calc_dir
@@ -59,7 +61,8 @@ class TraceWinEnv(BaseBeamEnv):
     ):
 
         if calc_dir is None:
-            calc_dir = str(new_tracewin_env_calc_dir())
+            workspace_dir = Path(project_file).expanduser().resolve().parent
+            calc_dir = str(new_tracewin_env_calc_dir(workspace_dir))
 
         # Store the simulator kwargs for later use in _build_simulator() for the TraceWin simulator
         self._simulator_kwargs = {
@@ -82,9 +85,11 @@ class TraceWinEnv(BaseBeamEnv):
         save_path: str | None = None,
         fps: int = 2,
         render_beam_distribution: bool = False,
-        max_particles: int = 40000,
-        bins: int = 150,
-        axis_range_mm: float = 50.0,
+        max_particles: int | None = None,
+        bins: int = 200,
+        axis_range_mm: float | None = None,
+        xy_range_mm: float = 20.0,
+        angle_range_mrad: float = 40.0,
     ):
         """
         The inherited render shows the same parameter/beam-feature episode
@@ -103,21 +108,34 @@ class TraceWinEnv(BaseBeamEnv):
                 max_particles=max_particles,
                 bins=bins,
                 axis_range_mm=axis_range_mm,
+                xy_range_mm=xy_range_mm,
+                angle_range_mrad=angle_range_mrad,
             )
 
         return result
 
     def render_final_beam_distribution(
         self,
-        max_particles: int = 40000,
-        bins: int = 150,
-        axis_range_mm: float = 50.0,
+        max_particles: int | None = None,
+        bins: int = 200,
+        axis_range_mm: float | None = None,
+        xy_range_mm: float = 20.0,
+        angle_range_mrad: float = 40.0,
     ):
-        """Render the final TraceWin particle distribution from the latest calc/*.dst."""
-        
+        """Render the final TraceWin particle distribution from the latest calc/*.dst.
+
+        Uses the same default zoom (position +/-20 mm, angle +/-40 mrad),
+        figure size, beam-state table and score as ``visualize_distributions.ipynb`` and
+        ``visualize_distributions_python_run.ipynb`` — three phase-space
+        panels plus the beam-state/score table underneath — via
+        ``plot_tracewin_distribution_with_state()``, so a GUI run, a direct
+        ``TraceWinSimulator`` run, and a ``TraceWinEnv`` step all render
+        identically for the same beam state.
+        """
+
         from beam_optimization.env.tracewin_env.tracewin.visualization import (
             find_final_tracewin_dst_path,
-            plot_tracewin_distribution,
+            plot_tracewin_distribution_with_state,
             tracewin_distribution_from_dst,
         )
 
@@ -130,22 +148,40 @@ class TraceWinEnv(BaseBeamEnv):
             )
             return None
 
+        result = self._current_result
+        if result is None or not result.success or result.final_beam is None:
+            print(
+                "TraceWin final beam distribution render skipped: no successful "
+                "simulation result yet (call reset()/step() first)."
+            )
+            return None
+
         # Load the particle distribution from the .dst file
         distribution = tracewin_distribution_from_dst(
             dst_path,
             max_particles=max_particles,
         )
-        
-        # Plot the distribution using the provided parameters
-        return plot_tracewin_distribution(
+
+        # Backward compatibility: the old single range option controls both
+        # position and angle only when explicitly supplied by the caller.
+        if axis_range_mm is not None:
+            xy_range_mm = float(axis_range_mm)
+            angle_range_mrad = float(axis_range_mm)
+
+        # Plot the distribution plus the beam-state/score table underneath.
+        return plot_tracewin_distribution_with_state(
             distribution,
+            result.final_beam,
+            result.score_val,
+            state_source=f"environment step {self._step_count}",
             title=(
                 f"{type(self).__name__} final beam distribution | "
                 f"{dst_path.name} | {len(distribution['x']):,} plotted particles"
             ),
             figure_name=f"{type(self).__name__} TraceWin final beam distribution",
             bins=bins,
-            axis_range_mm=axis_range_mm,
-            figsize=(18, 5),
+            xy_range_mm=xy_range_mm,
+            angle_range_mrad=angle_range_mrad,
+            figsize=(22, 8.5),
             show=True,
         )

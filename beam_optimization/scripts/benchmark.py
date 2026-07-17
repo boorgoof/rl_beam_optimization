@@ -13,8 +13,8 @@ Methods:
 
 Usage:
     python -m beam_optimization benchmark \\
-        --surrogate env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \\
-        --dataset   env/dataset/base/dataset_base.pt \\
+        --surrogate env/surrogate_env/surrogate/trained_models/base/surrogate_001_0.pt \\
+        --dataset   env/dataset/001/dataset_all.pt \\
         --output    results/benchmark.json \\
         --n-runs    3 \\
         --eval-budget 3000 \\
@@ -43,10 +43,10 @@ import torch
 from beam_optimization.algorithms import make_agent
 from beam_optimization.config.paths import (
     DEFAULT_BENCHMARK_OUTPUT,
-    DEFAULT_SINGLE_SURROGATE_MODEL,
     DEFAULT_TRACEWIN_INI,
     configure_matplotlib_cache,
     default_dataset_path,
+    default_single_surrogate_model,
 )
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
@@ -578,7 +578,7 @@ def save_summary_plot(results: Dict, output_json: str | Path) -> Path:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--surrogate",    default=str(DEFAULT_SINGLE_SURROGATE_MODEL))
+    parser.add_argument("--surrogate",    default=str(default_single_surrogate_model()))
     parser.add_argument("--dataset",      default=str(default_dataset_path()))
     parser.add_argument("--output",       default=str(DEFAULT_BENCHMARK_OUTPUT))
     parser.add_argument("--n-runs",       type=int, default=3)

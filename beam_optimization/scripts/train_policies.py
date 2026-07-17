@@ -10,8 +10,8 @@ Quick smoke test (few steps):
 
 Full run:
     python -m beam_optimization train_policies \\
-        --dataset   env/dataset/base/dataset_base.pt \\
-        --single-surrogate env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \\
+        --dataset   env/dataset/001/dataset_all.pt \\
+        --single-surrogate env/surrogate_env/surrogate/trained_models/base/surrogate_001_0.pt \\
         --base-ensemble env/surrogate_env/surrogate/trained_models/base \\
         --output    runs/all \\
         --rl-steps  300000 \\
@@ -39,11 +39,11 @@ from beam_optimization.algorithms.utils.logger import Logger
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
     DEFAULT_OUTPUT_DIR,
-    DEFAULT_SINGLE_SURROGATE_MODEL,
     DEFAULT_TRACEWIN_INI,
     DEFAULT_UPDATED_SURROGATE_DIR,
     configure_matplotlib_cache,
     default_dataset_path,
+    default_single_surrogate_model,
 )
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
@@ -733,8 +733,8 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         preserves base; starting from models/updated updates the working copy
         in-place. Override with update_surrogates_path;
       - the merged offline+online dataset is saved by default to the same file
-        passed with --dataset (env/dataset/base/dataset_base.pt by default, so
-        the base dataset grows run after run). Use update_dataset_path to save
+        passed with --dataset (whatever that resolves to, so the offline
+        dataset grows run after run). Use update_dataset_path to save
         elsewhere.
     """
     from beam_optimization.algorithms.model_free.sac import SAC
@@ -948,11 +948,11 @@ def main():
     configure_matplotlib_cache()
 
     parser = argparse.ArgumentParser(description="Train all algorithms")
-    parser.add_argument("--single-surrogate", default=str(DEFAULT_SINGLE_SURROGATE_MODEL),
+    parser.add_argument("--single-surrogate", default=str(default_single_surrogate_model()),
                         metavar="PATH",
                         help="Single surrogate used by SAC/PPO/TD3/DDPG/A2C/"
-                             "REINFORCE/TRPO/SB3-SAC. Default: "
-                             f"{DEFAULT_SINGLE_SURROGATE_MODEL}")
+                             "REINFORCE/TRPO/SB3-SAC. Default: first "
+                             "surrogate_*.pt found in --base-ensemble.")
     parser.add_argument("--base-ensemble", default=str(DEFAULT_BASE_SURROGATE_DIR),
                         metavar="PATH",
                         help="Folder with surrogate_*.pt used by SVG and MBPO. "
@@ -1009,7 +1009,7 @@ def main():
     parser.add_argument("--update-dataset",  default=None, metavar="PATH",
                         help=".pt path for the merged offline+online dataset collected "
                              "by MBPOWithModelUpdate. Default: same path as --dataset, "
-                             "so dataset_base.pt grows run after run. Requires "
+                             "so that file grows run after run. Requires "
                              "--online-finetune.")
     args = parser.parse_args()
 

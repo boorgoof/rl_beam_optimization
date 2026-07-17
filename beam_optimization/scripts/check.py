@@ -21,6 +21,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from beam_optimization.config.adige import BEAM_STATE_DIM, N_OUTPUT_STAGES, N_PARAMS
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
     DEFAULT_DATASET_ROOT,
@@ -516,9 +517,15 @@ def main() -> int:
                 action=_setup_action(),
                 path_command=_setup_command(),
             )
-        if tuple(dataset.X.shape[1:]) != (25,) or tuple(dataset.Y.shape[1:]) != (99,):
+        expected_x_width = BEAM_STATE_DIM + N_PARAMS
+        expected_y_width = N_OUTPUT_STAGES * BEAM_STATE_DIM
+        if (
+            tuple(dataset.X.shape[1:]) != (expected_x_width,)
+            or tuple(dataset.Y.shape[1:]) != (expected_y_width,)
+        ):
             raise CheckFailure(
-                f"Dataset shapes are X={tuple(dataset.X.shape)}, Y={tuple(dataset.Y.shape)}.",
+                f"Dataset shapes are X={tuple(dataset.X.shape)}, Y={tuple(dataset.Y.shape)}, "
+                f"expected X width {expected_x_width} and Y width {expected_y_width}.",
                 action="Regenerate dataset/surrogates with the current config.",
                 path_command=_setup_command(),
             )

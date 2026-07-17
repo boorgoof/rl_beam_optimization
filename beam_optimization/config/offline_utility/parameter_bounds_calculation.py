@@ -1,11 +1,11 @@
-"""Verify declared TraceWin transport limits and adjust them when necessary.
+"""Offline calculation of operational TraceWin parameter bounds.
 
 All ADIGE parameters except the AD.EM family are checked.  During each check,
 all other parameters remain at their defaults.  The results are operational
 transport limits, not certified hardware limits.
 
 Example:
-    python -m beam_optimization.config.verify_tracewin_limits
+    python -m beam_optimization parameter_bounds_calculation
 """
 from __future__ import annotations
 
@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Callable
 
 from beam_optimization.config.adige import PARAMETERS
-from beam_optimization.config.paths import DEFAULT_TRACEWIN_INI
+from beam_optimization.config.paths import (
+    DEFAULT_PARAMETER_BOUNDS_OUTPUT,
+    DEFAULT_TRACEWIN_INI,
+    resolve_tracewin_project,
+)
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import (
     TraceWinSimulator,
 )
@@ -24,7 +28,6 @@ from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import (
 TARGET_NAMES = tuple(
     parameter.name for parameter in PARAMETERS if not parameter.name.startswith("AD.EM")
 )
-DEFAULT_OUTPUT = "tracewin_verified_bounds.json"
 BAD_VALUE_MARKERS = (
     "bad value",
     "beam distribution never reaches the end of the field map",
@@ -411,17 +414,38 @@ def verify_transport_limits(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Verify and adjust TraceWin transport limits for all configured "
+            "Calculate TraceWin transport bounds for all configured "
             "ADIGE parameters except the AD.EM family."
         )
     )
+    tracewin_source = parser.add_mutually_exclusive_group()
+    tracewin_source.add_argument(
+        "--workspace",
+        default=None,
+        metavar="PATH",
+        help="TraceWin workspace directory. Mutually exclusive with --tracewin.",
+    )
+    tracewin_source.add_argument(
+        "--tracewin",
+        default=None,
+        metavar="INI",
+        help=(
+            "TraceWin project .ini to use. Mutually exclusive with "
+            f"--workspace. Default: {DEFAULT_TRACEWIN_INI}"
+        ),
+    )
     parser.add_argument(
         "--calc-dir",
-        default="/tmp/tracewin_limit_verification",
+        default=None,
         metavar="PATH",
-        help="Temporary TraceWin calculation directory (default: %(default)s).",
+        help="TraceWin calculation directory (default: parameter_bounds_calc inside the workspace).",
     )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="TraceWin random_seed override. Default: unseeded (TraceWin picks its own).",
+    )
     parser.add_argument("--tracewin-particles", type=int, default=10_000)
     parser.add_argument("--tracewin-threads", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=180.0)
@@ -434,30 +458,37 @@ def main() -> None:
     parser.add_argument("--max-bisections", type=int, default=16)
     parser.add_argument(
         "--output",
-        default=DEFAULT_OUTPUT,
+        default=str(DEFAULT_PARAMETER_BOUNDS_OUTPUT),
         metavar="JSON",
-        help="Result JSON path (default: %(default)s in the current directory).",
+        help="Result JSON path (default: %(default)s).",
     )
     args = parser.parse_args()
 
-    project = Path(DEFAULT_TRACEWIN_INI).expanduser().resolve()
-    workspace = project.parent
-    if not project.is_file():
-        parser.error(f"DEFAULT_TRACEWIN_INI project file not found: {project}")
+    try:
+        workspace, project = resolve_tracewin_project(
+            workspace=args.workspace,
+            tracewin=args.tracewin,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    calc_dir = Path(args.calc_dir) if args.calc_dir else workspace / "parameter_bounds_calc"
 
     print(f"TraceWin workspace: {workspace}")
     print(f"TraceWin project:   {project}")
+    print(f"Calc dir:           {calc_dir}")
+
+    tracewin_params = {"nbr_part1": args.tracewin_particles}
+    if args.seed is not None:
+        tracewin_params["random_seed"] = args.seed
 
     simulator = TraceWinSimulator(
         project_file=str(project),
-        calc_dir=str(Path(args.calc_dir).expanduser().resolve()),
+        calc_dir=str(calc_dir.expanduser().resolve()),
         timeout=args.timeout,
         retries=args.retries,
         retry_sleep=0.0,
-        tracewin_params={
-            "random_seed": args.seed,
-            "nbr_part1": args.tracewin_particles,
-        },
+        tracewin_params=tracewin_params,
         num_threads=args.tracewin_threads,
         initial_npart=args.tracewin_particles,
     )
@@ -472,7 +503,7 @@ def main() -> None:
         max_bisections=args.max_bisections,
     )
 
-    print("\nTraceWin limit verification:")
+    print("\nTraceWin parameter bounds:")
     for name, result in results.items():
         suggested_min = result["suggested_transport_min"]
         suggested_max = result["suggested_transport_max"]
@@ -505,7 +536,7 @@ def main() -> None:
             "max_expansions": args.max_expansions,
             "max_bisections": args.max_bisections,
         },
-        "verification": results,
+        "parameter_bounds": results,
     }
 
     output = Path(args.output).expanduser().resolve()

@@ -5,8 +5,10 @@ from typing import Tuple
 
 import numpy as np
 
-from beam_optimization.config.adige import params_to_vec
+from beam_optimization.config.adige import BEAM_STATE_DIM, N_OUTPUT_STAGES, params_to_vec
 from beam_optimization.env.simulation import BeamSimulationResult
+
+_N_STAGES = N_OUTPUT_STAGES + 1  # output stages plus the input beam0 stage
 
 
 def tracewin_result_to_flat_sample(
@@ -15,8 +17,8 @@ def tracewin_result_to_flat_sample(
     """Convert one successful TraceWin result to BeamDataset X/Y/score format.
 
     Returns:
-        x: (25,) float32 = beam_state_0 (9) + machine parameters (16).
-        y: (99,) float32 = output beam states 1..11 flattened.
+        x: (9 + N_PARAMS,) float32 = beam_state_0 (9) + machine parameters.
+        y: (N_OUTPUT_STAGES * 9,) float32 = output beam states flattened.
         score: final score as float32.
     """
     if result.source != "tracewin":
@@ -25,9 +27,9 @@ def tracewin_result_to_flat_sample(
         raise ValueError("Invalid TraceWin result: success=False or beam_states=None")
 
     beam_states = np.asarray(result.beam_states, dtype=np.float32)
-    if beam_states.shape != (12, 9):
+    if beam_states.shape != (_N_STAGES, BEAM_STATE_DIM):
         raise ValueError(
-            "TraceWin beam_states must have shape (12, 9), "
+            f"TraceWin beam_states must have shape ({_N_STAGES}, {BEAM_STATE_DIM}), "
             f"got {beam_states.shape}"
         )
 
