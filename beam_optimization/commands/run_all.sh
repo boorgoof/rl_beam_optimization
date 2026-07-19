@@ -2,7 +2,7 @@
 # Canonical end-to-end pipeline for the thesis experiments:
 #   1. check              — project health check (fast)
 #   2. train_policies.sh  — all algorithms × 3 seeds on the surrogate (several hours)
-#   3. benchmark_policies_surrogateEnv.sh — BO/SVG + policy benchmark on all checkpoints (~1 hour)
+#   3. benchmark_policies_surrogateEnv.sh — BO/SVG + custom-SAC policy benchmark (~1 hour)
 #   4. test_policy_surrogateEnv.sh        — one qualitative rendered episode with the trained SAC
 #
 # Prerequisites (run manually, in order, editing adige.py between steps 1-2):

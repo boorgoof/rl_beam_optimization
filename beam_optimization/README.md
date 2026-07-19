@@ -941,43 +941,40 @@ Use `benchmark` for numerical comparison on `SurrogateEnv`:
 python -m beam_optimization benchmark --quick
 ```
 
-Full benchmark (identical to `commands/benchmark_policies_surrogateEnv.sh`): BO/SVG plus the
-final policy benchmark over all trained checkpoints:
+Full benchmark (identical to `commands/benchmark_policies_surrogateEnv.sh`):
+BO/SVG plus the final custom-SAC policy benchmark:
 
 ```bash
 python -m beam_optimization benchmark \
-  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
-  --dataset beam_optimization/env/dataset/001/dataset_all.pt \
-  --output beam_optimization/results/benchmark.json \
+  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
+  --dataset beam_optimization/env/dataset/004/dataset_all.pt \
+  --sac beam_optimization/runs/all/sac/sac_agent.pt \
   --n-runs 3 \
-  --eval-budget 3000 \
+  --eval-budget 200 \
   --svg-episodes 500 \
   --policy-episodes 50 \
-  --sac beam_optimization/runs/all/sac/sac_agent.pt \
-  --td3 beam_optimization/runs/all/td3/td3_agent.pt \
-  --ppo beam_optimization/runs/all/ppo/ppo_agent.pt \
-  --ddpg beam_optimization/runs/all/ddpg/ddpg_agent.pt \
-  --a2c beam_optimization/runs/all/a2c/a2c_agent.pt \
-  --reinforce beam_optimization/runs/all/reinforce/reinforce_agent.pt \
-  --trpo beam_optimization/runs/all/trpo/trpo_agent.pt \
-  --sb3-sac beam_optimization/runs/all/sb3_sac/sb3_sac_agent.zip \
-  --mbpo beam_optimization/runs/all/dyna/dyna_agent.pt \
-  --svg-finale beam_optimization/runs/all/svg_finale/svg_agent.pt \
-  --svg-uniform beam_optimization/runs/all/svg_uniform/svg_agent.pt
+  --max-ep-steps 20 \
+  --output beam_optimization/results/benchmark_surrogate.json
 ```
 
-Real-physics validation of the best policies (identical to
-`commands/benchmark_policies_tracewinEnv.sh`, ~30 s per TraceWin step):
+Real-physics validation of the custom SAC (identical to
+`commands/benchmark_policies_tracewinEnv.sh`, ~30 s per TraceWin step). This
+command also executes the surrogate BO/SVG and policy benchmark before the
+additional TraceWin episodes:
 
 ```bash
 python -m beam_optimization benchmark \
-  --output beam_optimization/results/benchmark_tracewin.json \
-  --quick \
-  --tracewin \
-  --tracewin-episodes 5 \
+  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
+  --dataset beam_optimization/env/dataset/004/dataset_all.pt \
   --sac beam_optimization/runs/all/sac/sac_agent.pt \
-  --mbpo beam_optimization/runs/all/dyna/dyna_agent.pt \
-  --svg-finale beam_optimization/runs/all/svg_finale/svg_agent.pt
+  --n-runs 3 \
+  --eval-budget 200 \
+  --svg-episodes 500 \
+  --policy-episodes 50 \
+  --max-ep-steps 20 \
+  --tracewin beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2/CB_newMRMS_RFQ_Fields_1.ini \
+  --tracewin-episodes 10 \
+  --output beam_optimization/results/benchmark_tracewin.json
 ```
 
 When checkpoint paths are provided, `benchmark` also runs a final policy
