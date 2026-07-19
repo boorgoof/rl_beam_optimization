@@ -40,7 +40,7 @@ class ParameterSpec:
     key: str                     # TraceWin element key, e.g. "ele[2][5]=0.365663". The parameter to specificated is in marker 2 at position 5
     marker: int                  # lattice element index where this param is applied
     default: float               # physical default value
-    sensitivity: float           # delta param per 10 score points — base physical scale
+    sensitivity: float           # parameter delta estimated to change the score by 1 point
     hw_min: float | None = None  # hardware lower bound (from machine specs); None = unknown
     hw_max: float | None = None  # hardware upper bound (from machine specs); None = unknown
 
@@ -48,35 +48,35 @@ class ParameterSpec:
 # List of all tunable parameters in the ADIGE beam line, in order of appearance in the lattice.
 PARAMETERS: Tuple[ParameterSpec, ...] = (
     #stage 0
-    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.43, sensitivity=1.8317e-03, hw_min=0.3475366924, hw_max=0.4519413622),
+    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.43091585, sensitivity=0.005549377602611649, hw_min=0.3475366924, hw_max=0.4519413622),
     #stage 1
-    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.1, sensitivity=3.6553e-02, hw_min=-0.2972244775, hw_max=0.3285595703),
+    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.1182765, sensitivity=0.0059363552477487555, hw_min=-0.2972244775, hw_max=0.3285595703),
     #stage 2
-    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=0.0, sensitivity=4.4809e-04, hw_min=-293.6584907, hw_max=82.58899437),
-    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=0.0, sensitivity=1.2222e-04, hw_min=-0.0005051671516, hw_max=1e-3),
+    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=-0.00012662607285091371, sensitivity=2.0955975021403468e-05, hw_min=-293.6584907, hw_max=82.58899437),
+    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=-3.095834967129621e-05, sensitivity=2.3068855434515107e-05, hw_min=-0.0005051671516, hw_max=1e-3),
     #stage 3
-    ParameterSpec("AD.1EQ.01", "ele[151][2]", marker=151, default=0, sensitivity=3.9366e+03, hw_min=-2901813814, hw_max=2901829649),
+    ParameterSpec("AD.1EQ.01", "ele[151][2]", marker=151, default=132.58669997411448, sensitivity=40.33872428359653, hw_min=-2901813814, hw_max=2901829649),
     #stage 4
-    ParameterSpec("AD.MS.04.X", "ele[162][1]", marker=162, default=0, sensitivity=1.1913e-06, hw_min=-0.7835099654, hw_max=0.001219838731),
-    ParameterSpec("AD.MS.04.Y", "ele[162][2]", marker=162, default=0, sensitivity=1.7451e-04, hw_min=-4.513392325, hw_max=0.005521526321),
+    ParameterSpec("AD.MS.04.X", "ele[162][1]", marker=162, default=-4.985770555661989e-07, sensitivity=2.734295051197709e-05, hw_min=-0.7835099654, hw_max=0.001219838731),
+    ParameterSpec("AD.MS.04.Y", "ele[162][2]", marker=162, default=3.927801310496309e-05, sensitivity=2.7853710396400267e-05, hw_min=-4.513392325, hw_max=0.005521526321),
     #stage 5
-    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=0, sensitivity=3.5623e+01, hw_min=-207782.4005, hw_max=23348945.5),
+    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=-8.331752297202513, sensitivity=53.17887338560897, hw_min=-207782.4005, hw_max=23348945.5),
     #stage 6
-    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.0462087, sensitivity=8.7381e-05, hw_min=-0.2146480211, hw_max=-0.0004267941387),
+    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.0462106962484192, sensitivity=6.716011927162356e-05, hw_min=-0.2146480211, hw_max=-0.0004267941387),
     #stage 7
-    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=0, sensitivity=4.3740e+02, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=0, sensitivity=9.3827e-01, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=0, sensitivity=1.8000e+00, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=0, sensitivity=4.8600e+01, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=160.75890180110406, sensitivity=199.51183090829747, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=0.156565228083753, sensitivity=1403.5598763495286, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=0.006109266178659367, sensitivity= 17527.363203900797, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=24.3, sensitivity=76410.23346373696, hw_min=None, hw_max=None),
     #stage 8
-    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.0462087, sensitivity=3.4672e-05, hw_min=-0.2146480211, hw_max=0.1273470113),
+    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.046211343775075256, sensitivity=1.3492910067832189e-05, hw_min=-0.2146480211, hw_max=0.1273470113),
     #stage 9
-    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=0, sensitivity=4.1821e+01, hw_min=-321944193.8, hw_max=275961434.5),
+    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=14.410101650089715, sensitivity=26.231936464031754, hw_min=-321944193.8, hw_max=275961434.5),
     #stage 10
-    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=0, sensitivity=1.0349e-03, hw_min=-1e-3, hw_max=1e-3),
-    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=0, sensitivity=5.0741e-04, hw_min=-1e-3, hw_max=1e-3),
+    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=0.0001043767114014796, sensitivity=0.00011467726055375513, hw_min=-1e-3, hw_max=1e-3),
+    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=-7.68117197562703e-05, sensitivity= 2.331049618977306e-05, hw_min=-1e-3, hw_max=1e-3),
     #stage 11
-    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-206, sensitivity=1.2746e+02, hw_min=-365899839.5, hw_max=365915562.2),
+    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-165.18741827497422, sensitivity=36.62833965354004, hw_min=-365899839.5, hw_max=365915562.2),
     #stage 12
     
 )
@@ -115,20 +115,34 @@ INITIAL_NPART: int = 10_000
 # Episode horizon: env steps before truncation (used by all beam envs).
 MAX_STEPS: int = 20
 
-DATASET_SCALE: float = 0   # dataset gaussian bell width, dataset_std_p = DATASET_SCALE * sensitivity_p
-RESET_SCALE: float =  2.500000000000000e-02      # episode-reset gaussian width, reset_std_p = RESET_SCALE * sensitivity_p
-ACTION_SCALE: float =  4.000000000000001e-03    # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
+EXPLORATION_SCALE: float = 0.35               # shared dataset/Bayesian exploration scale, calibrated via `exploration_scale_calculation` (see results/exploration_scale.json)
+DATASET_SCALE: float = EXPLORATION_SCALE      # dataset gaussian bell width, dataset_std_p = DATASET_SCALE * sensitivity_p
+BAYESIAN_SCALE: float = EXPLORATION_SCALE     # Default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity,default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max.
+# RESET_SCALE and ACTION_SCALE are derived from DATASET_SCALE by
+# offline_utility/scales_calculation.py (defaults k_sigma_dataset=2.5,
+# f_reset=0.25, k_sigma=2.5, target_scale=0.4*dataset_scale, max_steps=20):
+#   RESET_SCALE  = f_reset * k_sigma_dataset * DATASET_SCALE / k_sigma  = 0.0875
+#   ACTION_SCALE = min(target_scale / 10, (1-f_reset)*k_sigma_dataset*DATASET_SCALE/max_steps) = 0.014
+# Re-run `scales_calculation` after changing DATASET_SCALE and paste the values here.
+RESET_SCALE: float =  8.749999999999999e-02   # episode-reset gaussian width, reset_std_p = RESET_SCALE * sensitivity_p
+ACTION_SCALE: float =  1.400000000000000e-02  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
 
 # Score assigned when a simulation fails (TraceWin error, invalid output).
-# Large and negative so the agent learns to avoid failure regions.
+# This is a bookkeeping sentinel for reports/datasets; it must never enter an
+# RL reward or a GP objective directly (it is a ~10-sigma outlier there).
 ERROR_SCORE: float = -999.0
+
+# Bounded per-step penalty used as the RL reward when a simulation fails
+# (the episode then terminates). Kept in the same order of magnitude as real
+# per-step score deltas so failures are discouraged without dominating batches.
+FAILURE_PENALTY: float = 10.0
 
 # Beam-quality score weights, shared by score(), score_from_vec() and score_tensor(). 
 SCORE_WEIGHTS: Dict[str, float] = {
     "npart_ratio": 100.0,  # reward for keeping particles
     "emittance":   200.0,  # primary objective: ex/ey variation from the input reference
-    "offset":        1.0,  # centroid variation from the +/-1 mm reference
-    "angle":         1.0,  # angular-centroid variation from the +/-1 mrad reference
+    "offset":        1.0,  # |centroid| deviation from the 0 mm reference
+    "angle":         1.0,  # |angular centroid| deviation from the 0 mrad reference
     "size":          1.0,  # RMS-size variation from the input reference
 }
 
@@ -137,7 +151,7 @@ SCORE_REFERENCES: Dict[str, float] = {
     "ex":     0.05,      # mm.mrad
     "ey":     0.05,      # mm.mrad
     "x0":     0,         # mm, 
-    "y0":     0,         # mm, |
+    "y0":     0,         # mm,
     "x'0":    0,         # mrad,
     "y'0":    0,         # mrad, 
     "SizeX":  5,         # mm
@@ -149,25 +163,45 @@ SCORE_REFERENCES: Dict[str, float] = {
 # this score for a new RL training campaign.
 def _build_stage_layout() -> Tuple[Tuple[Tuple[str, ...], ...], Tuple[int, ...]]:
     '''
-    Parameter grouping in stages: some parameters are applied at the same lattice marker, so they are grouped into a single stage for the surrogate model.
-    Each stage corresponds to a lattice marker and has a list of parameter keys and a corresponding size (number of parameters in that stage).
+    Parameter grouping in stages: each output stage s (s = 1..N_OUTPUT_STAGES) is
+    the lattice section ending at STAGE_MARKERS[s], so a parameter applied at
+    marker m belongs to the first stage whose closing marker is >= m. Parameters
+    applied at different markers inside the same section (e.g. the AD.EM.* set
+    at markers 200-203, all inside the section closed by marker 203) share one
+    stage, keeping the layout aligned 1:1 with the model's output stages.
 
     Returns:
-    keys: parameter keys grouped by their TraceWin marker.
-    sizes: number of parameters in each marker group.
+    keys: parameter keys grouped per output stage, in STAGE_MARKERS order.
+    sizes: number of parameters in each output stage.
     '''
-    from collections import OrderedDict
-    stage_keys: OrderedDict[int, List[str]] = OrderedDict()
+    grouped: List[List[str]] = [[] for _ in range(N_OUTPUT_STAGES)]
+    closing_markers = STAGE_MARKERS[1:]
     for p in PARAMETERS:
-        stage_keys.setdefault(p.marker, []).append(p.key)
-    keys = tuple(tuple(v) for v in stage_keys.values())
+        for stage_index, marker in enumerate(closing_markers):
+            if p.marker <= marker:
+                grouped[stage_index].append(p.key)
+                break
+        else:
+            raise ValueError(
+                f"{p.name} has marker {p.marker} beyond the last stage marker "
+                f"{closing_markers[-1]}; add its section to STAGE_MARKERS"
+            )
+    keys = tuple(tuple(v) for v in grouped)
     sizes = tuple(len(k) for k in keys)
     return keys, sizes
 
 
 STAGE_PARAM_KEYS: Tuple[Tuple[str, ...], ...]
 STAGE_PARAM_SIZES: Tuple[int, ...]
-STAGE_PARAM_KEYS, STAGE_PARAM_SIZES = _build_stage_layout() 
+STAGE_PARAM_KEYS, STAGE_PARAM_SIZES = _build_stage_layout()
+
+# One parameter group per output stage is a structural invariant of the whole
+# surrogate pipeline (ModularMLP, BeamDataset, params_to_stage_tensors).
+assert len(STAGE_PARAM_SIZES) == N_OUTPUT_STAGES, (
+    f"stage layout produced {len(STAGE_PARAM_SIZES)} parameter groups for "
+    f"{N_OUTPUT_STAGES} output stages"
+)
+assert sum(STAGE_PARAM_SIZES) == N_PARAMS
 
 # Flat ordered list of all configured TraceWin keys.
 PARAM_KEYS: Tuple[str, ...] = tuple(p.key for p in PARAMETERS)
@@ -288,24 +322,6 @@ def dataset_std_vec() -> np.ndarray:
     return sensitivity_vec() * DATASET_SCALE
 
 
-def hw_bounds_vec() -> Tuple[np.ndarray | None, np.ndarray | None]:
-    """Return (hw_min_vec, hw_max_vec) arrays, or None if any bound is missing.
-
-    Returns None for a side if at least one parameter has hw_min (or hw_max) = None.
-    Use individual ParameterSpec.hw_min/hw_max when you need per-parameter granularity.
-
-    Example:
-
-        hw_min, hw_max = hw_bounds_vec()
-        # hw_min: array([0., 0., -2000., ...])  or None
-    """
-    mins = [p.hw_min for p in PARAMETERS]
-    maxs = [p.hw_max for p in PARAMETERS]
-    hw_min = None if any(v is None for v in mins) else np.array(mins, dtype=np.float64)
-    hw_max = None if any(v is None for v in maxs) else np.array(maxs, dtype=np.float64)
-    return hw_min, hw_max
-
-
 def clip_params_to_hw(params: Dict[str, float]) -> Dict[str, float]:
     """Return params clipped to known hardware bounds.
 
@@ -386,7 +402,7 @@ def vec_to_params(vec: np.ndarray) -> Dict[str, float]:
 
 def params_to_stage_tensors(params: Dict[str, float], device=None) -> List[torch.Tensor]:
     """Split a flat parameter dict into the per-stage tensors expected by ModularMLP.
-        Returns a list of 11 tensors, each of shape (1, stage_size).
+        Returns one tensor per stage in STAGE_PARAM_KEYS, each of shape (1, stage_size).
     
         Example:
 
@@ -402,18 +418,7 @@ def params_to_stage_tensors(params: Dict[str, float], device=None) -> List[torch
     return tensors
 
 
-def vec_to_stage_tensors(vec: np.ndarray, device=None) -> List[torch.Tensor]:
-    """Convert a parameter vector to per-stage tensors for ModularMLP.
-    Wraps vec_to_params + params_to_stage_tensors.
-
-    Example:
-
-        (0.365663, 0.168963, 0.0, 0.0, ...) -> [tensor([[0.365663]]), tensor([[0.168963]]), tensor([[0.0, 0.0]]), ...]
-    """
-    return params_to_stage_tensors(vec_to_params(vec), device=device)
-
-
-# Score function 
+# Score function
 def score(beam_state: Dict[str, float]) -> float:
     """Compute a scalar beam quality score (at a specific stage) from a beam-state dict. Higher is better.
 
@@ -440,6 +445,24 @@ def score_from_vec(beam_vec: np.ndarray) -> float:
         A vector exactly at SCORE_REFERENCES with npart_ratio=1 scores 100.
     """
     return score({v: float(beam_vec[i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
+
+
+def score_from_matrix(beam_vecs: np.ndarray) -> np.ndarray:
+    """Vectorized score for an ``(N, 9)`` array in ``BEAM_STATE_FEATURES`` order.
+
+    Row-wise identical to score()/score_from_vec(); used where scoring one row
+    at a time would be a hot loop (e.g. recomputing a whole dataset's scores).
+    """
+    arr = np.asarray(beam_vecs, dtype=np.float64)
+    w = SCORE_WEIGHTS
+    ref = SCORE_REFERENCES
+    col = lambda name: arr[:, _BS_IDX[name]]
+    transmission = np.clip(col("npart_ratio"), 0.0, 1.0)
+    return (w["npart_ratio"] * transmission
+            - w["emittance"] * ((col("ex") - ref["ex"]) + (col("ey") - ref["ey"]))
+            - w["offset"]    * ((np.abs(col("x0")) - ref["x0"]) + (np.abs(col("y0")) - ref["y0"]))
+            - w["angle"]     * ((np.abs(col("x'0")) - ref["x'0"]) + (np.abs(col("y'0")) - ref["y'0"]))
+            - w["size"]      * ((col("SizeX") - ref["SizeX"]) + (col("SizeY") - ref["SizeY"])))
 
 
 def score_tensor(beam_state: torch.Tensor) -> torch.Tensor:

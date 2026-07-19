@@ -55,6 +55,17 @@ def main() -> None:
         help="Root where the next numbered dataset directory is created.",
     )
     parser.add_argument(
+        "--dataset-dir",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Exact dataset directory to write to. Pass an existing numbered "
+            "directory (e.g. env/dataset/004) to resume an interrupted build "
+            "from its builder_state.json. If omitted, a fresh numbered "
+            "directory is created under --dataset-root."
+        ),
+    )
+    parser.add_argument(
         "--calc-dir",
         default=None,
         metavar="PATH",
@@ -63,7 +74,15 @@ def main() -> None:
             "inside the TraceWin workspace."
         ),
     )
-    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Parameter-sampling seed. Omitted: generate a random seed and save "
+            "it in builder_state.json; provided: make sampling reproducible."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--retry-sleep", type=float, default=5.0)
@@ -83,7 +102,11 @@ def main() -> None:
         parser.error(str(exc))
 
     dataset_root = Path(args.dataset_root)
-    dataset_dir = next_numbered_dataset_dir(dataset_root)
+    dataset_dir = (
+        Path(args.dataset_dir)
+        if args.dataset_dir
+        else next_numbered_dataset_dir(dataset_root)
+    )
     calc_dir = (
         Path(args.calc_dir)
         if args.calc_dir
@@ -110,6 +133,7 @@ def main() -> None:
         save_all=True,
         prefix="dataset",
     )
+    print(f"Dataset sampling seed: {builder.seed}")
     dataset_summary = builder.build()
 
     print("\nBUILD DATASET COMPLETE")

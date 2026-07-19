@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 
@@ -50,34 +50,6 @@ def next_numbered_dataset_dir(
 
     next_idx = max(used_numbers, default=0) + 1
     return root / f"{next_idx:0{width}d}"
-
-
-def sample_parameter_sets(
-    n_samples: int,
-    *,
-    seed: Optional[int] = None,
-) -> list[Dict[str, float]]:
-    """Sample parameter dictionaries around ADIGE defaults.
-
-    Each parameter is drawn from N(default_p, dataset_std_p^2), then clipped to
-    known hardware bounds. See generate_param_sets_gaussian() for details.
-    """
-    return generate_param_sets_gaussian(n_samples, oversample_factor=1.0, seed=seed)
-
-
-def dataset_from_tracewin_results(
-    results: Iterable[BeamSimulationResult],
-    *,
-    skip_failed: bool = True,
-) -> BeamDataset:
-    """Convert TraceWin results into one fresh BeamDataset."""
-    dataset = BeamDataset()
-    for result in results:
-        if skip_failed and not _is_valid_tracewin_result(result):
-            continue
-        x, y, score = tracewin_result_to_flat_sample(result)
-        dataset.append_flat_sample(x, y, score)
-    return dataset
 
 
 def split_dataset(
@@ -174,7 +146,7 @@ class TraceWinDatasetBuilder:
         *,
         target_samples: int,
         split_ratios: SplitRatios = (0.8, 0.1, 0.1),
-        seed: Optional[int] = 123,
+        seed: Optional[int] = None,
         save_all: bool = True,
         prefix: str = "dataset",
         param_sets: Optional[Sequence[Dict[str, float]]] = None,
@@ -186,7 +158,6 @@ class TraceWinDatasetBuilder:
         self.output_dir = Path(output_dir) if output_dir is not None else next_numbered_dataset_dir()
         self.target_samples = int(target_samples)
         self.split_ratios = tuple(float(v) for v in split_ratios)
-        self.seed = int(seed) if seed is not None else int(np.random.default_rng().integers(0, 2**31 - 1))
         self.save_all = bool(save_all)
         self.prefix = str(prefix)
         self.param_sets = list(param_sets) if param_sets is not None else None
@@ -200,6 +171,18 @@ class TraceWinDatasetBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.output_dir / self.STATE_FILENAME
         self.all_path = self.output_dir / f"{self.prefix}_all.pt"
+        self.seed = self._resolve_seed(seed)
+
+    def _resolve_seed(self, requested_seed: Optional[int]) -> int:
+        """Resolve an explicit, resumed, or newly generated sampling seed."""
+        if requested_seed is not None:
+            return int(requested_seed)
+        if self.state_path.exists():
+            state = json.loads(self.state_path.read_text(encoding="utf-8"))
+            saved_seed = state.get("config", {}).get("seed")
+            if saved_seed is not None:
+                return int(saved_seed)
+        return int(np.random.default_rng().integers(0, 2**31 - 1))
 
     def build(self) -> dict:
         """Run simulations until target_samples valid TraceWin samples exist."""
@@ -211,6 +194,13 @@ class TraceWinDatasetBuilder:
             self._write_state(state, status="complete", accepted_count=len(dataset))
             return self._summary(state, dataset, saved_paths)
 
+        if int(state["attempt_index"]) > 0:
+            print(
+                f"Resuming {self.output_dir}: {len(dataset)}/{self.target_samples} "
+                f"accepted so far, {state['attempt_index']} attempts already made.",
+                flush=True,
+            )
+
         while len(dataset) < self.target_samples:
             attempt_index = int(state["attempt_index"])
             params = self._params_for_attempt(attempt_index)
@@ -218,7 +208,15 @@ class TraceWinDatasetBuilder:
             self._write_state(state, status="running", accepted_count=len(dataset))
 
             result = self.simulator.simulate(params)
-            if not _is_valid_tracewin_result(result):
+            valid = _is_valid_tracewin_result(result)
+            print(
+                f"  [attempt {attempt_index + 1}] "
+                f"{'accepted' if valid else 'rejected'} score={result.score_val:.6g} "
+                f"-> {len(dataset) + (1 if valid else 0)}/{self.target_samples} accepted"
+                + ("" if valid else f" ({result.error})"),
+                flush=True,
+            )
+            if not valid:
                 self._write_state(state, status="running", accepted_count=len(dataset))
                 continue
 
@@ -237,6 +235,12 @@ class TraceWinDatasetBuilder:
         if self.state_path.exists():
             state = json.loads(self.state_path.read_text(encoding="utf-8"))
             saved_config = state.get("config", {})
+            if "sampling" not in saved_config:
+                # Legacy state written before the sampling block existed: adopt
+                # the current distribution (there is no recorded one to check
+                # against) and persist it for future resumes.
+                saved_config = {**saved_config, "sampling": expected["sampling"]}
+                state["config"] = saved_config
             if saved_config != expected:
                 raise ValueError(
                     "Existing builder_state.json does not match the requested build "
@@ -293,6 +297,21 @@ class TraceWinDatasetBuilder:
         return _sample_one_gaussian(rng)
 
     def _config_signature(self) -> dict:
+        # The sampling block pins the gaussian distribution the samples are
+        # drawn from (defaults, DATASET_SCALE*sensitivity, hardware clip).
+        # Without it, resuming after a change to adige.py (e.g. recalibrated
+        # sensitivities or a new DATASET_SCALE) would silently mix two
+        # different distributions in the same dataset file.
+        if self.param_sets is not None:
+            sampling = None  # explicit param_sets bypass gaussian sampling
+        else:
+            defaults = default_params()
+            sampling = {
+                "defaults": [float(defaults[key]) for key in PARAM_KEYS],
+                "std": [float(value) for value in dataset_std_vec()],
+                "hw_min": [p.hw_min for p in PARAMETERS],
+                "hw_max": [p.hw_max for p in PARAMETERS],
+            }
         return {
             "target_samples": self.target_samples,
             "split_ratios": list(self.split_ratios),
@@ -300,6 +319,7 @@ class TraceWinDatasetBuilder:
             "save_all": self.save_all,
             "prefix": self.prefix,
             "param_sets_count": len(self.param_sets) if self.param_sets is not None else None,
+            "sampling": sampling,
         }
 
     def _write_state(
@@ -330,56 +350,6 @@ class TraceWinDatasetBuilder:
         }
 
 
-def build_tracewin_dataset(
-    simulator: BeamSimulator,
-    output_dir: Optional[str | Path] = None,
-    *,
-    target_samples: Optional[int] = None,
-    param_sets: Optional[Sequence[Dict[str, float]]] = None,
-    n_samples: Optional[int] = None,
-    split: bool = True,
-    split_ratios: SplitRatios = (0.8, 0.1, 0.1),
-    save_all: bool = True,
-    seed: Optional[int] = 123,
-    skip_failed: bool = True,
-    prefix: str = "dataset",
-) -> dict:
-    """Run TraceWin and save a fresh/resumable dataset.
-
-    target_samples is the preferred API. n_samples is kept as a compatibility
-    alias and means "target this many valid samples".
-    """
-    del skip_failed  # Failed TraceWin results are never appended by the builder.
-
-    if target_samples is None:
-        if n_samples is not None:
-            target_samples = int(n_samples)
-        elif param_sets is not None:
-            target_samples = len(param_sets)
-        else:
-            raise ValueError("Provide target_samples, n_samples, or param_sets")
-
-    builder = TraceWinDatasetBuilder(
-        simulator,
-        output_dir,
-        target_samples=int(target_samples),
-        split_ratios=split_ratios,
-        seed=seed,
-        save_all=save_all or not split,
-        prefix=prefix,
-        param_sets=param_sets,
-    )
-    summary = builder.build()
-
-    if not split:
-        summary["paths"] = {
-            name: path
-            for name, path in summary["paths"].items()
-            if name == "all"
-        }
-    return summary
-
-
 def _sample_one_gaussian(rng: np.random.Generator) -> Dict[str, float]:
     defaults = default_params()
     std = dataset_std_vec()
@@ -388,51 +358,6 @@ def _sample_one_gaussian(rng: np.random.Generator) -> Dict[str, float]:
         for key, s in zip(PARAM_KEYS, std)
     }
     return clip_params_to_hw(params)
-
-
-def generate_param_sets_gaussian(
-    n_samples: int,
-    *,
-    oversample_factor: float = 1.5,
-    seed: Optional[int] = 0,
-) -> list[Dict[str, float]]:
-    """Generate parameter sets by sampling jointly from a gaussian around defaults.
-
-    Each parameter p is drawn independently (diagonal covariance) from
-    N(default_p, dataset_std_p^2), with dataset_std_p = DATASET_SCALE * sensitivity_p
-    (see beam_optimization.config.adige). All parameters for a given row are
-    drawn together so the returned sets reflect the actual dataset trust region
-    the surrogate is trained on. Values are clipped to known hardware bounds
-    (no clip where hw_min/hw_max is None).
-
-    The total number of generated parameter sets is round(n_samples * oversample_factor);
-    the extra samples absorb TraceWin failures so the builder can still reach
-    n_samples valid results even if some simulations fail. Pass the returned
-    list directly as param_sets to build_tracewin_dataset() or TraceWinDatasetBuilder.
-
-    Args:
-        n_samples: Target number of valid TraceWin results (used to size the output).
-        oversample_factor: Generate this many times n_samples to absorb failures.
-        seed: Base random seed for reproducibility.
-
-    Returns:
-        List of {param_key: value} dicts ready for param_sets=...
-    """
-    rng = np.random.default_rng(seed)
-    defaults = np.array([p.default for p in PARAMETERS], dtype=np.float64)
-    std = dataset_std_vec()
-    n_total = round(n_samples * oversample_factor)
-
-    samples = rng.normal(loc=defaults, scale=std, size=(n_total, len(PARAMETERS)))
-
-    hw_min = np.array([p.hw_min if p.hw_min is not None else -np.inf for p in PARAMETERS], dtype=np.float64)
-    hw_max = np.array([p.hw_max if p.hw_max is not None else np.inf for p in PARAMETERS], dtype=np.float64)
-    samples = np.clip(samples, hw_min, hw_max)
-
-    return [
-        {key: float(val) for key, val in zip(PARAM_KEYS, row)}
-        for row in samples
-    ]
 
 
 def _is_valid_tracewin_result(result: BeamSimulationResult) -> bool:

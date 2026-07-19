@@ -24,13 +24,16 @@ action step), not a constraint on the scales themselves.
 from __future__ import annotations
 from typing import List, Optional
 import numpy as np
-from beam_optimization.config.adige import MAX_STEPS, PARAMETERS, sensitivity_vec
+from beam_optimization.config.adige import DATASET_SCALE, MAX_STEPS, PARAMETERS, sensitivity_vec
 
 # Single source of truth for every default in this module: compute_scales(),
 # verify_constraints(), report(), and the CLI argparse defaults all reference
 # these constants, so changing a default here changes it everywhere (there
 # used to be separate, silently-diverging defaults in each function).
-DEFAULT_DATASET_SCALE: float = 0.1
+# dataset_scale defaults to adige.py's own DATASET_SCALE (not an independent
+# hardcoded value), so a default run reproduces/verifies the currently
+# configured scale instead of silently drifting from it.
+DEFAULT_DATASET_SCALE: float = DATASET_SCALE
 DEFAULT_K_SIGMA_DATASET: float = 2.5
 DEFAULT_F_RESET: float = 0.25
 DEFAULT_K_SIGMA: float = 2.5
@@ -218,7 +221,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--dataset-scale", type=float, default=DEFAULT_DATASET_SCALE,
-        help="Dataset gaussian bell width, chosen first (default: %(default)s)"
+        help="Dataset gaussian bell width, chosen first "
+             "(default: %(default)s, i.e. adige.py's current DATASET_SCALE)"
     )
     parser.add_argument(
         "--k-sigma-dataset", type=float, default=DEFAULT_K_SIGMA_DATASET,

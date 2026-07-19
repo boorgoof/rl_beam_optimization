@@ -42,6 +42,12 @@ class TD3:
 
         self.action_low  = torch.tensor(action_bounds[0], dtype=torch.float32)
         self.action_high = torch.tensor(action_bounds[1], dtype=torch.float32)
+        # Per-dimension action half-range. exploration_noise / policy_noise /
+        # noise_clip follow the TD3 paper's convention for actions normalized
+        # to [-1, 1], so in this physical action space (whose per-dimension
+        # bounds span several orders of magnitude) they must be rescaled by
+        # each dimension's half-range to keep their intended meaning.
+        self.action_halfrange = (self.action_high - self.action_low) / 2.0
 
         self.actor  = DeterministicPolicyNetwork(obs_dim, act_dim, action_bounds, hidden_dims)
         self.critic = TwinQNetwork(obs_dim, act_dim, hidden_dims)
@@ -55,7 +61,8 @@ class TD3:
     def select_action(self, state, training: bool = True):
         action = self.actor.select_action(state)
         if training:
-            noise  = np.random.normal(0, self.exploration_noise, size=action.shape)
+            scale  = self.exploration_noise * self.action_halfrange.numpy()
+            noise  = np.random.normal(0, scale, size=action.shape)
             action = (action + noise).clip(self.action_low.numpy(), self.action_high.numpy())
         return action
 
@@ -68,7 +75,8 @@ class TD3:
         s, a, r, ns, d = self.replay.sample(self.batch_size)
 
         with torch.no_grad():
-            noise = (torch.randn_like(a) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
+            clip  = self.noise_clip * self.action_halfrange
+            noise = (torch.randn_like(a) * self.policy_noise * self.action_halfrange).clamp(-clip, clip)
             na    = (self.target_actor.forward(ns) + noise).clamp(self.action_low, self.action_high)
             q1t, q2t = self.target_critic(ns, na)
             tq = r + self.gamma * torch.min(q1t, q2t) * (1 - d)

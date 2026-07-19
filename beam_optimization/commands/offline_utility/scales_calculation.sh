@@ -9,4 +9,4 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
   source beam_optimization/.venv/bin/activate
 fi
 
-python -m beam_optimization scale_calculation "$@"
+python -m beam_optimization scales_calculation "$@"

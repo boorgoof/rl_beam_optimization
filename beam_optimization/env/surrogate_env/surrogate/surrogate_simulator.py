@@ -72,6 +72,7 @@ class SurrogateBeamSimulator(BeamSimulator):
         model: Union[ModularMLP, List[ModularMLP]],
         dataset: BeamDataset,
         device: Optional[str] = None,
+        seed: Optional[int] = None,
     ):
 
         # Initialize the SurrogateBeamSimulator with the given parameters.
@@ -88,9 +89,12 @@ class SurrogateBeamSimulator(BeamSimulator):
         self._episode_beam0 = np.zeros(BEAM_STATE_DIM, dtype=np.float32)
         self._active_model_index = 0
         # Internal RNG used when the caller provides none (e.g. SVG's
-        # reset_torch). Derived from the global numpy seed so training runs
-        # are reproducible after set_global_seed().
-        self._rng = np.random.default_rng(int(np.random.randint(0, 2**31)))
+        # reset_torch). Prefer an explicit `seed`; the fallback derives from
+        # the global numpy state (reproducible after set_global_seed(), but
+        # dependent on object construction order).
+        if seed is None:
+            seed = int(np.random.randint(0, 2**31))
+        self._rng = np.random.default_rng(seed)
         self.reset_context()
 
     @property

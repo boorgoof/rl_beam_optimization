@@ -11,27 +11,7 @@ The repository is meant to contain the Python code, documentation, notebooks and
 small configuration files. Large/local TraceWin assets are intentionally not
 stored in normal Git history.
 
-## ADIGE Parameter Scales
 
-Each parameter's physical `sensitivity` is defined per parameter in
-`beam_optimization/config/adige.py` (`ParameterSpec.sensitivity`: physical
-parameter change for a 1-point score change). The RL action step, the reset
-perturbation, and the surrogate dataset's sampling width are each a single
-scalar shared by every parameter, also in `adige.py`:
-
-- `DATASET_SCALE`: dataset gaussian bell width, `dataset_std_p = DATASET_SCALE * sensitivity_p`;
-- `RESET_SCALE`: episode-reset gaussian width, `reset_std_p = RESET_SCALE * sensitivity_p`;
-- `ACTION_SCALE`: max per-step RL action, `step_max_p = ACTION_SCALE * sensitivity_p`.
-
-Hardware bounds (`hw_min`/`hw_max`) never enter these formulas — they are only
-a clip applied when a concrete value is generated (dataset sampling, reset,
-action step).
-
-Sensitivities are measured with `python -m beam_optimization sensitivity`,
-which uses a fixed-seed common-random-number pair for each `+δ/−δ` comparison.
-The delta is increased until the score difference is measurable or a hardware
-bound stops the search. The report is saved to
-`beam_optimization/results/sensitivity.json`.
 
 ## 1. Clone And Python Setup
 
@@ -82,8 +62,12 @@ After the Python environment is ready, follow the project onboarding flow:
 
 ```text
 1. Configure the local TraceWin workspace, binary and launcher.
-2. Run sensitivity, then paste the printed values into adige.py (sensitivity=).
-3. Run bayesian_opt, then paste the printed values into adige.py (default=).
+2. Calibrate adige.py for this beam line (section 3), in order:
+   a. sensitivity                  -> paste into ParameterSpec.sensitivity
+   b. parameter_bounds_calculation -> paste into ParameterSpec.hw_min/hw_max
+   c. scales_calculation            -> paste into DATASET_SCALE/RESET_SCALE/ACTION_SCALE
+3. Run bayesian_opt (or bayesian_opt_cold_start), then paste the printed
+   values into adige.py (default=).
 4. Run build_dataset and train_surrogate if the base dataset/surrogates are
    missing or must be regenerated.
 5. Run check to verify the full local installation.
@@ -121,8 +105,8 @@ Expected contents include the project files and field maps, for example:
 
 ```text
 TraceWin_workspace/
-├── condensed.ini
-├── condensed.dat
+├── CB_newMRMS_RFQ_Fields_1.ini
+├── CB_newMRMS_RFQ_Fields_1.dat
 ├── 16O5.dst
 ├── sol*.bsr / sol*.bsz
 ├── sd*.bsx / sd*.bsy / sd*.bsz
@@ -131,10 +115,11 @@ TraceWin_workspace/
 ```
 
 The Python code needs to know which TraceWin project file to open. By default,
-it uses the file `condensed.ini` inside the local workspace shown above.
+it uses the file `CB_newMRMS_RFQ_Fields_1.ini` inside the local workspace shown
+above.
 
 ```text
-env/tracewin_env/tracewin/TraceWin_workspace/condensed.ini
+env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini
 ```
 
 This position is defined in:
@@ -161,12 +146,15 @@ Make it executable:
 chmod +x beam_optimization/env/tracewin_env/tracewin/pyTraceWin_wrapper/TraceWin_program/TraceWin
 ```
 
-`TraceWin_program/TraceWin` must be the real licensed TraceWin binary, and that license must be valid for a specific Linux user. For example, if the license works for the Linux user `comunian`, then it is possible to lauched TraceWin just as user `comunian`. 
+`TraceWin_program/TraceWin` must be the real licensed TraceWin binary, and that
+license must be valid for a specific Linux user. For example, if the license
+works for the Linux user `comunian`, then TraceWin can only be launched as user
+`comunian`.
 
 For more information, see the readme located in:
 
-```bash
-chmod +x beam_optimization/env/tracewin_env/tracewin/pyTraceWin_wrapper/TraceWin_program/
+```text
+beam_optimization/env/tracewin_env/tracewin/pyTraceWin_wrapper/TraceWin_program/
 ```
 
 ### (3) SSH 
@@ -281,7 +269,7 @@ output to `calc/`:
 
 ```bash
 mkdir -p beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/calc
-sudo -u comunian test -r beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/condensed.ini
+sudo -u comunian test -r beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini
 sudo -u comunian test -w beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/calc
 ```
 
@@ -306,13 +294,113 @@ user instead of `comunian` in the SSH setup, the permission checks, and
 
 
 
-## Observation Configuration
+## 3. Calibrating ADIGE For A New Beam Line
 
-The RL observation is configured in `beam_optimization/config/adige.py` with
-`OBSERVATION_STAGE_MASK`. The mask has one boolean per `STAGE_MARKERS` entry:
-`True` means that stage is included in the flattened RL observation.
+`beam_optimization/config/adige.py` is the single source of truth for the
+physics of one specific beam line: for every parameter it hardcodes a
+`sensitivity`, a hardware range (`hw_min`/`hw_max`), and — shared globally —
+`DATASET_SCALE`, `RESET_SCALE` and `ACTION_SCALE`. All of that is measured
+from the TraceWin workspace configured in section 2. **If you point the
+project at a different lattice/workspace, these numbers no longer describe
+it and must be remeasured.**
 
-Default:
+Three offline commands do this, always in this order, because each one's
+output is consumed by the next:
+
+```text
+1. sensitivity                  -> ParameterSpec.sensitivity  (physical scale per parameter)
+2. parameter_bounds_calculation -> ParameterSpec.hw_min/hw_max (operational transport limits)
+3. scales_calculation            -> DATASET_SCALE/RESET_SCALE/ACTION_SCALE (global RL/dataset scales)
+```
+
+None of them edit `adige.py` automatically — each prints a copy-paste block
+that you paste in by hand, so a bad calibration run can never silently
+corrupt the physics config. Once all three are pasted in, the next
+beam-line-dependent step is `bayesian_opt`/`bayesian_opt_cold_start` (section
+4), which searches for good `default=` values using exactly the `hw_min`/
+`hw_max` bounds and `sensitivity` values calibrated here.
+
+### 3.1 `sensitivity` — physical scale per parameter
+
+`ParameterSpec.sensitivity` is "how much this parameter must change to move
+the score by 1 point". It is measured from TraceWin finite differences:
+`score(default + δ) − score(default − δ)`, with `δ` escalated until the
+difference is measurable. Two commands are available:
+
+- **`sensitivity`** (recommended first pass): a single fixed-seed
+  common-random-number pair per `δ`, so the same Monte Carlo noise cancels
+  out of `+δ` and `−δ`. When a parameter's default sits on a hardware bound
+  (e.g. `AD.1EQ.02`, whose default and upper bound are both zero) or only one
+  direction succeeds, it automatically falls back to a one-sided difference
+  against a cached baseline instead of skipping the parameter.
+- **`refining_sensitivity`** (recommended refinement): starts from each
+  current `ParameterSpec.sensitivity` and iteratively searches for an interval
+  producing `|delta score| = 1` within 10%. Every parameter gets a different
+  random seed, reused for its baseline and all its perturbations. It reports
+  the best valid estimate and never fabricates a value after failed runs.
+
+```bash
+python -m beam_optimization sensitivity
+python -m beam_optimization refining_sensitivity \
+  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace
+```
+
+Both accept `--workspace PATH` or `--tracewin INI` (mutually exclusive;
+default: `DEFAULT_TRACEWIN_INI`) and print the old vs. new value for every
+parameter without modifying `adige.py`. Full options are documented in
+the corresponding files under `beam_optimization/config/offline_utility/`.
+
+### 3.2 `parameter_bounds_calculation` — hardware bounds per parameter
+
+`ParameterSpec.hw_min`/`hw_max` bound where a parameter can be pushed before
+TraceWin's transport genuinely breaks (not just loses particles). This
+command scans each parameter up and down from its default until TraceWin
+rejects the value or the beam distribution never reaches the end of the line,
+and reports the operational limit found — these are transport limits, not
+certified hardware specs.
+
+```bash
+python -m beam_optimization parameter_bounds_calculation
+```
+
+Same `--workspace`/`--tracewin` convention as `sensitivity`. The complete
+scan is saved to `beam_optimization/results/parameter_bounds.json`.
+
+### 3.3 `scales_calculation` — global RL/dataset scales
+
+`DATASET_SCALE`, `RESET_SCALE` and `ACTION_SCALE` are the three scalars
+(shared by every parameter) that turn a per-parameter `sensitivity` into a
+concrete physical width:
+
+- `DATASET_SCALE`: dataset gaussian bell width, `dataset_std_p = DATASET_SCALE * sensitivity_p`;
+- `RESET_SCALE`: episode-reset gaussian width, `reset_std_p = RESET_SCALE * sensitivity_p`;
+- `ACTION_SCALE`: max per-step RL action, `step_max_p = ACTION_SCALE * sensitivity_p`.
+
+They are derived from one another — `dataset_scale` is chosen freely,
+`reset_scale` and `action_scale` follow so that a reset plus a full episode
+never leaves the dataset's trust region — so this step must run **after**
+`sensitivity` (it calls `sensitivity_vec()` for its diagnostics) and benefits
+from `parameter_bounds_calculation` already being in place (it warns when
+`hw_min`/`hw_max` would clip the dataset bell). Hardware bounds never enter
+the scale formulas themselves — they are only a clip applied later, when a
+concrete value is generated (dataset sampling, reset, action step).
+
+```bash
+python -m beam_optimization scales_calculation --dataset-scale 0.35
+```
+
+Equivalent launcher:
+
+```bash
+beam_optimization/commands/offline_utility/scales_calculation.sh --dataset-scale 0.35
+```
+
+### 3.4 Observation Configuration
+
+Separately from beam-line calibration, `OBSERVATION_STAGE_MASK` in
+`adige.py` is an RL design choice, not a physical measurement: one boolean
+per `STAGE_MARKERS` entry, `True` meaning that stage is included in the
+flattened RL observation.
 
 ```python
 OBSERVATION_STAGE_MASK = (
@@ -334,9 +422,10 @@ python -m beam_optimization <command> [options]
 Available commands:
 
 ```text
-scale_calculation   compute DATASET_SCALE, RESET_SCALE and ACTION_SCALE
 sensitivity         compute ADIGE parameter sensitivity from TraceWin finite differences, with one-sided fallback at hardware bounds
+refining_sensitivity refine current ParameterSpec.sensitivity values toward a one-point score change
 parameter_bounds_calculation calculate TraceWin parameter bounds and save JSON
+scales_calculation  compute DATASET_SCALE, RESET_SCALE and ACTION_SCALE
 bayesian_opt        find new default parameters with real TraceWin evaluations
 bayesian_opt_cold_start find defaults without loading an existing dataset
 build_dataset       generate a new TraceWin dataset
@@ -356,68 +445,65 @@ python -m beam_optimization build_dataset --help
 python -m beam_optimization check --help
 ```
 
-Recommended order — the first two steps are manual: run them, read the
-printed values, and paste them into `adige.py` yourself before continuing:
+Recommended order — the first four steps are manual: run them, read the
+printed values, and paste them into `adige.py` yourself before continuing
+(section 3 explains why this order matters):
 
 ```text
 sensitivity -> (update adige.py sensitivity=) ->
+parameter_bounds_calculation -> (update adige.py hw_min=/hw_max=) ->
+scales_calculation -> (update adige.py DATASET_SCALE=/RESET_SCALE=/ACTION_SCALE=) ->
 bayesian_opt -> (update adige.py default=) ->
 build_dataset -> train_surrogate -> check -> train_policies -> benchmark -> test
 ```
 
-### `sensitivity`
+### `sensitivity` / `refining_sensitivity`
 
-Computes ADIGE parameter sensitivity from single-seed TraceWin finite
-differences. When a parameter's nominal value lies on a hardware bound (e.g.
-`AD.1EQ.02`, whose default and upper bound are both zero) or TraceWin rejects
-only one perturbation direction, it automatically falls back to a one-sided
-difference against a cached baseline instead of skipping the parameter. If no
-perturbation ever produces a usable difference, it estimates a conservative
-sensitivity from the initial delta rather than silently keeping the old
-value. It prints the old and proposed values and saves the complete report to
-`beam_optimization/results/sensitivity.json`; it does **not** modify
-`adige.py`.
+See section 3.1 for what this measures and why. None modifies `adige.py`;
+all print the old vs. proposed value per parameter and save a full JSON
+report.
 
 ```bash
 python -m beam_optimization sensitivity
+python -m beam_optimization refining_sensitivity \
+  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace
 ```
 
-Like `build_dataset`, it accepts `--workspace PATH` or `--tracewin INI`
-(mutually exclusive; defaults to `DEFAULT_TRACEWIN_INI` if neither is given).
-`--calc-dir` defaults to a `sensitivity_calc` folder inside the resolved
-workspace, not a fixed path outside it.
-
-This is a thin CLI wrapper; the full set of options is documented in
-`beam_optimization/config/offline_utility/sensitivity.py`.
-
-### `scale_calculation`
-
-Computes the global dataset, reset and action scales and prints a copy-paste
-block for `adige.py`:
-
-```bash
-python -m beam_optimization scale_calculation --dataset-scale 5
-```
-
-The equivalent optional launcher is:
-
-```bash
-beam_optimization/commands/optional/scale_calculation.sh --dataset-scale 5
-```
+All accept `--workspace PATH` or `--tracewin INI` (mutually exclusive;
+default: `DEFAULT_TRACEWIN_INI`); `--calc-dir` defaults to a
+dedicated calculation folder inside the resolved workspace.
+`sensitivity` saves to `beam_optimization/results/sensitivity.json`.
+`refining_sensitivity` starts from the currently declared values, uses a
+different common-random seed for every parameter, and saves the report to
+`beam_optimization/results/refining_sensitivity.json`. Its default tolerance
+is 10%; use `--seed N` to reproduce the sequence of per-parameter seeds.
 
 ### `parameter_bounds_calculation`
 
-Calculates the operational TraceWin parameter bounds and saves the complete
-scan to `beam_optimization/results/parameter_bounds.json`:
+See section 3.2. Same `--workspace`/`--tracewin` convention as `sensitivity`;
+`--calc-dir` defaults to `parameter_bounds_calc` inside the resolved
+workspace.
 
 ```bash
 python -m beam_optimization parameter_bounds_calculation
 ```
 
-Like `sensitivity`, it accepts `--workspace PATH` or `--tracewin INI`
-(mutually exclusive; defaults to `DEFAULT_TRACEWIN_INI` if neither is given),
-and `--calc-dir` defaults to a `parameter_bounds_calc` folder inside the
-resolved workspace.
+Saves the complete scan to `beam_optimization/results/parameter_bounds.json`.
+
+### `scales_calculation`
+
+See section 3.3. Prints a copy-paste block for `adige.py`; run it after
+`sensitivity` (it uses `sensitivity_vec()` for its diagnostics).
+
+```bash
+python -m beam_optimization scales_calculation --dataset-scale 0.35
+```
+
+Equivalent launcher:
+
+```bash
+beam_optimization/commands/offline_utility/scales_calculation.sh --dataset-scale 0.35
+```
 
 ### `bayesian_opt`
 
@@ -426,6 +512,12 @@ is initialized with 10 high-scoring and 30 diverse real rows from the dataset;
 these known points are not rerun. Successful results are saved incrementally.
 By default no `random_seed` parameter is passed to TraceWin; provide
 `--tracewin-seed-base N` to use the reproducible sequence `N, N+1, ...`.
+
+Before the ask/tell loop starts, the command evaluates the current
+`adige.py` `default_params()` with one real TraceWin run and caches it in the
+checkpoint (`default_result`), so the final report prints the default score
+next to the best one found — e.g. `Best vs. default : +7.2` — instead of only
+ever showing the optimizer's own result in isolation.
 
 ```bash
 python -m beam_optimization bayesian_opt \
@@ -444,7 +536,7 @@ Important options:
 --n-runs N                  independent GP runs (default: 1)
 --warm-best N               highest-score warm points (default: 10)
 --warm-diverse N            diverse warm points (default: 30)
---bounds-scale FLOAT         search half-width in sensitivity units (default: 10)
+--bounds-scale FLOAT         search half-width in sensitivity units (default: BAYESIAN_SCALE from adige.py, currently 0.35)
 --seed N                    GP and warm-selection seed (default: 42)
 --tracewin-seed-base N      deterministic first per-evaluation TraceWin seed;
                             omitted: do not pass random_seed to TraceWin
@@ -477,9 +569,10 @@ Important options:
 ```text
 --initial-points N       Sobol evaluations; must be a power of two (default: 64)
 --guided-calls N         GP-guided evaluations after Sobol (default: 100)
---bounds-scale FLOAT     search half-width in sensitivity units (default: 10)
+--bounds-scale FLOAT     search half-width in sensitivity units (default: BAYESIAN_SCALE from adige.py, currently 0.35)
 --seed N                 fixed Sobol/GP seed (default: random, saved in checkpoint)
---tracewin-seed-base N   deterministic seed base; default uses a random seed per call
+--tracewin-seed-base N   deterministic first per-evaluation TraceWin seed;
+                         omitted: do not pass random_seed to TraceWin
 --output PATH            resumable JSON checkpoint/results
 --samples-output PATH    successful TraceWin samples produced by this run
 ```
@@ -487,15 +580,15 @@ Important options:
 The default outputs are:
 
 ```text
-beam_optimization/results/bayesian_opt_cold_start.json
-beam_optimization/results/bayesian_opt_cold_start_samples.pt
-beam_optimization/results/bayesian_opt_cold_start_convergence.png
-beam_optimization/results/bayesian_opt_cold_start_delta.png
+beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start.json
+beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start_samples.pt
+beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start_convergence.png
+beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start_delta.png
 ```
 
 Failed evaluations are passed to the GP with `ERROR_SCORE` but are not stored
 in the `.pt` dataset. A compatible checkpoint resumes with the exact next
-Sobol point or GP proposal and the next TraceWin seed.
+Sobol point or GP proposal.
 
 ### `build_dataset`
 
@@ -516,11 +609,18 @@ All options:
 --tracewin INI          explicit TraceWin project file (mutually exclusive with
                         --workspace; default: DEFAULT_TRACEWIN_INI)
 --dataset-root PATH     root for numbered dataset folders (default: DEFAULT_DATASET_ROOT)
+--dataset-dir PATH      exact dataset directory to write to; pass an existing numbered
+                        folder (e.g. env/dataset/004) to resume an interrupted build
+                        from its builder_state.json (default: a fresh numbered directory)
 --calc-dir PATH         TraceWin calc directory (default: "tracewin_calc" inside the
                         newly created numbered dataset directory)
---seed N                random seed (default: 123)
+--seed N                parameter-sampling seed (default: random and saved in
+                        builder_state.json; provide N for reproducibility)
 --timeout FLOAT         TraceWin timeout per simulation, seconds (default: 180.0)
---retries N             retries per failed TraceWin simulation (default: 2)
+--retries N             retries per technical TraceWin failure (default: 2);
+                        "All particles are lost" and synchronous-particle
+                        or partial-beam field-map failures return
+                        success=False immediately
 --retry-sleep FLOAT     sleep between retries, seconds (default: 5.0)
 --no-kill-stale         do not kill stale TraceWin processes before each simulation
 ```
@@ -536,6 +636,11 @@ dataset and calculation output locations still follow `--dataset-root` and
 beam_optimization/env/dataset/
 ```
 
+Progress prints to the terminal after every TraceWin call (accepted/rejected,
+running count, score). If the process is interrupted, rerun the same command
+with `--dataset-dir` pointing at the unfinished numbered directory to resume
+exactly where it left off — nothing already accepted is redone.
+
 ### `train_surrogate`
 
 Use `train_surrogate` to train new base surrogate checkpoints from an
@@ -543,10 +648,13 @@ existing train/val dataset (e.g. produced by `build_dataset`):
 
 ```bash
 python -m beam_optimization train_surrogate \
-  --train-dataset beam_optimization/env/dataset/base/dataset_train.pt \
-  --val-dataset beam_optimization/env/dataset/base/dataset_val.pt \
+  --train-dataset beam_optimization/env/dataset/001/dataset_train.pt \
+  --val-dataset beam_optimization/env/dataset/001/dataset_val.pt \
   --n-surrogates 3
 ```
+
+(replace `001` with the numbered dataset directory produced by your
+`build_dataset` run)
 
 All options:
 
@@ -587,7 +695,7 @@ Evaluates every `surrogate_*.pt` checkpoint in a folder against a
 ```bash
 python -m beam_optimization evaluate_surrogate \
   --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --dataset beam_optimization/env/dataset/001/dataset_all.pt \
   --output beam_optimization/results/surrogate_eval.json
 ```
 
@@ -615,7 +723,7 @@ Action:
 Path/Command:
 ```
 
-For example, if `dataset_base.pt` or the base `surrogate_*.pt` files are
+For example, if the dataset or the base `surrogate_*.pt` files are
 missing, run:
 
 ```bash
@@ -648,7 +756,7 @@ Full thesis training run (identical to `commands/train_policies.sh`): all algori
 
 ```bash
 python -m beam_optimization train_policies \
-  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --dataset beam_optimization/env/dataset/001/dataset_all.pt \
   --single-surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --base-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --output beam_optimization/runs/all \
@@ -712,13 +820,13 @@ All options:
 
 ```text
 --single-surrogate PATH   surrogate used by SAC/TD3/PPO/DDPG/A2C/REINFORCE/TRPO/SB3-SAC
-                          (default: DEFAULT_SINGLE_SURROGATE_MODEL)
+                          (default: first surrogate_*.pt in the base model folder)
 --base-ensemble PATH      folder with surrogate_*.pt used by SVG and MBPO
                           (default: DEFAULT_BASE_SURROGATE_DIR)
 --updated-ensemble PATH   working ensemble used only by MBPOWithModelUpdate; if empty,
                           it is initialized by copying --base-ensemble
                           (default: DEFAULT_UPDATED_SURROGATE_DIR)
---dataset PATH            offline BeamDataset (default: DEFAULT_BASE_DATASET)
+--dataset PATH            offline BeamDataset (default: latest numbered dataset, via default_dataset_path())
 --output PATH             root directory for checkpoints/logs (default: DEFAULT_OUTPUT_DIR)
 --rl-steps N              env steps for model-free algorithms and MBPO (default: 200000)
 --svg-episodes N          episodes for SVGAgent (default: 1000)
@@ -827,7 +935,7 @@ final policy benchmark over all trained checkpoints:
 ```bash
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
-  --dataset beam_optimization/env/dataset/base/dataset_base.pt \
+  --dataset beam_optimization/env/dataset/001/dataset_all.pt \
   --output beam_optimization/results/benchmark.json \
   --n-runs 3 \
   --eval-budget 3000 \
@@ -885,9 +993,9 @@ All options:
 
 ```text
 --surrogate PATH     single surrogate .pt file used by every method
-                     (default: DEFAULT_SINGLE_SURROGATE_MODEL)
+                     (default: first surrogate_*.pt in the base model folder)
 --dataset PATH       offline BeamDataset used to sample initial beam0 states
-                     (default: DEFAULT_BASE_DATASET)
+                     (default: latest numbered dataset, via default_dataset_path())
 --output PATH        JSON results output path (default: DEFAULT_BENCHMARK_OUTPUT)
 --n-runs N           repeated runs per method, different seeds (default: 3)
 --eval-budget N      evaluation budget for Bayesian optimization (default: 3000)
@@ -929,7 +1037,7 @@ python -m beam_optimization test \
   --policy beam_optimization/runs/all/sac/sac_agent.pt \
   --env surrogate \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --dataset beam_optimization/env/dataset/base/dataset_base.pt
+  --dataset beam_optimization/env/dataset/001/dataset_all.pt
 ```
 
 Test on the surrogate with render images:
@@ -972,7 +1080,7 @@ All options:
 --surrogate PATH         surrogate model or ensemble folder, used when --env surrogate
                         (default: DEFAULT_BASE_SURROGATE_DIR)
 --dataset PATH           offline BeamDataset, used when --env surrogate
-                        (default: DEFAULT_BASE_DATASET)
+                        (default: latest numbered dataset, via default_dataset_path())
 --tracewin-project INI   TraceWin project file, used when --env tracewin
                         (default: DEFAULT_TRACEWIN_INI)
 --calc-dir PATH          TraceWin calc directory, used when --env tracewin
@@ -1019,7 +1127,7 @@ beam_optimization/
 │   └── offline_utility/ # sensitivity, scale and parameter-bound calculations
 ├── algorithms/
 │   ├── __init__.py      # algorithm registry (make_agent / load_agent)
-│   ├── ALGORITHMS_CLASS_DIAGRAM.drawio
+│   ├── ALGORITHMS_SCHEMA.md
 │   ├── model_free/
 │   ├── model_based/
 │   ├── baselines/
@@ -1036,8 +1144,6 @@ beam_optimization/
 ├── results/             # benchmark and TraceWin calibration JSON reports
 └── scripts/
     ├── common.py        # shared episode runner / evaluation helpers
-    ├── sensitivity.py
-    ├── parameter_bounds_calculation.py
     ├── bayesian_opt.py
     ├── bayesian_opt_cold_start.py
     ├── build_dataset.py
@@ -1049,10 +1155,15 @@ beam_optimization/
     └── check.py
 ```
 
+The `sensitivity`, `refining_sensitivity`, `scales_calculation` and
+`parameter_bounds_calculation` commands run the modules in
+`config/offline_utility/` directly (no wrapper in `scripts/`).
+
 The old numbered scripts are not used. Prefer:
 
 ```bash
 python -m beam_optimization sensitivity
+python -m beam_optimization refining_sensitivity
 python -m beam_optimization parameter_bounds_calculation
 python -m beam_optimization bayesian_opt
 python -m beam_optimization bayesian_opt_cold_start
@@ -1067,9 +1178,15 @@ python -m beam_optimization check
 
 ## 6. More Documentation
 
-Class diagrams (open with https://app.diagrams.net or the drawio VS Code extension):
+Environment class diagram (open with https://app.diagrams.net or the drawio
+VS Code extension):
 
 ```text
 beam_optimization/env/ENV_CLASS_DIAGRAM.drawio
-beam_optimization/algorithms/ALGORITHMS_CLASS_DIAGRAM.drawio
+```
+
+Algorithms overview (markdown):
+
+```text
+beam_optimization/algorithms/ALGORITHMS_SCHEMA.md
 ```

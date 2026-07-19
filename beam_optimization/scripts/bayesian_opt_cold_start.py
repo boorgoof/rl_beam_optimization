@@ -14,8 +14,9 @@ from pathlib import Path
 from beam_optimization.algorithms.baselines.bayesian_opt import (
     hardware_aware_bounds,
 )
-from beam_optimization.config.adige import PARAMETERS
+from beam_optimization.config.adige import BAYESIAN_SCALE, PARAMETERS
 from beam_optimization.config.paths import (
+    DEFAULT_BAYESIAN_RESULTS_DIR,
     DEFAULT_TRACEWIN_INI,
     resolve_tracewin_project,
 )
@@ -24,17 +25,21 @@ from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import (
 )
 from beam_optimization.scripts.bayesian_opt import (
     _default_calc_root,
+    _ensure_default_evaluation,
     _load_or_create_report,
     _print_best_params,
+    _write_json_atomic,
     run_tracewin_bayesian,
     save_convergence_plot,
     save_delta_plot,
 )
 
 
-DEFAULT_OUTPUT = "beam_optimization/results/bayesian_opt_cold_start.json"
-DEFAULT_SAMPLES_OUTPUT = (
-    "beam_optimization/results/bayesian_opt_cold_start_samples.pt"
+DEFAULT_OUTPUT = str(
+    DEFAULT_BAYESIAN_RESULTS_DIR / "bayesian_opt_cold_start.json"
+)
+DEFAULT_SAMPLES_OUTPUT = str(
+    DEFAULT_BAYESIAN_RESULTS_DIR / "bayesian_opt_cold_start_samples.pt"
 )
 REPORT_MODE = "tracewin_cold_start"
 
@@ -113,7 +118,15 @@ def main() -> None:
     parser.add_argument("--calc-dir", default=None, metavar="PATH")
     parser.add_argument("--initial-points", type=int, default=64)
     parser.add_argument("--guided-calls", type=int, default=100)
-    parser.add_argument("--bounds-scale", type=float, default=10.0)
+    parser.add_argument(
+        "--bounds-scale",
+        type=float,
+        default=BAYESIAN_SCALE,
+        help=(
+            "Search half-width in sensitivity units around each default "
+            "(default: BAYESIAN_SCALE from adige.py)."
+        ),
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -125,8 +138,8 @@ def main() -> None:
         type=int,
         default=None,
         help=(
-            "Deterministic first TraceWin seed. By default every evaluation "
-            "gets a distinct random seed."
+            "Deterministic first TraceWin seed. If omitted, no random_seed "
+            "parameter is passed to TraceWin."
         ),
     )
     parser.add_argument("--tracewin-particles", type=int, default=10_000)
@@ -191,12 +204,23 @@ def main() -> None:
     print(
         "TraceWin seeds     : "
         + (
-            "random per evaluation"
+            "unset (TraceWin default behavior)"
             if args.tracewin_seed_base is None
             else f"{args.tracewin_seed_base} + evaluation index"
         )
     )
     print(f"Checkpoint         : {output}")
+
+    _ensure_default_evaluation(
+        report,
+        project_file=project_file,
+        calc_root=calc_root,
+        timeout=args.timeout,
+        retries=args.retries,
+        tracewin_particles=args.tracewin_particles,
+        tracewin_threads=args.tracewin_threads,
+    )
+    _write_json_atomic(output, report)
 
     def simulator_factory(run_index: int) -> TraceWinSimulator:
         return TraceWinSimulator(
@@ -223,7 +247,6 @@ def main() -> None:
         tracewin_seed_base=args.tracewin_seed_base,
         initial_points=args.initial_points,
         initial_point_generator="sobol",
-        random_tracewin_seeds=True,
     )
 
     convergence = save_convergence_plot(
@@ -234,11 +257,12 @@ def main() -> None:
     best_result = report["best_result"]
     delta = None
     if best_result is not None:
-        _print_best_params(best_result)
+        _print_best_params(best_result, report.get("default_result"))
         delta = save_delta_plot(
             best_result,
             output,
             prefix="bayesian_opt_cold_start",
+            default_result=report.get("default_result"),
         )
     else:
         print("\nWARNING: every TraceWin evaluation failed; no best point exists.")

@@ -16,7 +16,7 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from beam_optimization.config.adige import (
-    ERROR_SCORE, MAX_STEPS, PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
+    ERROR_SCORE, FAILURE_PENALTY, MAX_STEPS, PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
     observation_dim, observation_stage_labels, observation_stage_indices,
     select_observation_stages, clip_params_to_hw, params_to_vec,
@@ -83,11 +83,13 @@ class BaseBeamEnv(gym.Env, ABC):
 
         # Per-episode history for render(): index 0 is the state right
         # after reset(), index k is the state after the k-th step().
+        # KNN distances are derived from _params_history lazily in render(),
+        # so training steps never pay the k-d tree query (nor force the
+        # default dataset file to exist).
         self._params_history: list[dict] = []
         self._obs_history: list[np.ndarray] = []
         self._score_history: list[float] = []
         self._reward_history: list[float] = []
-        self._knn_distance_history: list[float] = []
 
 
     def reset(self, seed=None, options=None):
@@ -127,7 +129,6 @@ class BaseBeamEnv(gym.Env, ABC):
         self._obs_history = [obs.copy()]
         self._score_history = [float(score)]
         self._reward_history = [0.0]
-        self._knn_distance_history = [float(param_knn_distance(params_to_vec(self._current_params))[0])]
 
         info = {"score": score, "step": 0, "reset_randomized": randomize_params, **extra}
         return obs.copy(), info
@@ -149,8 +150,14 @@ class BaseBeamEnv(gym.Env, ABC):
         result = self.simulator.simulate(self._current_params)
         obs, score, extra = self._result_to_obs_score_info(result)
 
-        # compute reward 
-        reward = score - prev_score
+        # compute reward. A failed simulation must not enter the delta-score
+        # reward as ERROR_SCORE (-999): that would produce a ~-1000 spike now
+        # and a ~+1000 spike on the next successful step, both of which would
+        # dominate any training batch. Instead the episode ends here
+        # (terminated=True: the machine state is invalid, there is no next
+        # state to bootstrap from) with a bounded penalty.
+        failed = not result.success
+        reward = -FAILURE_PENALTY if failed else score - prev_score
 
         # update episode state
         self._current_obs    = obs
@@ -164,7 +171,6 @@ class BaseBeamEnv(gym.Env, ABC):
         self._obs_history.append(obs.copy())
         self._score_history.append(float(score))
         self._reward_history.append(float(reward))
-        self._knn_distance_history.append(float(param_knn_distance(params_to_vec(self._current_params))[0]))
 
         # update best score and best parameters if the current score is better than the best score so far.
         if score > self.best_score:
@@ -173,13 +179,13 @@ class BaseBeamEnv(gym.Env, ABC):
 
         # update step count
         self._step_count += 1
-        truncated = self._step_count >= self.max_steps
+        terminated = failed
+        truncated = not terminated and self._step_count >= self.max_steps
 
         info = {"score": score, "prev_score": prev_score, "step": self._step_count,
                 "best_score": self.best_score, **extra}
-        
-        # return the observation next state, reward, terminated with success flag (False), truncated flag, and info dictionary.
-        return obs.copy(), reward, False, truncated, info
+
+        return obs.copy(), reward, terminated, truncated, info
 
 
     def render(self, save_path: str | Path | None = None, fps: int = 2) -> dict:
@@ -307,12 +313,20 @@ class BaseBeamEnv(gym.Env, ABC):
         score_fig.tight_layout(rect=(0, 0, 1, 0.86))
 
         # ── KNN-distance figure: dedicated pair (param KNN distance, score) ─
+        # Computed lazily here (one vectorized k-d tree query over the whole
+        # episode) instead of once per training step.
+        knn_history = [
+            float(v)
+            for v in param_knn_distance(
+                np.stack([params_to_vec(p) for p in self._params_history])
+            )
+        ]
         knn_fig, knn_axes = plt.subplots(1, 2, figsize=(8.4, 3.2), squeeze=False)
         knn_fig.suptitle("Parameter KNN distance vs. score over one full episode", fontweight="bold")
 
         knn_updaters: list = []
         for ax, key, values, feature in (
-            (knn_axes[0, 0], "knn_distance", self._knn_distance_history, "knn_distance"),
+            (knn_axes[0, 0], "knn_distance", knn_history, "knn_distance"),
             (knn_axes[0, 1], "score", self._score_history, None),
         ):
             ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")

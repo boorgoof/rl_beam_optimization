@@ -51,6 +51,7 @@ from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.scripts.common import algo_style, evaluate_policy, set_global_seed
 from beam_optimization.config.adige import (
     MAX_STEPS,
+    N_OUTPUT_STAGES,
     N_PARAMS,
     PARAM_KEYS,
     action_bounds,
@@ -58,7 +59,7 @@ from beam_optimization.config.adige import (
     observation_dim,
 )
 
-ACT_DIM = N_PARAMS  # 16
+ACT_DIM = N_PARAMS
 
 # Fixed seed for periodic policy evaluations: every algorithm and every
 # training seed is evaluated on the same initial states, so learning curves
@@ -68,7 +69,7 @@ EVAL_SEED = 10_000
 
 STAGE_WEIGHT_CONFIGS = {
     "finale":  None,
-    "uniform": [1.0] * 11,
+    "uniform": [1.0] * N_OUTPUT_STAGES,
 }
 
 
@@ -456,10 +457,14 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
+            # Store only true terminations: a time-limit truncation must keep
+            # its bootstrap (the episode could have continued), otherwise the
+            # (1 - done) factor in the TD/GAE targets wrongly zeroes V(s_next)
+            # on the last step of every episode.
             if on_policy:
-                agent.store(obs, action, reward, value, logpa, float(done))
+                agent.store(obs, action, reward, value, logpa, float(terminated))
             else:
-                agent.store(obs, action, reward, next_obs, float(done))
+                agent.store(obs, action, reward, next_obs, float(terminated))
 
             optimize_result = None
             if on_policy:
@@ -841,11 +846,13 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             next_obs, reward, terminated, truncated, info = env.step(action)
             done     = terminated or truncated
 
+            # Pass only true terminations to the replay buffer (see train_rl):
+            # `done` keeps driving the episode loop below.
             if use_model_update:
-                optimize_result = mbpo.step(obs, action, reward, next_obs, done,
+                optimize_result = mbpo.step(obs, action, reward, next_obs, terminated,
                                             sim_result=info.get("sim_result"))
             else:
-                optimize_result = mbpo.step(obs, action, reward, next_obs, done)
+                optimize_result = mbpo.step(obs, action, reward, next_obs, terminated)
 
             if logger is not None:
                 metrics = {

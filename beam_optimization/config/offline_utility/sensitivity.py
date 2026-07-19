@@ -1,14 +1,24 @@
-"""Offline single-seed TraceWin sensitivity analysis for ADIGE parameters.
+"""Offline TraceWin sensitivity analysis for ADIGE parameters.
 
 For each parameter, the search evaluates a common-random-number pair
 ``score(p + delta) - score(p - delta)`` and increases ``delta`` until the
-requested score difference is reached or a hardware bound stops the search.
+requested score difference is reached or both directions are pinned at their
+hardware limit. Each parameter draws its own independent TraceWin seed from
+an RNG (seeded by ``seed`` if given, otherwise from system entropy): the seed
+is shared across one parameter's own baseline/+delta/-delta probes (so the
+Monte Carlo noise cancels out of that parameter's difference), but is not
+reused across different parameters, so one unlucky draw cannot correlate the
+measurements of all 18 parameters at once. Passing the same ``seed`` again
+reproduces the exact same sequence of per-parameter seeds; the seed actually
+used for each parameter is also recorded in its own result record.
 
-When a parameter's default sits on (or near) a hardware bound -- e.g.
-AD.1EQ.02, whose default and upper bound are both zero -- or when TraceWin
-rejects only one perturbation direction, the search falls back to a one-sided
-difference against a cached nominal baseline instead of giving up on that
-parameter.
+When a requested delta would push a parameter past its hardware bound
+(``hw_min``/``hw_max``) on one or both sides, that side is not dropped: it is
+clipped to the maximum displacement the hardware allows, so a central
+difference stays available (at reduced span) even right next to a bound.
+Once a side is pinned at its hardware limit it is never re-simulated (the
+result is cached and reused), since escalating the requested delta further
+cannot change an already-capped side's outcome.
 
 If no perturbation at any tried delta ever produces a usable difference, the
 search does not silently keep the old declared sensitivity: it estimates a
@@ -22,9 +32,12 @@ never modified automatically.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
+
+import numpy as np
 
 from beam_optimization.config.adige import PARAMETERS, default_params
 
@@ -51,21 +64,19 @@ def _initial_delta(parameter) -> float:
     return max(abs(float(parameter.default)), 1.0) * 1e-5
 
 
-def _valid_directions(parameter, delta: float) -> tuple[str, ...]:
-    """Return the perturbation directions allowed by the hardware bounds."""
+def _direction_limit(parameter, direction: str) -> float:
+    """Maximum |delta| the hardware bound allows for one direction (inf if unbounded)."""
+    if direction == "plus":
+        upper = parameter.hw_max
+        if upper is None:
+            return math.inf
+        return max(0.0, float(upper) - float(parameter.default))
     lower = parameter.hw_min
-    upper = parameter.hw_max
-    if parameter.name.startswith("AD.SO") and lower is None:
-        lower = 0.0
-    minus = parameter.default - delta
-    plus = parameter.default + delta
-
-    directions = []
-    if upper is None or plus <= upper:
-        directions.append("plus")
-    if lower is None or minus >= lower:
-        directions.append("minus")
-    return tuple(directions)
+    if lower is None and parameter.name.startswith("AD.SO"):
+        lower = 0.0  # solenoids never go negative without an explicit hw_min
+    if lower is None:
+        return math.inf
+    return max(0.0, float(parameter.default) - float(lower))
 
 
 def _format_delta(value: float) -> str:
@@ -105,83 +116,22 @@ def _run_single(
     return run_count, result
 
 
-def _run_adaptive_difference(
-    simulator,
-    parameter,
-    defaults: Dict[str, float],
-    delta: float,
-    *,
-    baseline,
-    directions: tuple[str, ...],
-    seed: int,
-    run_count: int,
-    total_runs: int,
-    verbose: bool,
-) -> tuple[int, Optional[float], Optional[str]]:
-    """Measure the best available difference, falling back from central.
-
-    When both perturbations are physically allowed they are attempted first.
-    If only one succeeds -- because the other is outside the hardware bounds,
-    or TraceWin rejects it at runtime -- the cached nominal baseline is used
-    to compute a one-sided difference instead of giving up on this delta.
-    """
-    values = {"plus": parameter.default + delta, "minus": parameter.default - delta}
-    labels = {"plus": "+delta", "minus": "-delta"}
-    results = {}
-
-    for direction in directions:
-        run_count, results[direction] = _run_single(
-            simulator,
-            parameter,
-            defaults,
-            value=values[direction],
-            label=labels[direction],
-            delta=delta,
-            seed=seed,
-            run_count=run_count,
-            total_runs=total_runs,
-            verbose=verbose,
-        )
-
-    plus = results.get("plus")
-    minus = results.get("minus")
-    if plus is not None and plus.success and minus is not None and minus.success:
-        return (
-            run_count,
-            float(plus.score_val) - float(minus.score_val),
-            "central",
-        )
-
-    successful_direction = None
-    if plus is not None and plus.success:
-        successful_direction = "plus"
-    elif minus is not None and minus.success:
-        successful_direction = "minus"
-
-    if successful_direction is None:
-        return run_count, None, None
-
-    side = results[successful_direction]
-    diff = float(side.score_val) - float(baseline.score_val)
-    scheme = "forward" if successful_direction == "plus" else "backward"
-    if verbose and len(directions) == 2:
-        print(
-            f"    central difference unavailable; falling back to {scheme}",
-            flush=True,
-        )
-    return run_count, diff, scheme
-
-
 def compute_sensitivity(
     simulator,
     *,
-    seed: int = 42,
+    seed: Optional[int] = None,
     escalation_factor: float = 3.0,
     max_iterations: int = 8,
     target_score_diff: float = 1.0,
+    initial_delta_provider: Optional[Callable[[object], float]] = None,
     verbose: bool = True,
 ) -> Dict[str, dict]:
-    """Compute one fixed sensitivity per parameter using a single seed."""
+    """Compute one sensitivity per parameter, each with its own TraceWin seed.
+
+    ``seed`` seeds the RNG that draws one independent per-parameter seed
+    (shared only across that parameter's own baseline/+delta/-delta probes);
+    omit it to draw a fresh, non-reproducible sequence from system entropy.
+    """
     if escalation_factor <= 1.0:
         raise ValueError(f"escalation_factor must be > 1.0, got {escalation_factor}")
     if max_iterations < 1:
@@ -193,13 +143,25 @@ def compute_sensitivity(
     total_runs = estimate_total_runs(max_iterations)
     run_count = 0
     records: Dict[str, dict] = {}
+    rng = np.random.default_rng(seed)
 
     for parameter in PARAMETERS:
+        initial_delta = float(
+            initial_delta_provider(parameter)
+            if initial_delta_provider is not None
+            else _initial_delta(parameter)
+        )
+        if not math.isfinite(initial_delta) or initial_delta <= 0.0:
+            raise ValueError(
+                f"invalid initial delta for {parameter.name}: {initial_delta!r}"
+            )
+        param_seed = int(rng.integers(0, 2**31))
         run_count, record = _search_parameter(
             simulator,
             parameter,
             defaults,
-            seed=seed,
+            initial_delta=initial_delta,
+            seed=param_seed,
             escalation_factor=escalation_factor,
             max_iterations=max_iterations,
             target_score_diff=target_score_diff,
@@ -217,6 +179,7 @@ def _search_parameter(
     parameter,
     defaults: Dict[str, float],
     *,
+    initial_delta: float,
     seed: int,
     escalation_factor: float,
     max_iterations: int,
@@ -225,17 +188,19 @@ def _search_parameter(
     total_runs: int,
     verbose: bool,
 ) -> tuple[int, dict]:
-    delta = _initial_delta(parameter)
+    delta = initial_delta
     last_good_delta: Optional[float] = None
-    best_delta: Optional[float] = None
+    best_span: Optional[float] = None
     best_diff: Optional[float] = None
     best_scheme: Optional[str] = None
     best_iteration: Optional[int] = None
+    best_delta_plus: Optional[float] = None
+    best_delta_minus: Optional[float] = None
     hardware_limited = False
 
     if verbose:
         print(
-            f"\n{parameter.name}: starting delta = {_format_delta(delta)}",
+            f"\n{parameter.name}: seed={seed} starting delta = {_format_delta(delta)}",
             flush=True,
         )
 
@@ -260,38 +225,94 @@ def _search_parameter(
         return run_count, {
             "sensitivity": parameter.sensitivity,
             "delta": None,
+            "delta_plus": None,
+            "delta_minus": None,
             "diff": None,
             "scheme": None,
             "iterations": 0,
             "status": "baseline_failed",
+            "seed": seed,
         }
 
-    for iteration in range(1, max_iterations + 1):
-        directions = _valid_directions(parameter, delta)
-        if not directions:
-            hardware_limited = True
-            if verbose:
-                print(
-                    f"    delta={_format_delta(delta)} exceeds both available "
-                    "hardware directions; stopping",
-                    flush=True,
-                )
-            break
+    # Per-direction hardware ceiling on |delta|, and the last effective delta
+    # (and its result) actually probed on each side -- once a side is pinned
+    # at its ceiling, escalating the requested delta further cannot change
+    # its outcome, so it is reused instead of re-simulated.
+    limits = {
+        "plus": _direction_limit(parameter, "plus"),
+        "minus": _direction_limit(parameter, "minus"),
+    }
+    last_tested: Dict[str, Optional[float]] = {"plus": None, "minus": None}
+    last_result: Dict[str, object] = {"plus": None, "minus": None}
 
-        run_count, diff, scheme = _run_adaptive_difference(
-            simulator,
-            parameter,
-            defaults,
-            delta,
-            baseline=baseline,
-            directions=directions,
-            seed=seed,
-            run_count=run_count,
-            total_runs=total_runs,
-            verbose=verbose,
-        )
+    for iteration in range(1, max_iterations + 1):
+        tested_this_iteration = False
+        probed: Dict[str, tuple[float, object]] = {}
+
+        for direction in ("plus", "minus"):
+            effective_delta = min(delta, limits[direction])
+            if effective_delta <= 0.0:
+                continue  # default already at/past the hardware bound on this side
+
+            previous = last_tested[direction]
+            if previous is not None and math.isclose(effective_delta, previous):
+                probed[direction] = (effective_delta, last_result[direction])
+                continue
+
+            sign = 1.0 if direction == "plus" else -1.0
+            value = float(parameter.default) + sign * effective_delta
+            label = "+delta" if direction == "plus" else "-delta"
+            run_count, result = _run_single(
+                simulator,
+                parameter,
+                defaults,
+                value=value,
+                label=f"{label}={_format_delta(effective_delta)}",
+                delta=effective_delta,
+                seed=seed,
+                run_count=run_count,
+                total_runs=total_runs,
+                verbose=verbose,
+            )
+            last_tested[direction] = effective_delta
+            last_result[direction] = result
+            probed[direction] = (effective_delta, result)
+            tested_this_iteration = True
+
+        plus = probed.get("plus")
+        minus = probed.get("minus")
+        delta_plus = plus[0] if plus is not None else None
+        delta_minus = minus[0] if minus is not None else None
+        diff = None
+        scheme = None
+        span = None
+
+        if plus is not None and plus[1].success and minus is not None and minus[1].success:
+            diff = float(plus[1].score_val) - float(minus[1].score_val)
+            span = delta_plus + delta_minus
+            scheme = "central"
+        elif plus is not None and plus[1].success:
+            diff = float(plus[1].score_val) - float(baseline.score_val)
+            span = delta_plus
+            scheme = "forward"
+        elif minus is not None and minus[1].success:
+            diff = float(minus[1].score_val) - float(baseline.score_val)
+            span = delta_minus
+            scheme = "backward"
 
         if diff is None:
+            if not tested_this_iteration:
+                # Both sides are either permanently unusable or already
+                # pinned at their hardware ceiling with no usable result:
+                # nothing will change by escalating delta further.
+                hardware_limited = True
+                if verbose:
+                    print(
+                        f"    delta={_format_delta(delta)}: no usable direction "
+                        "left to try; stopping",
+                        flush=True,
+                    )
+                break
             if verbose:
                 print(
                     f"    delta={_format_delta(delta)}: TraceWin failure; backing off",
@@ -305,27 +326,31 @@ def _search_parameter(
             continue
 
         if best_diff is None or abs(diff) > abs(best_diff):
-            best_delta = delta
+            best_span = span
             best_diff = diff
             best_scheme = scheme
             best_iteration = iteration
+            best_delta_plus = delta_plus
+            best_delta_minus = delta_minus
 
         if abs(diff) >= target_score_diff:
-            span = 2.0 * delta if scheme == "central" else delta
             sensitivity = TARGET_SCORE_CHANGE * span / abs(diff)
             if verbose:
                 print(
-                    f"    ACCEPTED {scheme}: delta={_format_delta(delta)} diff={diff:.4f} "
+                    f"    ACCEPTED {scheme}: span={_format_delta(span)} diff={diff:.4f} "
                     f"sensitivity={sensitivity:.6e}",
                     flush=True,
                 )
             return run_count, {
                 "sensitivity": sensitivity,
-                "delta": delta,
+                "delta": span,
+                "delta_plus": delta_plus,
+                "delta_minus": delta_minus,
                 "diff": diff,
                 "scheme": scheme,
                 "iterations": iteration,
                 "status": "ok",
+                "seed": seed,
             }
 
         if verbose:
@@ -335,9 +360,16 @@ def _search_parameter(
                 flush=True,
             )
         last_good_delta = delta
+
+        if not tested_this_iteration:
+            # Both sides already pinned at their hardware ceiling and still
+            # below target: escalating the requested delta changes nothing.
+            hardware_limited = True
+            break
+
         delta *= escalation_factor
 
-    if best_diff is None or best_delta is None:
+    if best_diff is None or best_span is None:
         # No perturbation ever produced a usable finite difference, even
         # after backing off/escalating delta from the initial guess. Rather
         # than silently keeping the old (possibly wrong -- and possibly the
@@ -345,7 +377,6 @@ def _search_parameter(
         # estimate a conservative value from the initial delta that was
         # actually tried first: treat it as if it alone would span
         # target_score_diff points, which gives a small/safe sensitivity.
-        initial_delta = _initial_delta(parameter)
         estimated_sensitivity = TARGET_SCORE_CHANGE * initial_delta / target_score_diff
         if verbose:
             print(
@@ -356,29 +387,34 @@ def _search_parameter(
         return run_count, {
             "sensitivity": estimated_sensitivity,
             "delta": initial_delta,
+            "delta_plus": None,
+            "delta_minus": None,
             "diff": None,
             "scheme": None,
             "iterations": max_iterations,
             "status": "no_diff_estimated_from_initial_delta",
+            "seed": seed,
         }
 
     effective_diff = max(abs(best_diff), target_score_diff)
-    span = 2.0 * best_delta if best_scheme == "central" else best_delta
-    sensitivity = TARGET_SCORE_CHANGE * span / effective_diff
+    sensitivity = TARGET_SCORE_CHANGE * best_span / effective_diff
     status = "hardware_limited" if hardware_limited else "weak_signal"
     if verbose:
         print(
-            f"    SELECTED {best_scheme}: delta={_format_delta(best_delta)} "
+            f"    SELECTED {best_scheme}: span={_format_delta(best_span)} "
             f"sensitivity={sensitivity:.6e} status={status}",
             flush=True,
         )
     return run_count, {
         "sensitivity": sensitivity,
-        "delta": best_delta,
+        "delta": best_span,
+        "delta_plus": best_delta_plus,
+        "delta_minus": best_delta_minus,
         "diff": best_diff,
         "scheme": best_scheme,
         "iterations": best_iteration,
         "status": status,
+        "seed": seed,
     }
 
 
@@ -434,7 +470,7 @@ def save_sensitivity_json(
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "algorithm": "single_seed_finite_difference_with_one_sided_fallback",
+        "algorithm": "per_parameter_seed_finite_difference_with_hardware_clipping",
         "target_score_change": TARGET_SCORE_CHANGE,
         "run_config": run_config,
         "new_sensitivity": {
@@ -462,10 +498,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Single-seed ADIGE sensitivity from TraceWin finite differences, "
-            "with automatic one-sided fallback at hardware bounds and when "
-            "one TraceWin perturbation direction fails. Prints and saves one "
-            "value per parameter without modifying adige.py."
+            "ADIGE sensitivity from TraceWin finite differences, one "
+            "independent TraceWin seed drawn per parameter. Deltas exceeding "
+            "a hardware bound are clipped to the maximum allowed displacement "
+            "instead of being dropped. Prints and saves one value per "
+            "parameter without modifying adige.py."
         )
     )
     tracewin_source = parser.add_mutually_exclusive_group()
@@ -496,7 +533,19 @@ def main() -> None:
         metavar="JSON",
         help="Result JSON path (default: %(default)s)",
     )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "RNG seed used to draw one independent TraceWin seed per "
+            "parameter. Given: the per-parameter sequence is reproducible "
+            "across reruns. Omitted (default): a fresh independent seed is "
+            "drawn for every parameter from system entropy; the seed "
+            "actually used for each parameter is still recorded in its "
+            "result record."
+        ),
+    )
     parser.add_argument("--escalation-factor", type=float, default=3.0)
     parser.add_argument("--max-iterations", type=int, default=8)
     parser.add_argument("--target-score-diff", type=float, default=1.0)
@@ -523,7 +572,10 @@ def main() -> None:
     print(f"TraceWin project      : {project_file}")
     print(f"Calc dir              : {calc_dir}")
     print(f"JSON output           : {args.output}")
-    print(f"Seed                  : {args.seed}")
+    print(
+        f"Seed                  : {args.seed} "
+        f"({'reproducible per-parameter sequence' if args.seed is not None else 'random per parameter'})"
+    )
     print(f"Escalation factor     : {args.escalation_factor}")
     print(f"Max iterations        : {args.max_iterations}")
     print(f"Target score diff     : {args.target_score_diff}")
@@ -554,8 +606,8 @@ def main() -> None:
         records,
         args.output,
         run_config={
-            "project": str(Path(args.ini).expanduser().resolve()),
-            "calc_dir": str(Path(args.calc_dir).expanduser().resolve()),
+            "project": str(project_file),
+            "calc_dir": str(calc_dir.expanduser().resolve()),
             "seed": args.seed,
             "escalation_factor": args.escalation_factor,
             "max_iterations": args.max_iterations,

@@ -37,8 +37,7 @@ Intended use:
     for step in range(N):
         action = agent.select_action(obs)
         next_obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        agent.step(obs, action, reward, next_obs, done,
+        agent.step(obs, action, reward, next_obs, terminated,
                    sim_result=info.get("sim_result"))
         obs = next_obs
 """
@@ -171,7 +170,8 @@ class MBPOWithModelUpdate(MBPO):
             action:     Action taken.
             reward:     Received reward.
             next_obs:   Next observation.
-            done:       Episode done flag.
+            done:       True termination flag (pass `terminated` only, not a
+                        time-limit truncation).
             sim_result: Full BeamSimulationResult from TraceWinEnv
                         info["sim_result"]. Only source="tracewin" is added
                         to the online fine-tuning dataset.

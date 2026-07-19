@@ -13,7 +13,7 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
 fi
 
 python -m beam_optimization bayesian_opt \
-  --output beam_optimization/results/bayesian_opt.json \
+  --output beam_optimization/results/bayesian_optimization/bayesian_opt.json \
   --n-calls 100 \
   --n-runs 1 \
   "$@"

@@ -11,7 +11,7 @@ State / Observation:
     stays fixed for the whole episode, giving the agent the physics context.
 
 Action:
-    Delta on all 16 parameters: bounded by per-parameter action_step_vec().
+    Delta on all configured parameters, bounded by per-parameter action_step_vec().
 
 Reward:
     score(t+1) - score(t) 
@@ -26,7 +26,8 @@ Episode design:
         surrogate(params_{t+1}) -> obs_{t+1}
         reward = score(t+1) - score(t)
 
-    Truncated after max_steps steps. Never terminated early.
+    Truncated after max_steps steps. Terminated early only if the simulator
+    reports a failure (bounded FAILURE_PENALTY reward, see BaseBeamEnv.step).
 """
 from __future__ import annotations
 
@@ -58,9 +59,15 @@ class SurrogateEnv(BaseBeamEnv):
         dataset: BeamDataset,
         max_steps: int = MAX_STEPS,
         device: Optional[str] = None,
+        simulator_seed: Optional[int] = None,
     ):
         # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator
-        self._simulator_kwargs = {"model": model, "dataset": dataset, "device": device}
+        self._simulator_kwargs = {
+            "model": model,
+            "dataset": dataset,
+            "device": device,
+            "seed": simulator_seed,
+        }
         
         # Call the base class constructor
         super().__init__(max_steps=max_steps)

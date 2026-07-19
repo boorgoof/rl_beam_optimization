@@ -1,8 +1,8 @@
 # Schema Della Cartella `algorithms`
 
-Questa cartella contiene gli algoritmi che scelgono come modificare i 16
-parametri della linea ADIGE a partire dall'osservazione prodotta dagli ambienti
-in `beam_optimization/env`.
+Questa cartella contiene gli algoritmi che scelgono come modificare i 18
+parametri della linea ADIGE (definiti in `config/adige.py`, `PARAMETERS`) a
+partire dall'osservazione prodotta dagli ambienti in `beam_optimization/env`.
 
 L'idea centrale e questa:
 
@@ -67,13 +67,13 @@ Tutti gli agenti RL lavorano su spazi continui:
 
 ```text
 obs_dim = dimensione osservazione ambiente
-act_dim = 16
+act_dim = N_PARAMS (18, da config/adige.py)
 azione  = variazione dei parametri controllabili
 ```
 
 Nel progetto esistono due famiglie principali di policy.
 
-`stocActor` e il nome concettuale usato nel diagramma per
+`stocActor` e il nome concettuale usato in questo schema per
 `GaussianPolicyNetwork`. E una policy stocastica gaussiana:
 
 ```text
@@ -90,7 +90,7 @@ log-probabilita delle azioni:
 - `SAC`;
 - `SVGAgent`.
 
-`detActor` e il nome concettuale usato nel diagramma per
+`detActor` e il nome concettuale usato in questo schema per
 `DeterministicPolicyNetwork`. E una policy deterministica:
 
 ```text
@@ -110,7 +110,7 @@ direttamente il comando scelto.
 
 ### `GaussianPolicyNetwork`
 
-Questa e la rete indicata nel diagramma come `stocActor`.
+Questa e la rete indicata in questo schema come `stocActor`.
 
 Dato uno stato produce:
 
@@ -134,7 +134,7 @@ Contiene anche `logalpha`, usato da `SAC` per l'automatic entropy tuning.
 
 ### `DeterministicPolicyNetwork`
 
-Questa e la rete indicata nel diagramma come `detActor`.
+Questa e la rete indicata in questo schema come `detActor`.
 
 Dato uno stato produce direttamente un'azione continua:
 
@@ -522,9 +522,9 @@ per ogni episodio:
 
 Qui il surrogate e parte del grafo di calcolo: non serve un replay buffer.
 
-## Come Leggere Il Diagramma Di Classe
+## Mappa Concettuale Delle Dipendenze
 
-Nel file `ALGORITHMS_CLASS_DIAGRAM.drawio`:
+Leggendo la struttura della cartella:
 
 - i nodi `model_free` sono gli agenti RL classici;
 - i nodi `model_based` sono gli agenti che usano il surrogate come modello;
@@ -546,7 +546,7 @@ SVGAgent -> stocActor
 SVGAgent -> DifferentiableSurrogateEnv
 ```
 
-Il diagramma usa i nomi `stocActor` e `detActor` per chiarezza concettuale, ma
+Questo schema usa i nomi `stocActor` e `detActor` per chiarezza concettuale, ma
 tra parentesi mantiene i nomi reali delle classi Python:
 
 ```text

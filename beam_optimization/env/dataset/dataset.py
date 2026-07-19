@@ -35,7 +35,7 @@ from beam_optimization.config.adige import (
     PARAMETERS,
     STAGE_MARKERS,
     STAGE_PARAM_SIZES,
-    score_from_vec,
+    score_from_matrix,
 )
 from beam_optimization.config.paths import default_dataset_path
 
@@ -130,31 +130,31 @@ class BeamDataset(TorchDataset):
         X_b = self._X[indices]
         Y_b = self._Y[indices]
 
-        params = X_b[:, 9:]
+        params = X_b[:, BEAM_STATE_DIM:]
         stage_params = []
         offset = 0
         for size in STAGE_PARAM_SIZES:
             stage_params.append(params[:, offset:offset + size].contiguous())
             offset += size
 
-        beam_states = [X_b[:, :9].contiguous()]
+        beam_states = [X_b[:, :BEAM_STATE_DIM].contiguous()]
         for stage_idx in range(N_OUTPUT_STAGES):
-            start = stage_idx * 9
-            beam_states.append(Y_b[:, start:start + 9].contiguous())
+            start = stage_idx * BEAM_STATE_DIM
+            beam_states.append(Y_b[:, start:start + BEAM_STATE_DIM].contiguous())
 
         return stage_params, beam_states
 
     def get_initial_beam_states(self) -> torch.Tensor:
-        """Return all initial beam states as a tensor with shape (N, 9)."""
-        return self._X[:, :9]
+        """Return all initial beam states as a tensor with shape (N, BEAM_STATE_DIM)."""
+        return self._X[:, :BEAM_STATE_DIM]
 
     def get_param_vecs(self) -> torch.Tensor:
-        """Return all flat parameter vectors as a tensor with shape (N, 16)."""
-        return self._X[:, 9:]
+        """Return all flat parameter vectors as a tensor with shape (N, N_PARAMS)."""
+        return self._X[:, BEAM_STATE_DIM:]
 
     def param_knn_distance(self, param_vecs, k: int = 5) -> np.ndarray:
-        """Mean distance from each row of `param_vecs` (N, 16) to its k nearest
-        parameter vectors in this dataset.
+        """Mean distance from each row of `param_vecs` (N, N_PARAMS) to its k
+        nearest parameter vectors in this dataset.
 
         Distances are computed after standardizing every parameter by this
         dataset's per-parameter std, so no single parameter's scale (e.g.
@@ -190,7 +190,7 @@ class BeamDataset(TorchDataset):
         ds._X = raw["X"].float()
         ds._Y = raw["Y"].float()
         ds._scores = torch.tensor(
-            [score_from_vec(ds._Y[i, -9:].numpy()) for i in range(len(ds._X))],
+            score_from_matrix(ds._Y[:, -BEAM_STATE_DIM:].numpy()),
             dtype=torch.float32,
         )
 
@@ -228,8 +228,8 @@ _default_dataset_cache: Optional[BeamDataset] = None
 
 
 def param_knn_distance(param_vecs, dataset: Optional[BeamDataset] = None, k: int = 5) -> np.ndarray:
-    """Mean distance from each row of `param_vecs` (N, 16) to its k nearest
-    parameter vectors in `dataset` (the default dataset when not given).
+    """Mean distance from each row of `param_vecs` (N, N_PARAMS) to its k
+    nearest parameter vectors in `dataset` (the default dataset when not given).
 
     Falls back to a process-wide cached load of the default dataset when
     `dataset` is None, so repeated calls (e.g. once per env step during a

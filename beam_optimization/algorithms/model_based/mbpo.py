@@ -109,10 +109,12 @@ class MBPO:
 
         Args:
             obs:      Current observation from OBSERVATION_STAGE_MASK.
-            action:   Action taken (16-dim delta).
+            action:   Action taken (N_PARAMS-dim delta).
             reward:   Received reward.
             next_obs: Next observation.
-            done:     Episode done flag.
+            done:     True termination flag. Pass `terminated` only, not a
+                      time-limit truncation, so the stored transition keeps
+                      its bootstrap.
 
         Returns:
             Loss tuple from the last agent.optimize() or None if buffer not ready.
@@ -142,8 +144,13 @@ class MBPO:
                 action_i  = self.agent.select_action(obs_i, training=True)
                 self.synthetic_env.sample_active_model()
                 next_obs_i, reward_i, terminated, truncated, _ = self.synthetic_env.step(action_i)
-                done = bool(terminated or truncated)
-                self.mixed_buffer.store_synth(obs_i, action_i, reward_i, next_obs_i, float(done))
+                # Store only true terminations: rollout_length caps the rollout
+                # via truncation, and marking that as terminal would make every
+                # synthetic transition bootstrap-free (with rollout_length=1 the
+                # critic would collapse to the one-step reward).
+                self.mixed_buffer.store_synth(
+                    obs_i, action_i, reward_i, next_obs_i, float(terminated)
+                )
                 obs_i = next_obs_i
-                if done:
+                if terminated or truncated:
                     break

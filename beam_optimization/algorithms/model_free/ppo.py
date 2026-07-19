@@ -79,7 +79,11 @@ class PPO:
             self.p_opt.step()
 
             with torch.no_grad():
-                kl = (logpas.unsqueeze(1) - self.policy.log_prob(states, actions)).mean()
+                # k3 estimator (Schulman): E[(r-1) - log r] >= 0, lower variance
+                # than the naive E[log pi_old - log pi_new] (which can go negative
+                # and mask a large divergence).
+                log_ratio = self.policy.log_prob(states, actions) - logpas.unsqueeze(1)
+                kl = (log_ratio.exp() - 1.0 - log_ratio).mean()
             if kl.item() > self.stop_kl:
                 break
 

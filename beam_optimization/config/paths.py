@@ -100,6 +100,9 @@ DEFAULT_SURROGATE_LOG_DIR = PROJECT_ROOT / "runs/surrogate"
 # JSON file written by the benchmark command.
 DEFAULT_BENCHMARK_OUTPUT = PROJECT_ROOT / "results/benchmark.json"
 
+# Dedicated folder for Bayesian Optimization checkpoints, samples and plots.
+DEFAULT_BAYESIAN_RESULTS_DIR = PROJECT_ROOT / "results/bayesian_optimization"
+
 # JSON reports written by the TraceWin calibration commands.
 DEFAULT_SENSITIVITY_OUTPUT = PROJECT_ROOT / "results/sensitivity.json"
 DEFAULT_PARAMETER_BOUNDS_OUTPUT = PROJECT_ROOT / "results/parameter_bounds.json"

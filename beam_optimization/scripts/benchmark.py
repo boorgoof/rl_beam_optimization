@@ -53,27 +53,31 @@ from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.scripts.common import algo_style, run_episode
 from beam_optimization.config.adige import (
+    BAYESIAN_SCALE,
     MAX_STEPS,
+    N_OUTPUT_STAGES,
     N_PARAMS,
     PARAM_KEYS,
+    PARAMETERS,
     action_bounds,
     default_params,
     observation_dim,
     params_to_stage_tensors,
-    sensitivity_vec,
     BEAM_STATE_FEATURES,
     score,
 )
 
 OBS_DIM = observation_dim()
-ACT_DIM = N_PARAMS                               # 16
-DEFAULT_PARAM_VALUES = tuple(default_params()[key] for key in PARAM_KEYS)
-SENSITIVITY_VALUES = tuple(float(v) for v in sensitivity_vec())
+ACT_DIM = N_PARAMS
 ACTION_BOUNDS = tuple(v.tolist() for v in action_bounds())
+
+# skopt refits the GP after every evaluation, so its cost grows quickly with
+# the number of calls; cap the BO baseline here even when --eval-budget is larger.
+BO_MAX_CALLS = 200
 
 STAGE_WEIGHT_CONFIGS = {
     "finale":  None,
-    "uniform": [1.0] * 11,
+    "uniform": [1.0] * N_OUTPUT_STAGES,
 }
 
 
@@ -81,7 +85,10 @@ STAGE_WEIGHT_CONFIGS = {
 
 
 def run_bo(surrogate, dataset, budget, seed) -> Dict:
-    from beam_optimization.algorithms.baselines.bayesian_opt import BayesianOptimizer
+    from beam_optimization.algorithms.baselines.bayesian_opt import (
+        BayesianOptimizer,
+        hardware_aware_bounds,
+    )
     beam0 = _pick_beam(dataset, seed)
     surrogate.eval()
 
@@ -90,12 +97,15 @@ def run_bo(surrogate, dataset, budget, seed) -> Dict:
             outs = surrogate(params_to_stage_tensors(params), beam0)
             return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
 
+    # Same search box as everywhere else in the project (default ±
+    # BAYESIAN_SCALE·sensitivity, clipped to hardware): the surrogate is only
+    # trained inside this trust region, so searching wider would let BO score
+    # extrapolation artifacts instead of physics.
     result = BayesianOptimizer(
-        n_calls=min(budget, 200),
+        n_calls=min(budget, BO_MAX_CALLS),
         seed=seed,
         param_keys=PARAM_KEYS,
-        default_values=DEFAULT_PARAM_VALUES,
-        sensitivity_values=SENSITIVITY_VALUES,
+        bounds=hardware_aware_bounds(PARAMETERS, BAYESIAN_SCALE),
     ).optimize(objective)
     return {
         "best_score": result.best_score,

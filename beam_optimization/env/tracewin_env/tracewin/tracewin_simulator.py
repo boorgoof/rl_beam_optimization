@@ -24,6 +24,26 @@ from beam_optimization.config.adige import (
 )
 
 
+# TraceWin messages that describe a definitive physical outcome for the
+# current machine configuration. Re-running the same configuration cannot
+# repair these outcomes, so they return a failed BeamSimulationResult directly
+# instead of entering the technical-error retry loop.
+NON_RETRYABLE_PHYSICS_FAILURES = (
+    "all particles are lost",
+    "synchronous particle never reaches the end of the field map",
+    "part of the beam distribution never reaches the end of the field map",
+)
+
+
+def _non_retryable_physics_failure(stdout: str, stderr: str) -> Optional[str]:
+    """Return the original matching error line, or None if retry is appropriate."""
+    for line in f"{stdout}\n{stderr}".splitlines():
+        normalized = line.casefold()
+        if any(message in normalized for message in NON_RETRYABLE_PHYSICS_FAILURES):
+            return line.strip()
+    return None
+
+
 class TraceWinSimulator(BeamSimulator):
     """Run TraceWin simulations and return structured BeamSimulationResult objects.
 
@@ -39,7 +59,9 @@ class TraceWinSimulator(BeamSimulator):
                        Created automatically; given world-write permissions so
                        TraceWin (running as `comunian` via SSH) can write there.
         timeout:       Seconds before aborting a single TraceWin call.
-        retries:       Retry attempts after the first failure (total = retries + 1).
+        retries:       Retry attempts after a technical failure (total = retries + 1).
+                       Definitive physics failures listed in
+                       NON_RETRYABLE_PHYSICS_FAILURES are never retried.
         retry_sleep:   Seconds to wait between retries.
         kill_stale:    If True, kill leftover `comunian` TraceWin processes before
                        each simulation (prevents resource conflicts).
@@ -162,6 +184,12 @@ class TraceWinSimulator(BeamSimulator):
             )
 
             if not success:
+                physics_failure = _non_retryable_physics_failure(
+                    tw.last_stdout,
+                    tw.last_stderr,
+                )
+                if physics_failure is not None:
+                    return self._failed_result(params, physics_failure)
                 raise RuntimeError(
                     f"TraceWin failed.\n"
                     f"  stdout: {tw.last_stdout[:300]}\n"

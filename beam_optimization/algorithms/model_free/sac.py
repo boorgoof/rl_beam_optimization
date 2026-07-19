@@ -4,6 +4,7 @@ Off-policy maximum-entropy algorithm with automatic entropy tuning.
 Adapted from reinforcement_learning_2/rl/algorithms/continuous/sac.py.
 """
 import copy
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -40,7 +41,15 @@ class SAC:
         self.tc2 = copy.deepcopy(self.critic2); [p.requires_grad_(False) for p in self.tc2.parameters()]
 
         self.logalpha       = nn.Parameter(torch.zeros(1))
-        self.target_entropy = -float(act_dim)
+        # The standard SAC target entropy -act_dim assumes actions normalized
+        # to [-1, 1]. In this physical action space each dimension i has range
+        # (hi_i - lo_i), which shifts the policy's log-density by
+        # -log((hi_i - lo_i)/2) per dimension; the target must shift by the
+        # same log-volume or alpha auto-tuning chases an unreachable entropy
+        # and collapses to zero.
+        low  = np.asarray(action_bounds[0], dtype=np.float64)
+        high = np.asarray(action_bounds[1], dtype=np.float64)
+        self.target_entropy = float(-act_dim + np.sum(np.log((high - low) / 2.0)))
 
         self.actor_opt  = optim.Adam(self.policy.parameters(),  lr=actor_lr)
         self.critic1_opt = optim.Adam(self.critic1.parameters(), lr=critic_lr)

@@ -23,9 +23,10 @@ class ModularMLP(nn.Module):
 
     Input:
         beam_state_0: (batch, BEAM_STATE_DIM) — initial beam state (stage 0 from dataset)
-        stage_params:  list of 11 tensors, each (batch, stage_param_size)
+        stage_params:  list of N_OUTPUT_STAGES tensors, each (batch, stage_param_size)
+                       following adige.STAGE_PARAM_SIZES
 
-    Output: list of 11 tensors, each (batch, BEAM_STATE_DIM)
+    Output: list of N_OUTPUT_STAGES tensors, each (batch, BEAM_STATE_DIM)
 
     Internal normalization: if norm_stats is provided at construction, inputs
     are normalized and outputs are denormalized automatically.
@@ -51,9 +52,11 @@ class ModularMLP(nn.Module):
         self.act = act or nn.ReLU()
         self._norm_stats = norm_stats
 
-        param_sizes = list(STAGE_PARAM_SIZES)   # [1,1,2,1,1,1,4,1,1,1,2]
-        n_stages = N_OUTPUT_STAGES                      # 11
-        beam_dim = BEAM_STATE_DIM                # 9
+        # One parameter group per output stage, from the single source of truth
+        # in adige.py (adige asserts len(STAGE_PARAM_SIZES) == N_OUTPUT_STAGES).
+        param_sizes = list(STAGE_PARAM_SIZES)
+        n_stages = N_OUTPUT_STAGES
+        beam_dim = BEAM_STATE_DIM
 
         def _block(in_dim: int, hidden: List[int], drop: float) -> nn.Sequential:
             layers: List[nn.Module] = []
@@ -134,11 +137,11 @@ class ModularMLP(nn.Module):
     ):
         """
         Args:
-            stage_params: list of 11 tensors (batch, stage_param_size)
-            beam_state_0: (batch, 9) initial beam state (raw, un-normalized)
+            stage_params: list of N_OUTPUT_STAGES tensors (batch, stage_param_size)
+            beam_state_0: (batch, BEAM_STATE_DIM) initial beam state (raw, un-normalized)
 
         Returns:
-            list of 11 tensors (batch, 9) — one per stage
+            list of N_OUTPUT_STAGES tensors (batch, BEAM_STATE_DIM) — one per stage
         """
         sp = self._norm_params(stage_params)
         b0 = self._norm_beam(beam_state_0, stage_idx=0)

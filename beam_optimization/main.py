@@ -8,10 +8,12 @@ from typing import Sequence
 
 # associate commands with their module names so that we can run them with runpy
 COMMAND_MODULES = {
-    "scale_calculation": "beam_optimization.scripts.scale_calculation",
+    "scales_calculation": "beam_optimization.config.offline_utility.scales_calculation",
+    "exploration_scale_calculation": "beam_optimization.config.offline_utility.exploration_scale_calculation",
     "check": "beam_optimization.scripts.check",
-    "sensitivity": "beam_optimization.scripts.sensitivity",
-    "parameter_bounds_calculation": "beam_optimization.scripts.parameter_bounds_calculation",
+    "sensitivity": "beam_optimization.config.offline_utility.sensitivity",
+    "refining_sensitivity": "beam_optimization.config.offline_utility.refining_sensitivity",
+    "parameter_bounds_calculation": "beam_optimization.config.offline_utility.parameter_bounds_calculation",
     "build_dataset": "beam_optimization.scripts.build_dataset",
     "train_surrogate": "beam_optimization.scripts.train_surrogate",
     "evaluate_surrogate": "beam_optimization.scripts.evaluate_surrogate",

@@ -6,12 +6,8 @@ BO maintains no memory between calls (stateless), so it must re-optimize from
 scratch each time. The trained RL agent, by contrast, can infer actions instantly.
 
 Usage:
-    optimizer = BayesianOptimizer(
-        n_calls=100,
-        param_keys=param_keys,
-        default_values=default_values,
-        sensitivity_values=sensitivity_values,
-    )
+    bounds = hardware_aware_bounds(PARAMETERS, bounds_scale=125.0)
+    optimizer = BayesianOptimizer(n_calls=100, param_keys=param_keys, bounds=bounds)
     result = optimizer.optimize(objective_fn)
     print(result.best_params, result.best_score)
 """
@@ -33,45 +29,38 @@ class BOResult:
 
 class BayesianOptimizer:
     """Gaussian Process Bayesian Optimization over a configured parameter vector.
-    
+
     Args:
-        n_calls:      Total number of objective evaluations.
-        n_initial:    Random initial points (before GP fits).
-        bounds_scale: Search range as multiple of the (1-point) sensitivity around default.
-        acq_func:     Acquisition function ('EI', 'PI', 'LCB').
-        seed:         Random seed.
-        param_keys:    Ordered parameter keys.
-        default_values: Ordered default parameter values.
-        sensitivity_values: Ordered sensitivity values used to build bounds.
+        n_calls:    Total number of objective evaluations.
+        n_initial:  Random initial points (before GP fits).
+        acq_func:   Acquisition function ('EI', 'PI', 'LCB').
+        seed:       Random seed.
+        param_keys: Ordered parameter keys.
+        bounds:     One (lower, upper) search interval per parameter, e.g.
+                    from hardware_aware_bounds().
     """
 
     def __init__(
         self,
         n_calls: int = 100,
         n_initial: int = 20,
-        bounds_scale: float = 125.0,
         acq_func: str = "EI",
         seed: int = 42,
         *,
         param_keys: Sequence[str],
-        default_values: Sequence[float],
-        sensitivity_values: Sequence[float],
+        bounds: Sequence[tuple[float, float]],
     ):
-        self.n_calls     = n_calls
-        self.n_initial   = n_initial
-        self.bounds_scale = bounds_scale
-        self.acq_func    = acq_func
-        self.seed        = seed
+        self.n_calls    = n_calls
+        self.n_initial  = n_initial
+        self.acq_func   = acq_func
+        self.seed       = seed
         self.param_keys = tuple(param_keys)
-        self.default_values = tuple(float(v) for v in default_values)
-        self.sensitivity_values = tuple(float(v) for v in sensitivity_values)
+        self.bounds     = tuple((float(lo), float(hi)) for lo, hi in bounds)
 
         if not self.param_keys:
             raise ValueError("param_keys must not be empty")
-        if len(self.param_keys) != len(self.default_values):
-            raise ValueError("param_keys and default_values must have the same length")
-        if len(self.param_keys) != len(self.sensitivity_values):
-            raise ValueError("param_keys and sensitivity_values must have the same length")
+        if len(self.param_keys) != len(self.bounds):
+            raise ValueError("param_keys and bounds must have the same length")
 
     def optimize(
         self,
@@ -91,16 +80,10 @@ class BayesianOptimizer:
         except ImportError:
             raise ImportError("scikit-optimize is required: pip install scikit-optimize")
 
-        # Build search space: ±(bounds_scale × sensitivity) around default
-        space = []
-        for key, default, sensitivity in zip(
-            self.param_keys,
-            self.default_values,
-            self.sensitivity_values,
-        ):
-            lo = default - self.bounds_scale * sensitivity
-            hi = default + self.bounds_scale * sensitivity
-            space.append(Real(lo, hi, name=key))
+        space = [
+            Real(lower, upper, name=key)
+            for key, (lower, upper) in zip(self.param_keys, self.bounds)
+        ]
 
         score_history: List[float] = []
 

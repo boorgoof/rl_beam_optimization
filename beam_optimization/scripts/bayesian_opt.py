@@ -21,12 +21,15 @@ from beam_optimization.algorithms.baselines.bayesian_opt import (
     select_warm_start,
 )
 from beam_optimization.config.adige import (
+    BAYESIAN_SCALE,
     ERROR_SCORE,
     PARAMETERS,
     PARAM_KEYS,
+    default_params,
     sensitivity_vec,
 )
 from beam_optimization.config.paths import (
+    DEFAULT_BAYESIAN_RESULTS_DIR,
     DEFAULT_TRACEWIN_INI,
     configure_matplotlib_cache,
     default_dataset_path,
@@ -39,12 +42,12 @@ from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import (
 
 
 REPORT_VERSION = 1
-DEFAULT_OUTPUT = "beam_optimization/results/bayesian_opt.json"
-DEFAULT_NEW_SAMPLES_OUTPUT = (
-    "beam_optimization/results/bayesian_opt_tracewin_samples.pt"
+DEFAULT_OUTPUT = str(DEFAULT_BAYESIAN_RESULTS_DIR / "bayesian_opt.json")
+DEFAULT_NEW_SAMPLES_OUTPUT = str(
+    DEFAULT_BAYESIAN_RESULTS_DIR / "bayesian_opt_tracewin_samples.pt"
 )
-DEFAULT_MERGED_DATASET_OUTPUT = (
-    "beam_optimization/results/dataset_with_bayesian.pt"
+DEFAULT_MERGED_DATASET_OUTPUT = str(
+    DEFAULT_BAYESIAN_RESULTS_DIR / "dataset_with_bayesian.pt"
 )
 
 
@@ -73,6 +76,42 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+class _GPFailurePenalty:
+    """Replay-stable objective values for the GP.
+
+    A failed simulation must not be told to the GP as ERROR_SCORE (-999):
+    among real scores of order ~100 that is a huge outlier which wrecks the
+    fitted length scales. Instead, failures are told a value slightly below
+    the worst successful score seen so far. The mapping depends only on the
+    ordered history of (score, success) pairs, so replaying the persisted
+    evaluations on resume reproduces the exact same GP state. The full
+    ERROR_SCORE is still recorded in the report for bookkeeping.
+    """
+
+    MARGIN = 10.0
+    DEFAULT_FLOOR = 0.0
+
+    def __init__(self, warm_start: list[dict]):
+        scores = [float(entry["score"]) for entry in warm_start]
+        self._worst_success: float | None = min(scores) if scores else None
+
+    def tell_value(self, score: float, success: bool) -> float:
+        if success:
+            score = float(score)
+            self._worst_success = (
+                score
+                if self._worst_success is None
+                else min(self._worst_success, score)
+            )
+            return -score
+        floor = (
+            self._worst_success
+            if self._worst_success is not None
+            else self.DEFAULT_FLOOR
+        )
+        return -(floor - self.MARGIN)
 
 
 def _params_from_vector(vector) -> dict[str, float]:
@@ -245,6 +284,50 @@ def _load_new_samples(path: Path, report: dict) -> BeamDataset:
     return BeamDataset()
 
 
+def _ensure_default_evaluation(
+    report: dict,
+    *,
+    project_file: Path,
+    calc_root: Path,
+    timeout: float,
+    retries: int,
+    tracewin_particles: int,
+    tracewin_threads: int | None,
+) -> dict:
+    """Evaluate the current adige.py default_params() with real TraceWin.
+
+    Cached in the report so a resumed run does not re-evaluate the defaults.
+    """
+    if report.get("default_result") is not None:
+        return report["default_result"]
+
+    simulator = TraceWinSimulator(
+        project_file=str(project_file),
+        calc_dir=str(calc_root / "default_eval"),
+        timeout=timeout,
+        retries=retries,
+        tracewin_params={"nbr_part1": tracewin_particles},
+        num_threads=tracewin_threads,
+        initial_npart=tracewin_particles,
+    )
+    print("\nEvaluating current adige.py defaults with TraceWin...", flush=True)
+    params = default_params()
+    result = simulator.simulate(params)
+    score = float(result.score_val if result.success else ERROR_SCORE)
+    status = "ok" if result.success else f"failed: {result.error}"
+    print(f"  default score = {score:.6g} ({status})", flush=True)
+
+    entry = {
+        "params": params,
+        "score": score,
+        "success": bool(result.success),
+        "error": result.error,
+        "timestamp": result.timestamp.isoformat(),
+    }
+    report["default_result"] = entry
+    return entry
+
+
 def _build_optimizer(
     bounds: list[tuple[float, float]],
     *,
@@ -275,19 +358,36 @@ def _build_optimizer(
         random_state=optimizer_seed,
         avoid_duplicates=True,
     )
+    penalty = _GPFailurePenalty(warm_start)
     if warm_start:
         x_values = [_vector_from_params(entry["params"]) for entry in warm_start]
         y_values = [-float(entry["score"]) for entry in warm_start]
         optimizer.tell(x_values, y_values)
     for evaluation in evaluations:
         # Replay ask() to restore Sobol/acquisition RNG state exactly on resume,
-        # then tell() the persisted point and objective.
+        # then tell() the persisted point and the same (penalized) objective the
+        # live loop produced.
         optimizer.ask()
         optimizer.tell(
             _vector_from_params(evaluation["params"]),
-            -float(evaluation["score"]),
+            penalty.tell_value(
+                float(evaluation["score"]),
+                bool(evaluation.get("success", True)),
+            ),
         )
     return optimizer
+
+
+def _replayed_gp_penalty(warm_start: list[dict], evaluations: list[dict]) -> _GPFailurePenalty:
+    """Rebuild the failure-penalty tracker in the same state _build_optimizer
+    left it after replaying the persisted history."""
+    penalty = _GPFailurePenalty(warm_start)
+    for evaluation in evaluations:
+        penalty.tell_value(
+            float(evaluation["score"]),
+            bool(evaluation.get("success", True)),
+        )
+    return penalty
 
 
 def _best_entry(report: dict) -> dict | None:
@@ -378,6 +478,7 @@ def run_tracewin_bayesian(
             initial_points=initial_points,
             initial_point_generator=initial_point_generator,
         )
+        gp_penalty = _replayed_gp_penalty(report["warm_start"], run["evaluations"])
         simulator = simulator_factory(run_index)
 
         while len(run["evaluations"]) < n_calls:
@@ -406,7 +507,7 @@ def run_tracewin_bayesian(
             )
             result = simulator.simulate(params)
             score = float(result.score_val if result.success else ERROR_SCORE)
-            optimizer.tell(vector, -score)
+            optimizer.tell(vector, gp_penalty.tell_value(score, bool(result.success)))
 
             evaluation = {
                 "evaluation_index": evaluation_index,
@@ -452,7 +553,13 @@ def run_tracewin_bayesian(
     return report
 
 
-def _print_best_params(best_result: dict) -> None:
+def _print_best_params(best_result: dict, default_result: dict | None = None) -> None:
+    if default_result is not None:
+        status = "ok" if default_result["success"] else f"failed: {default_result['error']}"
+        print(f"\nCurrent adige.py defaults: score={default_result['score']:.6g} ({status})")
+        improvement = best_result["score"] - default_result["score"]
+        print(f"Best vs. default         : {improvement:+.6g}")
+
     print("\nBest real TraceWin parameter set:")
     print(
         f"origin={best_result['origin']} score={best_result['score']:.6g} "
@@ -481,11 +588,33 @@ def _print_best_params(best_result: dict) -> None:
     print(separator)
 
 
+def _format_delta_plot_label(normalized_delta: float, physical_delta: float) -> str:
+    """Format the two delta units displayed on one parameter bar."""
+    return f"{normalized_delta:+.3g} sens\nΔ={physical_delta:+.3g}"
+
+
+def _delta_plot_score_summary(
+    best_result: dict,
+    default_result: dict | None = None,
+) -> str:
+    """Return the score subtitle shared by warm/cold delta plots."""
+    best_score = float(best_result["score"])
+    summary = f"Best score = {best_score:.6g}"
+    if default_result is not None and bool(default_result.get("success", False)):
+        default_score = float(default_result["score"])
+        summary += (
+            f" | Default score = {default_score:.6g}"
+            f" | Δscore = {best_score - default_score:+.6g}"
+        )
+    return summary
+
+
 def save_delta_plot(
     best_result: dict,
     output_json: str | Path,
     *,
     prefix: str = "bayesian_opt",
+    default_result: dict | None = None,
 ) -> Path:
     configure_matplotlib_cache()
     import matplotlib
@@ -495,20 +624,47 @@ def save_delta_plot(
 
     sensitivities = sensitivity_vec()
     names = [parameter.name for parameter in PARAMETERS]
-    deltas = [
-        (
-            best_result["params"][parameter.key] - parameter.default
-        ) / sensitivities[index]
+    physical_deltas = [
+        float(best_result["params"][parameter.key]) - float(parameter.default)
+        for parameter in PARAMETERS
+    ]
+    normalized_deltas = [
+        physical_deltas[index] / sensitivities[index]
         for index, parameter in enumerate(PARAMETERS)
     ]
-    figure, axis = plt.subplots(figsize=(max(8.0, 0.55 * len(names)), 5.0))
-    colors = ["#4c78a8" if delta >= 0 else "#e34948" for delta in deltas]
-    axis.bar(names, deltas, color=colors, alpha=0.86)
+    figure, axis = plt.subplots(
+        figsize=(max(12.0, 0.85 * len(names)), 6.8)
+    )
+    colors = [
+        "#4c78a8" if delta >= 0 else "#e34948"
+        for delta in normalized_deltas
+    ]
+    bars = axis.bar(names, normalized_deltas, color=colors, alpha=0.86)
+    for bar, normalized_delta, physical_delta in zip(
+        bars,
+        normalized_deltas,
+        physical_deltas,
+    ):
+        positive = normalized_delta >= 0.0
+        axis.annotate(
+            _format_delta_plot_label(normalized_delta, physical_delta),
+            xy=(bar.get_x() + bar.get_width() / 2.0, normalized_delta),
+            xytext=(0, 5 if positive else -5),
+            textcoords="offset points",
+            ha="center",
+            va="bottom" if positive else "top",
+            fontsize=7.2,
+            rotation=90,
+        )
     axis.axhline(0.0, color="#333333", linewidth=0.9)
-    axis.set_title("TraceWin Bayesian Optimization — shift from default")
+    axis.set_title(
+        "TraceWin Bayesian Optimization — shift from default\n"
+        + _delta_plot_score_summary(best_result, default_result)
+    )
     axis.set_ylabel("(best - default) / sensitivity")
     axis.grid(axis="y", alpha=0.25)
     axis.tick_params(axis="x", rotation=45)
+    axis.margins(y=0.22)
     figure.tight_layout()
     path = Path(output_json).parent / f"{prefix}_delta.png"
     figure.savefig(path, dpi=160)
@@ -536,18 +692,40 @@ def save_convergence_plot(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    figure, axis = plt.subplots(figsize=(8.4, 5.0))
+    figure, axis = plt.subplots(figsize=(9.2, 5.4))
+    final_bests = []
     for run_index, history in enumerate(histories):
         best_so_far = np.maximum.accumulate(np.asarray(history, dtype=float))
-        axis.plot(
-            np.arange(1, len(history) + 1),
+        evaluations = np.arange(1, len(history) + 1)
+        line, = axis.plot(
+            evaluations,
             best_so_far,
             linewidth=1.8,
             label=f"run {run_index + 1}",
         )
+        final_best = float(best_so_far[-1])
+        final_bests.append(final_best)
+        axis.scatter(
+            evaluations[-1],
+            final_best,
+            s=46,
+            color=line.get_color(),
+            zorder=4,
+        )
+        axis.annotate(
+            f"{final_best:.6g}",
+            xy=(evaluations[-1], final_best),
+            xytext=(6, 7),
+            textcoords="offset points",
+            fontsize=8.5,
+            fontweight="bold",
+        )
     axis.set_xlabel("New TraceWin evaluations")
     axis.set_ylabel("Best observed score")
-    axis.set_title("TraceWin Bayesian Optimization convergence")
+    axis.set_title(
+        "TraceWin Bayesian Optimization convergence\n"
+        f"Global best score = {max(final_bests):.6g}"
+    )
     axis.grid(alpha=0.25)
     axis.legend()
     figure.tight_layout()
@@ -573,7 +751,15 @@ def main() -> None:
     parser.add_argument("--n-runs", type=int, default=1)
     parser.add_argument("--warm-best", type=int, default=10)
     parser.add_argument("--warm-diverse", type=int, default=30)
-    parser.add_argument("--bounds-scale", type=float, default=10.0)
+    parser.add_argument(
+        "--bounds-scale",
+        type=float,
+        default=BAYESIAN_SCALE,
+        help=(
+            "Search half-width in sensitivity units around each default "
+            "(default: BAYESIAN_SCALE from adige.py)."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--tracewin-seed-base",
@@ -673,6 +859,17 @@ def main() -> None:
     )
     print(f"Checkpoint         : {output}")
 
+    _ensure_default_evaluation(
+        report,
+        project_file=project_file,
+        calc_root=calc_root,
+        timeout=args.timeout,
+        retries=args.retries,
+        tracewin_particles=args.tracewin_particles,
+        tracewin_threads=args.tracewin_threads,
+    )
+    _write_json_atomic(output, report)
+
     def simulator_factory(run_index: int) -> TraceWinSimulator:
         return TraceWinSimulator(
             project_file=str(project_file),
@@ -697,9 +894,13 @@ def main() -> None:
         seed=args.seed,
         tracewin_seed_base=args.tracewin_seed_base,
     )
-    _print_best_params(report["best_result"])
+    _print_best_params(report["best_result"], report.get("default_result"))
     convergence = save_convergence_plot(report, output)
-    delta = save_delta_plot(report["best_result"], output)
+    delta = save_delta_plot(
+        report["best_result"],
+        output,
+        default_result=report.get("default_result"),
+    )
     print(f"\nJSON checkpoint       -> {output}")
     print(f"New TraceWin samples  -> {new_samples_output}")
     print(f"Merged dataset        -> {merged_dataset_output}")

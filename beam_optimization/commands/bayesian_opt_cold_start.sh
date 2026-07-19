@@ -13,6 +13,6 @@ fi
 python -m beam_optimization bayesian_opt_cold_start \
   --initial-points 64 \
   --guided-calls 100 \
-  --output beam_optimization/results/bayesian_opt_cold_start.json \
-  --samples-output beam_optimization/results/bayesian_opt_cold_start_samples.pt \
+  --output beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start.json \
+  --samples-output beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start_samples.pt \
   "$@"
