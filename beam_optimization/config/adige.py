@@ -124,7 +124,7 @@ BAYESIAN_SCALE: float = EXPLORATION_SCALE     # Default Bayesian-opt space per p
 #   RESET_SCALE  = f_reset * k_sigma_dataset * DATASET_SCALE / k_sigma  = 0.0875
 #   ACTION_SCALE = min(target_scale / 10, (1-f_reset)*k_sigma_dataset*DATASET_SCALE/max_steps) = 0.014
 # Re-run `scales_calculation` after changing DATASET_SCALE and paste the values here.
-RESET_SCALE: float =  8.749999999999999e-02   # episode-reset gaussian width, reset_std_p = RESET_SCALE * sensitivity_p
+RESET_SCALE: float =  8.749999999999998e-02   # episode-reset gaussian width, reset_std_p = RESET_SCALE * sensitivity_p
 ACTION_SCALE: float =  1.400000000000000e-02  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
 
 # Score assigned when a simulation fails (TraceWin error, invalid output).

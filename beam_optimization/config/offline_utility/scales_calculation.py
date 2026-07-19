@@ -34,9 +34,9 @@ from beam_optimization.config.adige import DATASET_SCALE, MAX_STEPS, PARAMETERS,
 # hardcoded value), so a default run reproduces/verifies the currently
 # configured scale instead of silently drifting from it.
 DEFAULT_DATASET_SCALE: float = DATASET_SCALE
-DEFAULT_K_SIGMA_DATASET: float = 2.5
+DEFAULT_K_SIGMA_DATASET: float = 3
 DEFAULT_F_RESET: float = 0.25
-DEFAULT_K_SIGMA: float = 2.5
+DEFAULT_K_SIGMA: float = 3
 
 
 def compute_scales(
