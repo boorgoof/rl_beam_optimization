@@ -3,7 +3,7 @@
 <html lang="en">
 <head><meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>visualize_environments.action-flow</title><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
+<title>visualize_environments.gym-spaces</title><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
 <style type="text/css">
     pre { line-height: 125%; }
 td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
@@ -7870,9 +7870,20 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="1.-Shared-interface-and-observation-space">1. Shared interface and observation space<a class="anchor-link" href="#1.-Shared-interface-and-observation-space">¶</a></h2><p>Both environments inherit the same Gymnasium loop from <code>BaseBeamEnv</code>; only the simulator backend changes. Each visible stage contains nine beam features in the configured order. Selected stage matrices are concatenated and flattened:</p>
-<p>$$o_t = \operatorname{flatten}(B_t[s_1],\ldots,B_t[s_m]), \qquad \dim(o_t)=m\times BEAM\_STATE\_DIM.$$</p>
-<p>The score is not appended to the observation. It is returned separately as <code>info["score"]</code>.</p>
+<h2 id="1.-Observation-space">1. Observation space<a class="anchor-link" href="#1.-Observation-space">¶</a></h2><h3 id="1.1-The-Gymnasium-space-contract">1.1 The Gymnasium space contract<a class="anchor-link" href="#1.1-The-Gymnasium-space-contract">¶</a></h3><p>A Gymnasium environment must define two complementary <code>Space</code> objects:</p>
+<ul>
+<li><code>observation_space</code>: <strong>what the agent can see</strong>;</li>
+<li><code>action_space</code>: <strong>what the agent is allowed to do</strong>.</li>
+</ul>
+<p>A <code>Space</code> provides, among other operations, <code>contains(x)</code> to test whether a value belongs to the declared space and <code>sample()</code> to generate a valid sample. Gymnasium offers several space types; this environment uses continuous <code>Box</code> spaces because both beam features and machine corrections are real-valued vectors.</p>
+<h3 id="1.2-What-the-policy-observes">1.2 What the policy observes<a class="anchor-link" href="#1.2-What-the-policy-observes">¶</a></h3><p><code>TraceWinEnv</code> and <code>SurrogateEnv</code> expose the same observation: selected beam states produced by their respective simulator backends. Each selected longitudinal stage contributes the nine configured beam features. The controlled parameter values, previous action, reward, and score are <strong>not</strong> appended to the observation.</p>
+<h3 id="1.3-Observation-Box:-construction-and-dimension">1.3 Observation <code>Box</code>: construction and dimension<a class="anchor-link" href="#1.3-Observation-Box:-construction-and-dimension">¶</a></h3><p>If $s_1,\ldots,s_m$ are the stages enabled by <code>OBSERVATION_STAGE_MASK</code>, their beam-state rows are concatenated in beam-line order and flattened:</p>
+<p>$$o_t = \operatorname{flatten}\left(B_t[s_1],\ldots,B_t[s_m]\right), \qquad \dim(o_t)=m\times BEAM\_STATE\_DIM.$$</p>
+<p>The declared Gymnasium space is</p>
+<p>$$\mathcal{O}=\operatorname{Box}\left(low=-\infty,high=+\infty,shape=(m\times BEAM\_STATE\_DIM,),dtype=float32\right).$$</p>
+<p>The resulting fixed-length <code>float32</code> vector is the input to the policy. The dynamic tables below show the exact active stages, feature order, observation dimension, and action dimension from the current configuration.</p>
+<h3 id="1.4-Design-reasoning-and-consequences">1.4 Design reasoning and consequences<a class="anchor-link" href="#1.4-Design-reasoning-and-consequences">¶</a></h3><p>Using the same observation definition for both backends allows one policy interface to operate with either TraceWin or the surrogate. The input stage describes the incoming beam, intermediate visible stages provide longitudinal context, and the final stage describes the resulting beam quality. Selecting only configured stages limits the neural-network input size.</p>
+<p>Because score and machine parameters are excluded, the policy must choose corrections from the beam state itself. The score remains available separately as <code>info["score"]</code> for reporting, while reward supplies the learning signal. This is an important modeling choice rather than a clipping or safety mechanism.</p>
 </div>
 </div>
 </div>
@@ -7910,10 +7921,10 @@ a.anchor-link {
 
 <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s1">'</span><span class="se">\n\n</span><span class="s1">'</span><span class="o">.</span><span class="n">join</span><span class="p">([</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Environment'</span><span class="p">,</span> <span class="s1">'Observation formula'</span><span class="p">,</span> <span class="s1">'Obs shape'</span><span class="p">,</span> <span class="s1">'Action shape'</span><span class="p">,</span> <span class="s1">'Score output'</span><span class="p">],</span> <span class="n">interface_rows</span><span class="p">),</span>
-    <span class="s1">'### Beam stages and visibility'</span><span class="p">,</span>
+    <span class="s1">'### 1.5 Beam stages and visibility'</span><span class="p">,</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Stage index'</span><span class="p">,</span> <span class="s1">'TraceWin marker'</span><span class="p">,</span> <span class="s1">'Label'</span><span class="p">,</span> <span class="s1">'Visible to the agent'</span><span class="p">],</span> <span class="n">stage_rows</span><span class="p">),</span>
     <span class="sa">f</span><span class="s1">'Current observation: **</span><span class="si">{</span><span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">visible_labels</span><span class="p">)</span><span class="si">}</span><span class="s1">**, therefore **</span><span class="si">{</span><span class="n">observation_dim</span><span class="p">()</span><span class="si">}</span><span class="s1"> float32 values**.'</span><span class="p">,</span>
-    <span class="s1">'### Features in each visible stage'</span><span class="p">,</span>
+    <span class="s1">'### 1.6 Features in each visible stage'</span><span class="p">,</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Index'</span><span class="p">,</span> <span class="s1">'Feature'</span><span class="p">,</span> <span class="s1">'Meaning'</span><span class="p">,</span> <span class="s1">'Used by score'</span><span class="p">],</span> <span class="n">feature_rows</span><span class="p">),</span>
 <span class="p">])))</span>
 </pre></div>
@@ -7955,7 +7966,7 @@ a.anchor-link {
 </tr>
 </tbody>
 </table>
-<h3 id="Beam-stages-and-visibility">Beam stages and visibility<a class="anchor-link" href="#Beam-stages-and-visibility">¶</a></h3><table>
+<h3 id="1.5-Beam-stages-and-visibility">1.5 Beam stages and visibility<a class="anchor-link" href="#1.5-Beam-stages-and-visibility">¶</a></h3><table>
 <thead>
 <tr>
 <th>Stage index</th>
@@ -8046,7 +8057,7 @@ a.anchor-link {
 </tbody>
 </table>
 <p>Current observation: <strong>beam0, marker_162, final</strong>, therefore <strong>27 float32 values</strong>.</p>
-<h3 id="Features-in-each-visible-stage">Features in each visible stage<a class="anchor-link" href="#Features-in-each-visible-stage">¶</a></h3><table>
+<h3 id="1.6-Features-in-each-visible-stage">1.6 Features in each visible stage<a class="anchor-link" href="#1.6-Features-in-each-visible-stage">¶</a></h3><table>
 <thead>
 <tr>
 <th>Index</th>
@@ -8117,20 +8128,26 @@ a.anchor-link {
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=sensitivity-scales">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=action-space-scales">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="2.-Sensitivity-and-scale-hierarchy">2. Sensitivity and scale hierarchy<a class="anchor-link" href="#2.-Sensitivity-and-scale-hierarchy">¶</a></h2><p>For parameter $p$, <code>sensitivity_p</code> is the physical parameter interval estimated to produce an absolute score change of approximately one point near its calibration point:</p>
+<h2 id="2.-Action-space-and-sensitivity-based-bounds">2. Action space and sensitivity-based bounds<a class="anchor-link" href="#2.-Action-space-and-sensitivity-based-bounds">¶</a></h2><p>The observation space specifies <strong>what the policy receives</strong>. The action space instead specifies <strong>what the policy may change</strong>.</p>
+<h3 id="2.1-Defining-what-the-agent-is-allowed-to-do">2.1 Defining what the agent is allowed to do<a class="anchor-link" href="#2.1-Defining-what-the-agent-is-allowed-to-do">¶</a></h3><p>Every controlled TraceWin parameter is continuous, so a <code>Discrete</code> space would be inappropriate. The environment therefore needs a continuous Gymnasium <code>Box</code> with one component for each parameter:</p>
+<p>$$\mathcal{A}=\operatorname{Box}\left(low=\mathbf{a}^{min},high=\mathbf{a}^{max},dtype=float32\right),\qquad shape(\mathcal{A})=(N\_PARAMS,).$$</p>
+<p>Currently <code>N_PARAMS = 18</code>, and component $p$ is the requested physical delta for parameter $p$ in <code>PARAMETERS</code> order. <code>action_space.contains(a)</code> checks the vector shape, dtype compatibility, and bounds. <code>action_space.sample()</code> draws a random valid vector from the bounded box; this is useful for checks or explicitly random exploration, but it is not how a trained policy normally chooses its action.</p>
+<p>Declaring <code>Box</code> and its shape is not sufficient: the vectors $\mathbf{a}^{min}$ and $\mathbf{a}^{max}$ must also be physically meaningful. A single absolute limit cannot be shared directly because the 18 parameters have different units and magnitudes. This motivates the sensitivity calibration below.</p>
+<h3 id="2.2-Why-sensitivity-is-introduced">2.2 Why sensitivity is introduced<a class="anchor-link" href="#2.2-Why-sensitivity-is-introduced">¶</a></h3><p>The 18 controlled parameters have different units and numerical magnitudes, so one common absolute action bound would not represent a comparable physical effect. A parameter-specific calibration is needed before the action bounds can be defined.</p>
+<p>For parameter $p$, <code>sensitivity_p</code> is the physical interval estimated to produce an absolute score change of approximately one point near its calibration point:</p>
 <p>$$s_p \approx \frac{\Delta p}{|\Delta score|}.$$</p>
-<p>Sensitivity is a <strong>local calibration unit</strong>, not a hardware limit and not a guarantee of linear response far from the calibration point. It converts the shared dimensionless scales into parameter-specific physical intervals:</p>
-<p>$$\sigma_{dataset,p}=DATASET\_SCALE\,s_p$$
+<p>Sensitivity is a <strong>local calibration unit</strong>. It is not a hardware limit and does not guarantee linear behavior far from the calibration point. Multiplying $s_p$ by one shared dimensionless scale produces a different physical width for each parameter while targeting a comparable local effect.</p>
+<h3 id="2.3-From-sensitivity-to-physical-widths">2.3 From sensitivity to physical widths<a class="anchor-link" href="#2.3-From-sensitivity-to-physical-widths">¶</a></h3><p>$$\sigma_{dataset,p}=DATASET\_SCALE\,s_p$$
 $$\sigma_{reset,p}=RESET\_SCALE\,s_p$$
 $$a_{max,p}=ACTION\_SCALE\,s_p$$
 $$trajectory_{max,p}=MAX\_STEPS\,a_{max,p}.$$</p>
-<p><code>EXPLORATION_SCALE</code> calibrates both dataset sampling and the default Bayesian search width. The offline calculation assigns <code>f_reset</code> of the trust-region radius to reset and the complete remaining <code>1-f_reset</code> to the full trajectory. Hardware bounds are applied afterwards as clipping limits and do not define these scales.</p>
+<p><code>EXPLORATION_SCALE</code> calibrates both dataset sampling and the default Bayesian search width. The 25%/75% allocation then derives reset and full-trajectory widths from that common trust region. Only after these sensitivity-based widths are calculated are hardware bounds applied as separate clipping limits.</p>
 </div>
 </div>
 </div>
@@ -8185,9 +8202,9 @@ $$trajectory_{max,p}=MAX\_STEPS\,a_{max,p}.$$</p>
     <span class="p">[</span><span class="s1">'`f_reset`'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">DEFAULT_F_RESET</span><span class="p">),</span> <span class="s1">'fraction of the trust-region radius assigned to reset'</span><span class="p">],</span>
 <span class="p">]</span>
 <span class="n">parts</span> <span class="o">=</span> <span class="p">[</span>
-    <span class="s1">'### Current global scales'</span><span class="p">,</span>
+    <span class="s1">'### 2.4 Current global scales'</span><span class="p">,</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Quantity'</span><span class="p">,</span> <span class="s1">'Symbol'</span><span class="p">,</span> <span class="s1">'Formula'</span><span class="p">,</span> <span class="s1">'Value'</span><span class="p">,</span> <span class="s1">'Physical meaning'</span><span class="p">],</span> <span class="n">scale_rows</span><span class="p">),</span>
-    <span class="s1">'### Full 25% / 75% trust-region allocation'</span><span class="p">,</span>
+    <span class="s1">'### 2.5 Full 25% / 75% trust-region allocation'</span><span class="p">,</span>
     <span class="s1">'Values used in the budget equation:'</span><span class="p">,</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Variable'</span><span class="p">,</span> <span class="s1">'Value'</span><span class="p">,</span> <span class="s1">'Meaning'</span><span class="p">],</span> <span class="n">budget_variable_rows</span><span class="p">),</span>
     <span class="s1">'Budget identities (all distances are expressed in units of parameter sensitivity):'</span><span class="p">,</span>
@@ -8208,7 +8225,7 @@ $$trajectory_{max,p}=MAX\_STEPS\,a_{max,p}.$$</p>
 <span class="k">if</span> <span class="n">warnings</span><span class="p">:</span>
     <span class="n">parts</span> <span class="o">+=</span> <span class="p">[</span><span class="s1">'Hardware-clipping diagnostics:'</span><span class="p">,</span> <span class="s1">'```text</span><span class="se">\n</span><span class="s1">'</span> <span class="o">+</span> <span class="s1">'</span><span class="se">\n</span><span class="s1">'</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">warnings</span><span class="p">)</span> <span class="o">+</span> <span class="s1">'</span><span class="se">\n</span><span class="s1">```'</span><span class="p">]</span>
 <span class="n">parts</span> <span class="o">+=</span> <span class="p">[</span>
-    <span class="s1">'### Per-parameter physical intervals'</span><span class="p">,</span>
+    <span class="s1">'### 2.6 Per-parameter physical intervals'</span><span class="p">,</span>
     <span class="s1">'All intervals come from the sensitivity in the same row. `Trajectory max` is action-only; hardware clipping may reduce the reachable displacement.'</span><span class="p">,</span>
     <span class="n">table</span><span class="p">(</span>
         <span class="p">[</span><span class="s1">'#'</span><span class="p">,</span> <span class="s1">'Parameter'</span><span class="p">,</span> <span class="s1">'Default'</span><span class="p">,</span> <span class="s1">'Sensitivity'</span><span class="p">,</span> <span class="s1">'HW min'</span><span class="p">,</span> <span class="s1">'HW max'</span><span class="p">,</span> <span class="s1">'Dataset std'</span><span class="p">,</span> <span class="s1">'Reset std'</span><span class="p">,</span> <span class="s1">'Action/step'</span><span class="p">,</span> <span class="s1">'Trajectory max'</span><span class="p">],</span>
@@ -8249,7 +8266,7 @@ $$trajectory_{max,p}=MAX\_STEPS\,a_{max,p}.$$</p>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-OutputArea-output" data-mime-type="text/markdown" tabindex="0">
-<h3 id="Current-global-scales">Current global scales<a class="anchor-link" href="#Current-global-scales">¶</a></h3><table>
+<h3 id="2.4-Current-global-scales">2.4 Current global scales<a class="anchor-link" href="#2.4-Current-global-scales">¶</a></h3><table>
 <thead>
 <tr>
 <th>Quantity</th>
@@ -8304,7 +8321,7 @@ $$trajectory_{max,p}=MAX\_STEPS\,a_{max,p}.$$</p>
 </tr>
 </tbody>
 </table>
-<h3 id="Full-25%25-/-75%25-trust-region-allocation">Full 25% / 75% trust-region allocation<a class="anchor-link" href="#Full-25%25-/-75%25-trust-region-allocation">¶</a></h3><p>Values used in the budget equation:</p>
+<h3 id="2.5-Full-25%25-/-75%25-trust-region-allocation">2.5 Full 25% / 75% trust-region allocation<a class="anchor-link" href="#2.5-Full-25%25-/-75%25-trust-region-allocation">¶</a></h3><p>Values used in the budget equation:</p>
 <table>
 <thead>
 <tr>
@@ -8360,7 +8377,7 @@ Full trajectory = MAX_STEPS × ACTION_SCALE × sensitivity = 20 × 0.039375 × s
 
 Reset + full trajectory = 0.2625 × sensitivity + 0.7875 × sensitivity = 1.05 × sensitivity = Trust region
 </pre></div>
-<h3 id="Per-parameter-physical-intervals">Per-parameter physical intervals<a class="anchor-link" href="#Per-parameter-physical-intervals">¶</a></h3><p>All intervals come from the sensitivity in the same row. <code>Trajectory max</code> is action-only; hardware clipping may reduce the reachable displacement.</p>
+<h3 id="2.6-Per-parameter-physical-intervals">2.6 Per-parameter physical intervals<a class="anchor-link" href="#2.6-Per-parameter-physical-intervals">¶</a></h3><p>All intervals come from the sensitivity in the same row. <code>Trajectory max</code> is action-only; hardware clipping may reduce the reachable displacement.</p>
 <table>
 <thead>
 <tr>
@@ -8612,29 +8629,34 @@ Reset + full trajectory = 0.2625 × sensitivity + 0.7875 × sensitivity = 1.05 �
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="3.-Reset,-actions,-and-trajectory">3. Reset, actions, and trajectory<a class="anchor-link" href="#3.-Reset,-actions,-and-trajectory">¶</a></h2><p>At reset, every parameter starts from its default plus independent Gaussian noise. The candidate value is then clipped explicitly between that parameter's hardware bounds:</p>
-<p>$$\epsilon_p\sim\mathcal{N}\left(0,(RESET\_SCALE\,s_p)^2\right),$$
-$$p^{candidate}_{0,p}=p^{default}_p+\epsilon_p,$$
-$$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p^{HW,max}_p\right).$$</p>
-<p><code>reset(options={"randomize_params": False})</code> disables this perturbation. The simulator context is then reset: the surrogate samples an input beam and an ensemble member, while TraceWin prepares its real execution context.</p>
-<h3 id="How-an-action-is-selected-and-applied">How an action is selected and applied<a class="anchor-link" href="#How-an-action-is-selected-and-applied">¶</a></h3><p>The environment does <strong>not</strong> choose the action. At step $t$, the agent receives the current observation $o_t$ and its policy selects one 18-component action vector, with one physical parameter delta for each controlled parameter:</p>
+<h3 id="2.7-Exact-per-step-action-bounds">2.7 Exact per-step action bounds<a class="anchor-link" href="#2.7-Exact-per-step-action-bounds">¶</a></h3><p>The preceding sensitivity calibration now justifies the physical bounds. For parameter $p$, the policy may request a delta inside</p>
+<p>$$a^{min}_p=-ACTION\_SCALE\,s_p,\qquad a^{max}_p=+ACTION\_SCALE\,s_p.$$</p>
+<p>Therefore the complete bound vectors used to construct <code>Env.action_space</code> are</p>
+<p>$$\mathbf{a}^{min}=-ACTION\_SCALE\,(s_1,\ldots,s_{18}),\qquad \mathbf{a}^{max}=+ACTION\_SCALE\,(s_1,\ldots,s_{18}),$$
+$$Env.action\_space=\operatorname{Box}\left(low=\mathbf{a}^{min},high=\mathbf{a}^{max},dtype=float32\right).$$</p>
+<p>Thus <code>ACTION_SCALE</code> is shared, but the numerical bounds differ across parameters because each has its own $s_p$. This is the precise point at which sensitivity defines the action space.</p>
+<h3 id="2.8-How-the-policy-chooses-a-value-inside-the-Box">2.8 How the policy chooses a value inside the <code>Box</code><a class="anchor-link" href="#2.8-How-the-policy-chooses-a-value-inside-the-Box">¶</a></h3><p>The environment defines the allowed space but does <strong>not</strong> choose the action. At step $t$, the policy receives the current observation $o_t$ and produces all 18 requested deltas jointly:</p>
 <p>$$a^{requested}_t\sim\pi_\theta(\cdot\mid o_t)\quad\text{during stochastic training},$$
 $$a^{requested}_t=\pi^{det}_\theta(o_t)\quad\text{during deterministic evaluation}.$$</p>
-<p>The policy parameters $\theta$ are learned to maximize cumulative reward. Thus, the 18 deltas are selected jointly from the beam observation; they are not fixed perturbations. Training noise provides exploration, while deterministic evaluation uses the policy's best direct prediction.</p>
-<p>For parameter $p$, the allowed physical delta per step is</p>
-<p>$$a^{min}_p=-ACTION\_SCALE\,s_p,\qquad a^{max}_p=+ACTION\_SCALE\,s_p.$$</p>
-<p>The environment first clips the requested delta using those action-space bounds:</p>
+<p>The policy parameters $\theta$ are learned to maximize cumulative reward. Training noise supplies exploration, while deterministic evaluation uses the policy's direct prediction. The result is therefore a learned beam correction, not a fixed perturbation and not a call to <code>action_space.sample()</code>.</p>
+<h3 id="2.9-From-requested-action-to-hardware-valid-parameters">2.9 From requested action to hardware-valid parameters<a class="anchor-link" href="#2.9-From-requested-action-to-hardware-valid-parameters">¶</a></h3><p>The environment first clips the requested delta using those action-space bounds:</p>
 <p>$$a^{applied}_{t,p}=\operatorname{clip}_{action\ space}\left(a^{requested}_{t,p},-ACTION\_SCALE\,s_p,+ACTION\_SCALE\,s_p\right).$$</p>
 <p>It then adds the applied delta to the current physical parameter and clips the candidate value using the explicit hardware bounds:</p>
 <p>$$p^{candidate}_{t+1,p}=p_{t,p}+a^{applied}_{t,p},$$
 $$p_{t+1,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{t+1,p},p^{HW,min}_p,p^{HW,max}_p\right).$$</p>
 <p>In compact form, the complete update is therefore</p>
 <p>$$p_{t+1,p}=\operatorname{clip}_{hardware}\!\left(p_{t,p}+\operatorname{clip}_{action\ space}\!\left(a^{requested}_{t,p},-ACTION\_SCALE\,s_p,+ACTION\_SCALE\,s_p\right),p^{HW,min}_p,p^{HW,max}_p\right).$$</p>
-<p>Actions are cumulative. The action-only displacement satisfies</p>
+<h3 id="2.10-Cumulative-trajectory-budget">2.10 Cumulative trajectory budget<a class="anchor-link" href="#2.10-Cumulative-trajectory-budget">¶</a></h3><p>Actions are incremental and cumulative: every applied delta starts from the parameter value reached at the previous step. If all actions for parameter $p$ have maximum magnitude and point in the same direction, the action-only displacement is bounded by</p>
 <p>$$|p_{T,p}-p_{0,p}|\le T\,ACTION\_SCALE\,s_p\le MAX\_STEPS\,ACTION\_SCALE\,s_p.$$</p>
 <p>Including the calibrated worst-case reset gives a separate theoretical allowance:</p>
 <p>$$|p_{T,p}-p^{default}_p|\lesssim(k_{reset}RESET\_SCALE+MAX\_STEPS\,ACTION\_SCALE)s_p.$$</p>
-<p>Hardware clipping can only reduce these displacements. A successful episode is truncated after <code>MAX_STEPS</code>; a failed simulation terminates it immediately.</p>
+<p>This is a reachability bound, not a command imposed on the policy: actions may be smaller, reverse direction, or be zero. Hardware clipping can only reduce the displacement. A successful episode is truncated after <code>MAX_STEPS</code>; a failed simulation terminates it immediately.</p>
+<h2 id="3.-Episode-initialization-(reset)">3. Episode initialization (reset)<a class="anchor-link" href="#3.-Episode-initialization-(reset)">¶</a></h2><h3 id="3.1-Reset-distribution">3.1 Reset distribution<a class="anchor-link" href="#3.1-Reset-distribution">¶</a></h3><p>At reset, every parameter starts from its default plus independent Gaussian noise. The candidate value is then clipped explicitly between that parameter's hardware bounds:</p>
+<p>$$\epsilon_p\sim\mathcal{N}\left(0,(RESET\_SCALE\,s_p)^2\right),$$
+$$p^{candidate}_{0,p}=p^{default}_p+\epsilon_p,$$
+$$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p^{HW,max}_p\right).$$</p>
+<p><code>reset(options={"randomize_params": False})</code> disables this perturbation. The simulator context is then reset: the surrogate samples an input beam and an ensemble member, while TraceWin prepares its real execution context.</p>
+<h3 id="3.2-Why-reset-has-its-own-scale">3.2 Why reset has its own scale<a class="anchor-link" href="#3.2-Why-reset-has-its-own-scale">¶</a></h3><p>Reset randomization exposes the policy to different initial machine configurations rather than always starting at the default. Its calibrated worst-case allocation occupies 25% of the dataset trust-region radius, leaving 75% for corrective motion during the episode. Hardware clipping remains the final validity constraint.</p>
 </div>
 </div>
 </div>
@@ -8679,7 +8701,7 @@ $$p_{t+1,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{t+1,p},p^{HW,min}
     <span class="n">table</span><span class="p">([</span><span class="s1">'Component'</span><span class="p">,</span> <span class="s1">'Features'</span><span class="p">,</span> <span class="s1">'Intent'</span><span class="p">,</span> <span class="s1">'Weight'</span><span class="p">,</span> <span class="s1">'Reference'</span><span class="p">],</span> <span class="n">score_rows</span><span class="p">),</span>
     <span class="p">(</span><span class="sa">f</span><span class="s1">'A beam at the references with full transmission scores **</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s2">"npart_ratio"</span><span class="p">])</span><span class="si">}</span><span class="s1">**. '</span>
      <span class="s1">'Values better than a reference can receive a linear bonus; the score is not capped above.'</span><span class="p">),</span>
-    <span class="s1">'### Reward and episode ending'</span><span class="p">,</span>
+    <span class="s1">'### 4.1 Reward and episode ending'</span><span class="p">,</span>
     <span class="n">reward_formula</span><span class="p">,</span>
     <span class="p">(</span><span class="sa">f</span><span class="s1">'`ERROR_SCORE=</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ERROR_SCORE</span><span class="p">)</span><span class="si">}</span><span class="s1">` is a bookkeeping sentinel, not a physical score, and is not used in the reward difference. '</span>
      <span class="sa">f</span><span class="s1">'Failures instead receive `-</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">FAILURE_PENALTY</span><span class="p">)</span><span class="si">}</span><span class="s1">` and terminate the episode. '</span>
@@ -8753,7 +8775,7 @@ $$p_{t+1,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{t+1,p},p^{HW,min}
 </tbody>
 </table>
 <p>A beam at the references with full transmission scores <strong>100</strong>. Values better than a reference can receive a linear bonus; the score is not capped above.</p>
-<h3 id="Reward-and-episode-ending">Reward and episode ending<a class="anchor-link" href="#Reward-and-episode-ending">¶</a></h3><div class="highlight"><pre><span></span>if simulation succeeds:
+<h3 id="4.1-Reward-and-episode-ending">4.1 Reward and episode ending<a class="anchor-link" href="#4.1-Reward-and-episode-ending">¶</a></h3><div class="highlight"><pre><span></span>if simulation succeeds:
     reward_t = score_t - score_(t-1)
     terminated = False
     truncated = (step == 20)
@@ -8812,15 +8834,7 @@ else:
 </tbody>
 </table>
 <p>The surrogate predicts continuous beam states and normally reports <code>success=True</code> whenever inference succeeds. Failed TraceWin simulations are not beam-state training targets, so parameters that lose all particles in TraceWin may still receive a plausible surrogate prediction. This limitation is not an action-space safety guarantee.</p>
-<h3 id="Render-only-diagnostics">Render-only diagnostics<a class="anchor-link" href="#Render-only-diagnostics">¶</a></h3><p><code>render()</code> shows parameter trajectories, observed beam features, score/reward, and parameter KNN distance from the reference dataset. KNN distance is a coverage diagnostic: it is <strong>not</strong> part of the observation, score, reward, termination rule, or action clipping. Rendering is lazy and does not affect training steps.</p>
-<h3 id="Design-chain-at-a-glance">Design chain at a glance<a class="anchor-link" href="#Design-chain-at-a-glance">¶</a></h3><div class="highlight"><pre><span></span>TraceWin calibration -&gt; sensitivity per parameter
-                         +-&gt; DATASET_SCALE -&gt; surrogate training region
-                         +-&gt; RESET_SCALE   -&gt; initial episode distribution
-                         +-&gt; ACTION_SCALE  -&gt; per-step action bounds -&gt; trajectory bound
-beam states -&gt; selected stages -&gt; observation
-final beam  -&gt; score -&gt; score difference -&gt; reward
-simulation failure -&gt; bounded penalty + terminated=True
-</pre></div>
+<h3 id="5.1-Render-only-diagnostics">5.1 Render-only diagnostics<a class="anchor-link" href="#5.1-Render-only-diagnostics">¶</a></h3><p><code>render()</code> shows parameter trajectories, observed beam features, score/reward, and parameter KNN distance from the reference dataset. KNN distance is a coverage diagnostic: it is <strong>not</strong> part of the observation, score, reward, termination rule, or action clipping. Rendering is lazy and does not affect training steps.</p>
 </div>
 </div>
 </div>
