@@ -25,7 +25,15 @@ import torch
 
 #Beam state definitions (used for observations and scoring)
 BEAM_STATE_FEATURES: Tuple[str, ...] = (
-    "npart_ratio", "x0", "y0", "SizeX", "SizeY", "ex", "ey", "x'0", "y'0"
+    "npart_ratio", # fraction of particles surviving to this stage
+    "x0",          # beam centroid x position (mm)
+    "y0",          # beam centroid y position (mm)
+    "SizeX",       # beam size in x direction (mm)
+    "SizeY",       # beam size in y direction (mm)
+    "ex",          # horizontal emittance (mm.mrad)
+    "ey",          # vertical emittance (mm.mrad)
+    "x'0",         # beam centroid x angle (mrad)
+    "y'0"          # beam centroid y angle (mrad)
 )
 BEAM_STATE_DIM: int = len(BEAM_STATE_FEATURES) # 9
 _BS_IDX: Dict[str, int] = {v: i for i, v in enumerate(BEAM_STATE_FEATURES)}
@@ -118,18 +126,16 @@ MAX_STEPS: int = 20
 EXPLORATION_SCALE: float = 0.35               # shared dataset/Bayesian exploration scale, calibrated via `exploration_scale_calculation` (see results/exploration_scale.json)
 DATASET_SCALE: float = EXPLORATION_SCALE      # dataset gaussian bell width, dataset_std_p = DATASET_SCALE * sensitivity_p
 BAYESIAN_SCALE: float = EXPLORATION_SCALE     # Default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity,default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max.
+
 # RESET_SCALE and ACTION_SCALE are derived from DATASET_SCALE by
-# offline_utility/scales_calculation.py (defaults k_sigma_dataset=2.5,
-# f_reset=0.25, k_sigma=2.5, target_scale=0.4*dataset_scale, max_steps=20):
+# offline_utility/scales_calculation.py (defaults k_sigma_dataset=3, f_reset=0.25, k_sigma=3, max_steps=20):
 #   RESET_SCALE  = f_reset * k_sigma_dataset * DATASET_SCALE / k_sigma  = 0.0875
-#   ACTION_SCALE = min(target_scale / 10, (1-f_reset)*k_sigma_dataset*DATASET_SCALE/max_steps) = 0.014
-# Re-run `scales_calculation` after changing DATASET_SCALE and paste the values here.
+#   ACTION_SCALE = (1-f_reset) * k_sigma_dataset * DATASET_SCALE / max_steps = 0.039375
+# Note: Re-run `scales_calculation` after changing DATASET_SCALE and paste the values here.
 RESET_SCALE: float =  8.749999999999998e-02   # episode-reset gaussian width, reset_std_p = RESET_SCALE * sensitivity_p
-ACTION_SCALE: float =  1.400000000000000e-02  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
+ACTION_SCALE: float =  3.937500000000000e-02  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
 
 # Score assigned when a simulation fails (TraceWin error, invalid output).
-# This is a bookkeeping sentinel for reports/datasets; it must never enter an
-# RL reward or a GP objective directly (it is a ~10-sigma outlier there).
 ERROR_SCORE: float = -999.0
 
 # Bounded per-step penalty used as the RL reward when a simulation fails

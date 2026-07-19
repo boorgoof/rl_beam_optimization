@@ -385,6 +385,18 @@ from `parameter_bounds_calculation` already being in place (it warns when
 the scale formulas themselves — they are only a clip applied later, when a
 concrete value is generated (dataset sampling, reset, action step).
 
+`f_reset` reserves its fraction of the trust-region radius for the reset; the
+full episode trajectory always receives the complete remaining fraction. In
+other words, the calculator enforces the equality
+
+```text
+k_sigma * RESET_SCALE + MAX_STEPS * ACTION_SCALE
+    = k_sigma_dataset * DATASET_SCALE
+```
+
+`ACTION_SCALE` is the complete per-step trajectory budget divided by
+`MAX_STEPS`.
+
 ```bash
 python -m beam_optimization scales_calculation --dataset-scale 0.35
 ```

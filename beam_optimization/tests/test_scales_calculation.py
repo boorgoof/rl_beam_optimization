@@ -1,0 +1,119 @@
+"""Tests for the offline reset/action scale calibration."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import unittest
+
+import numpy as np
+
+from beam_optimization.config.adige import (
+    ACTION_SCALE,
+    DATASET_SCALE,
+    MAX_STEPS,
+    RESET_SCALE,
+    action_bounds,
+    sensitivity_vec,
+)
+from beam_optimization.config.offline_utility.scales_calculation import (
+    DEFAULT_DATASET_SCALE,
+    DEFAULT_F_RESET,
+    DEFAULT_K_SIGMA,
+    DEFAULT_K_SIGMA_DATASET,
+    compute_scales,
+)
+
+
+class ScaleCalculationTests(unittest.TestCase):
+    def assert_budget_is_fully_used(
+        self,
+        scales,
+        *,
+        dataset_scale,
+        k_sigma_dataset,
+        k_sigma,
+        max_steps,
+    ):
+        used = k_sigma * scales["reset_scale"] + max_steps * scales["action_scale"]
+        available = k_sigma_dataset * dataset_scale
+        self.assertAlmostEqual(used, available)
+
+    def test_defaults_use_25_75_percent_budget_at_three_sigma(self):
+        scales = compute_scales()
+        self.assertAlmostEqual(DEFAULT_DATASET_SCALE, 0.35)
+        self.assertAlmostEqual(DEFAULT_F_RESET, 0.25)
+        self.assertAlmostEqual(DEFAULT_K_SIGMA_DATASET, 3.0)
+        self.assertAlmostEqual(DEFAULT_K_SIGMA, 3.0)
+        self.assertAlmostEqual(scales["reset_scale"], 0.0875)
+        self.assertAlmostEqual(scales["action_scale"], 0.039375)
+        self.assertEqual(
+            set(scales), {"dataset_scale", "reset_scale", "action_scale"}
+        )
+        self.assert_budget_is_fully_used(
+            scales,
+            dataset_scale=DEFAULT_DATASET_SCALE,
+            k_sigma_dataset=DEFAULT_K_SIGMA_DATASET,
+            k_sigma=DEFAULT_K_SIGMA,
+            max_steps=20,
+        )
+
+    def test_custom_inputs_use_the_complete_remaining_budget(self):
+        scales = compute_scales(
+            dataset_scale=0.4,
+            k_sigma_dataset=2.0,
+            f_reset=0.3,
+            k_sigma=4.0,
+            max_steps=10,
+        )
+        self.assertAlmostEqual(scales["reset_scale"], 0.06)
+        self.assertAlmostEqual(scales["action_scale"], 0.056)
+        self.assertEqual(
+            set(scales), {"dataset_scale", "reset_scale", "action_scale"}
+        )
+        self.assert_budget_is_fully_used(
+            scales,
+            dataset_scale=0.4,
+            k_sigma_dataset=2.0,
+            k_sigma=4.0,
+            max_steps=10,
+        )
+
+    def test_adige_uses_the_default_calculation_for_all_parameters(self):
+        scales = compute_scales()
+        self.assertAlmostEqual(DATASET_SCALE, scales["dataset_scale"])
+        self.assertAlmostEqual(RESET_SCALE, scales["reset_scale"])
+        self.assertAlmostEqual(ACTION_SCALE, scales["action_scale"])
+
+        sensitivity = sensitivity_vec()
+        low, high = action_bounds()
+        expected_step = ACTION_SCALE * sensitivity
+        np.testing.assert_allclose(low, -expected_step, rtol=2e-6)
+        np.testing.assert_allclose(high, expected_step, rtol=2e-6)
+        np.testing.assert_allclose(
+            MAX_STEPS * high,
+            (1.0 - DEFAULT_F_RESET)
+            * DEFAULT_K_SIGMA_DATASET
+            * DATASET_SCALE
+            * sensitivity,
+            rtol=2e-6,
+        )
+
+    def test_environment_notebook_uses_symbolic_reset_trajectory_plot(self):
+        notebook_path = (
+            Path(__file__).resolve().parents[1] / "env" / "visualize_environments.ipynb"
+        )
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        source = "\n".join(
+            "".join(cell.get("source", [])) for cell in notebook["cells"]
+        )
+        for label in (
+            "['Trust region', 'Reset', 'Full trajectory', 'Reset + full trajectory']",
+            "formula_labels",
+        ):
+            self.assertIn(label, source)
+        self.assertNotIn("Calculated", source)
+        self.assertNotIn("Configured", source)
+        self.assertNotIn("1.05 × sensitivity", source)
+
+if __name__ == "__main__":
+    unittest.main()

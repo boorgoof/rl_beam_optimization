@@ -7,10 +7,10 @@ this order because each depends on the previous one:
 
 dataset_scale is chosen freely first (how wide the surrogate's trust region
 should be). reset_scale and action_scale are then derived so that, in the
-worst case, a reset plus a full episode trajectory never leaves the dataset's
-gaussian bell:
+calibrated case, a reset plus a full episode trajectory uses exactly the
+dataset trust-region radius:
 
-    k_sigma * reset_scale + action_scale * max_steps <= k_sigma_dataset * dataset_scale
+    k_sigma * reset_scale + action_scale * max_steps = k_sigma_dataset * dataset_scale
 
 Because sensitivity cancels out of this inequality, the constraint — and the
 three scales themselves — are identical for every parameter; only the derived
@@ -22,7 +22,7 @@ clip applied when a concrete value is generated (dataset sampling, reset,
 action step), not a constraint on the scales themselves.
 """
 from __future__ import annotations
-from typing import List, Optional
+from typing import List
 import numpy as np
 from beam_optimization.config.adige import DATASET_SCALE, MAX_STEPS, PARAMETERS, sensitivity_vec
 
@@ -45,7 +45,6 @@ def compute_scales(
     k_sigma_dataset: float = DEFAULT_K_SIGMA_DATASET,
     f_reset: float = DEFAULT_F_RESET,
     k_sigma: float = DEFAULT_K_SIGMA,
-    target_scale: Optional[float] = None,
     max_steps: int = MAX_STEPS,
 ) -> dict:
     """Compute the three global scalars, in order: dataset_scale (given), reset_scale, action_scale.
@@ -53,14 +52,13 @@ def compute_scales(
     Args:
         dataset_scale: Chosen first, freely — width of the dataset's gaussian bell.
         k_sigma_dataset: How many dataset stddevs define the trust-region edge.
-        f_reset: Fraction of the trust region budget reserved for the reset (rest goes to the trajectory).
+        f_reset: Fraction of the trust-region radius reserved for the reset.
+            The full trajectory receives the remaining ``1 - f_reset``.
         k_sigma: Worst-case reset excursion, in reset stddevs.
-        target_scale: Fraction of dataset_scale the agent should typically cover in ~10 steps.
-            Defaults to 0.4 * dataset_scale.
         max_steps: Episode horizon in RL steps.
 
     Returns:
-        dict with dataset_scale, reset_scale, action_scale, action_scale_max.
+        dict with dataset_scale, reset_scale, and action_scale.
     """
     if dataset_scale <= 0:
         raise ValueError(f"dataset_scale must be > 0, got {dataset_scale}")
@@ -73,19 +71,13 @@ def compute_scales(
     if max_steps <= 0:
         raise ValueError(f"max_steps must be > 0, got {max_steps}")
 
-    if target_scale is None:
-        target_scale = 0.4 * dataset_scale
-
     reset_scale = f_reset * k_sigma_dataset * dataset_scale / k_sigma
-    action_scale_max = (1.0 - f_reset) * k_sigma_dataset * dataset_scale / max_steps
-    action_scale_candidate = target_scale / 10.0
-    action_scale = min(action_scale_candidate, action_scale_max)
+    action_scale = (1.0 - f_reset) * k_sigma_dataset * dataset_scale / max_steps
 
     return {
         "dataset_scale": dataset_scale,
         "reset_scale": reset_scale,
         "action_scale": action_scale,
-        "action_scale_max": action_scale_max,
     }
 
 
@@ -143,7 +135,6 @@ def report(
     k_sigma_dataset: float = DEFAULT_K_SIGMA_DATASET,
     f_reset: float = DEFAULT_F_RESET,
     k_sigma: float = DEFAULT_K_SIGMA,
-    target_scale: Optional[float] = None,
     max_steps: int = MAX_STEPS,
 ) -> None:
     """Print the calibration report and a copy-paste block for adige.py."""
@@ -152,7 +143,6 @@ def report(
         k_sigma_dataset=k_sigma_dataset,
         f_reset=f_reset,
         k_sigma=k_sigma,
-        target_scale=target_scale,
         max_steps=max_steps,
     )
     reset_scale = scales["reset_scale"]
@@ -163,9 +153,10 @@ def report(
         f"dataset_scale={dataset_scale}  k_sigma_dataset={k_sigma_dataset}  "
         f"f_reset={f_reset}  k_sigma={k_sigma}  max_steps={max_steps}"
     )
+    print(f"-> reset_scale={reset_scale:.6g}  action_scale={action_scale:.6g}")
     print(
-        f"-> reset_scale={reset_scale:.6g}  action_scale={action_scale:.6g} "
-        f"(action_scale_max={scales['action_scale_max']:.6g})"
+        f"-> trust-region budget: reset={f_reset:.1%}  "
+        f"full trajectory={1.0 - f_reset:.1%}"
     )
     print()
 
@@ -237,10 +228,6 @@ if __name__ == "__main__":
         help="Worst-case reset excursion, in reset stddevs (default: %(default)s)"
     )
     parser.add_argument(
-        "--target-scale", type=float, default=None,
-        help="Fraction of dataset_scale the agent should cover in ~10 steps (default: 0.4*dataset_scale)"
-    )
-    parser.add_argument(
         "--max-steps", type=int, default=MAX_STEPS,
         help="Episode length in RL steps (default: %(default)s)"
     )
@@ -251,6 +238,5 @@ if __name__ == "__main__":
         k_sigma_dataset=args.k_sigma_dataset,
         f_reset=args.f_reset,
         k_sigma=args.k_sigma,
-        target_scale=args.target_scale,
         max_steps=args.max_steps,
     )
