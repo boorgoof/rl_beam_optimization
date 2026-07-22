@@ -11,8 +11,10 @@ from beam_optimization.config.adige import (
     ACTION_SCALE,
     DATASET_SCALE,
     MAX_STEPS,
-    RESET_SCALE,
+    TEST_RESET_SCALE,
+    TRAIN_RESET_SCALE,
     action_bounds,
+    reset_std_vec,
     sensitivity_vec,
 )
 from beam_optimization.config.offline_utility.scales_calculation import (
@@ -34,7 +36,7 @@ class ScaleCalculationTests(unittest.TestCase):
         k_sigma,
         max_steps,
     ):
-        used = k_sigma * scales["reset_scale"] + max_steps * scales["action_scale"]
+        used = k_sigma * scales["train_reset_scale"] + max_steps * scales["action_scale"]
         available = k_sigma_dataset * dataset_scale
         self.assertAlmostEqual(used, available)
 
@@ -44,10 +46,12 @@ class ScaleCalculationTests(unittest.TestCase):
         self.assertAlmostEqual(DEFAULT_F_RESET, 0.25)
         self.assertAlmostEqual(DEFAULT_K_SIGMA_DATASET, 3.0)
         self.assertAlmostEqual(DEFAULT_K_SIGMA, 3.0)
-        self.assertAlmostEqual(scales["reset_scale"], 0.0875)
+        self.assertAlmostEqual(scales["train_reset_scale"], 0.0875)
+        self.assertAlmostEqual(scales["test_reset_scale"], 0.35)
         self.assertAlmostEqual(scales["action_scale"], 0.039375)
         self.assertEqual(
-            set(scales), {"dataset_scale", "reset_scale", "action_scale"}
+            set(scales),
+            {"dataset_scale", "train_reset_scale", "test_reset_scale", "action_scale"},
         )
         self.assert_budget_is_fully_used(
             scales,
@@ -65,10 +69,12 @@ class ScaleCalculationTests(unittest.TestCase):
             k_sigma=4.0,
             max_steps=10,
         )
-        self.assertAlmostEqual(scales["reset_scale"], 0.06)
+        self.assertAlmostEqual(scales["train_reset_scale"], 0.06)
+        self.assertAlmostEqual(scales["test_reset_scale"], 0.4)
         self.assertAlmostEqual(scales["action_scale"], 0.056)
         self.assertEqual(
-            set(scales), {"dataset_scale", "reset_scale", "action_scale"}
+            set(scales),
+            {"dataset_scale", "train_reset_scale", "test_reset_scale", "action_scale"},
         )
         self.assert_budget_is_fully_used(
             scales,
@@ -81,7 +87,9 @@ class ScaleCalculationTests(unittest.TestCase):
     def test_adige_uses_the_default_calculation_for_all_parameters(self):
         scales = compute_scales()
         self.assertAlmostEqual(DATASET_SCALE, scales["dataset_scale"])
-        self.assertAlmostEqual(RESET_SCALE, scales["reset_scale"])
+        self.assertAlmostEqual(TRAIN_RESET_SCALE, scales["train_reset_scale"])
+        self.assertAlmostEqual(TEST_RESET_SCALE, scales["test_reset_scale"])
+        self.assertAlmostEqual(TEST_RESET_SCALE, DATASET_SCALE)
         self.assertAlmostEqual(ACTION_SCALE, scales["action_scale"])
 
         sensitivity = sensitivity_vec()
@@ -97,6 +105,12 @@ class ScaleCalculationTests(unittest.TestCase):
             * sensitivity,
             rtol=2e-6,
         )
+        np.testing.assert_allclose(
+            reset_std_vec(TRAIN_RESET_SCALE), TRAIN_RESET_SCALE * sensitivity
+        )
+        np.testing.assert_allclose(
+            reset_std_vec(TEST_RESET_SCALE), DATASET_SCALE * sensitivity
+        )
 
     def test_environment_notebook_uses_symbolic_reset_trajectory_plot(self):
         notebook_path = (
@@ -107,13 +121,18 @@ class ScaleCalculationTests(unittest.TestCase):
             "".join(cell.get("source", [])) for cell in notebook["cells"]
         )
         for label in (
-            "['Trust region', 'Reset', 'Full trajectory', 'Reset + full trajectory']",
+            "'Dataset trust region (3σ)'",
+            "'Training reset (3σ)'",
+            "'Test reset (1σ)'",
+            "'Test reset (3σ)'",
+            "'Training reset + full trajectory'",
             "formula_labels",
         ):
             self.assertIn(label, source)
         self.assertNotIn("Calculated", source)
         self.assertNotIn("Configured", source)
         self.assertNotIn("1.05 × sensitivity", source)
+        self.assertNotIn("`RESET_SCALE`", source)
 
 if __name__ == "__main__":
     unittest.main()

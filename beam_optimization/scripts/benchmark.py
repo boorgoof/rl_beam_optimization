@@ -59,6 +59,7 @@ from beam_optimization.config.adige import (
     N_PARAMS,
     PARAM_KEYS,
     PARAMETERS,
+    TEST_RESET_SCALE,
     action_bounds,
     default_params,
     observation_dim,
@@ -364,7 +365,8 @@ def run_policy_benchmark(args, surrogate, dataset,
     """
     if env_factory is None:
         env_factory = lambda: SurrogateEnv(
-            model=surrogate, dataset=dataset, max_steps=args.max_ep_steps
+            model=surrogate, dataset=dataset, max_steps=args.max_ep_steps,
+            reset_scale=TEST_RESET_SCALE,
         )
     if episodes is None:
         episodes = args.policy_episodes
@@ -681,7 +683,10 @@ def main():
 
         def tracewin_env_factory():
             from beam_optimization.env.tracewin_env import TraceWinEnv
-            return TraceWinEnv(project_file=args.tracewin, max_steps=args.max_ep_steps)
+            return TraceWinEnv(
+                project_file=args.tracewin, max_steps=args.max_ep_steps,
+                reset_scale=TEST_RESET_SCALE,
+            )
 
         policy_evaluation_tracewin = run_policy_benchmark(
             args, surrogate, dataset,

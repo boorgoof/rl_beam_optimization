@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from beam_optimization.config.adige import MAX_STEPS
+from beam_optimization.config.adige import MAX_STEPS, TRAIN_RESET_SCALE
 from beam_optimization.config.paths import new_tracewin_env_calc_dir
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
@@ -49,6 +49,7 @@ class TraceWinEnv(BaseBeamEnv):
         observation:    Selected by OBSERVATION_STAGE_MASK in adige.py.
         timeout:       Seconds before aborting a single TraceWin call.
         retries:       Retry attempts on TraceWin failure.
+        reset_scale:   Gaussian reset width in sensitivity units.
     """
 
     def __init__(
@@ -58,6 +59,7 @@ class TraceWinEnv(BaseBeamEnv):
         max_steps: int = MAX_STEPS,
         timeout: float = 45.0,
         retries: int = 2,
+        reset_scale: float = TRAIN_RESET_SCALE,
     ):
 
         if calc_dir is None:
@@ -75,6 +77,7 @@ class TraceWinEnv(BaseBeamEnv):
         # Call the base class constructor
         super().__init__(
             max_steps=max_steps,
+            reset_scale=reset_scale,
         )
 
     def _build_simulator(self) -> TraceWinSimulator:

@@ -3,6 +3,8 @@ PPO — Proximal Policy Optimization (Schulman et al., 2017).
 On-policy algorithm with clipped surrogate objective and GAE.
 Adapted from reinforcement_learning_2/rl/algorithms/continuous/ppo.py.
 """
+from typing import Optional, Union
+
 import numpy as np
 import torch
 import torch.optim as optim
@@ -29,7 +31,8 @@ class PPO:
                  entropy_coef: float = 0.01,
                  max_grad_norm: float = 0.5,
                  stop_kl: float = 0.02,
-                 stop_mse: float = 25.0):
+                 stop_mse: float = 25.0,
+                 device: Optional[Union[str, torch.device]] = None):
         self.clip_range       = clip_range
         self.value_clip_range = value_clip_range
         self.n_epochs         = n_epochs
@@ -38,12 +41,13 @@ class PPO:
         self.max_grad_norm    = max_grad_norm
         self.stop_kl          = stop_kl
         self.stop_mse         = stop_mse
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.policy  = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims)
-        self.value   = ValueNetwork(obs_dim, hidden_dims)
+        self.policy  = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims).to(self.device)
+        self.value   = ValueNetwork(obs_dim, hidden_dims).to(self.device)
         self.p_opt   = optim.Adam(self.policy.parameters(), lr=actor_lr)
         self.v_opt   = optim.Adam(self.value.parameters(),  lr=critic_lr)
-        self.buffer  = EpisodeBuffer(gamma=gamma, tau=tau)
+        self.buffer  = EpisodeBuffer(gamma=gamma, tau=tau, device=self.device)
 
     def select_action(self, state, training: bool = True):
         if training:

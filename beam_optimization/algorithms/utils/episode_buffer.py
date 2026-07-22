@@ -1,6 +1,8 @@
 """On-policy trajectory buffer with GAE advantage computation (for PPO).
 Adapted from reinforcement_learning_2/rl/utils/episode_buffer.py.
 """
+from typing import Optional, Union
+
 import numpy as np
 import torch
 
@@ -8,9 +10,17 @@ import torch
 class EpisodeBuffer:
     """Stores one or more full episodes; computes discounted returns and GAE."""
 
-    def __init__(self, gamma: float = 0.99, tau: float = 0.95):
+    def __init__(
+        self,
+        gamma: float = 0.99,
+        tau: float = 0.95,
+        device: Optional[Union[str, torch.device]] = None,
+    ):
         self.gamma = gamma
         self.tau   = tau
+        self.device = torch.device(
+            device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         self._reset()
 
     def _reset(self):
@@ -55,9 +65,9 @@ class EpisodeBuffer:
 
         self._reset()
         return (
-            torch.tensor(states),
-            torch.tensor(actions),
-            torch.tensor(returns),
-            torch.tensor(gaes),
-            torch.tensor(logpas),
+            torch.tensor(states, device=self.device),
+            torch.tensor(actions, device=self.device),
+            torch.tensor(returns, device=self.device),
+            torch.tensor(gaes, device=self.device),
+            torch.tensor(logpas, device=self.device),
         )

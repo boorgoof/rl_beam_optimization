@@ -15,6 +15,8 @@ Algorithm:
     actor (policy gradient + entropy bonus) and critic (MSE on returns).
     No multiple epochs — that is PPO's improvement.
 """
+from typing import Optional, Union
+
 import torch
 import torch.optim as optim
 
@@ -34,17 +36,19 @@ class A2C:
                  gamma: float = 0.99,
                  tau: float = 0.95,
                  entropy_loss_weight: float = 0.001,
-                 policy_max_grad_norm: float = 1.0):
+                 policy_max_grad_norm: float = 1.0,
+                 device: Optional[Union[str, torch.device]] = None):
         self.entropy_loss_weight  = entropy_loss_weight
         self.policy_max_grad_norm = policy_max_grad_norm
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims)
-        self.value_network  = ValueNetwork(obs_dim, hidden_dims)
+        self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims).to(self.device)
+        self.value_network  = ValueNetwork(obs_dim, hidden_dims).to(self.device)
 
         self.policy_optimizer = optim.Adam(self.policy_network.parameters(), lr=actor_lr)
         self.value_optimizer  = optim.Adam(self.value_network.parameters(),  lr=critic_lr)
 
-        self.episode_buffer = EpisodeBuffer(gamma=gamma, tau=tau)
+        self.episode_buffer = EpisodeBuffer(gamma=gamma, tau=tau, device=self.device)
 
     def select_action(self, state, training: bool = True):
         if training:

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Compute DATASET_SCALE, RESET_SCALE and ACTION_SCALE values.
+# Compute DATASET_SCALE, TRAIN_RESET_SCALE, TEST_RESET_SCALE and ACTION_SCALE.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

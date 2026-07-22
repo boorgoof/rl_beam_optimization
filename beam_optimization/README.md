@@ -65,7 +65,7 @@ After the Python environment is ready, follow the project onboarding flow:
 2. Calibrate adige.py for this beam line (section 3), in order:
    a. sensitivity                  -> paste into ParameterSpec.sensitivity
    b. parameter_bounds_calculation -> paste into ParameterSpec.hw_min/hw_max
-   c. scales_calculation            -> paste into DATASET_SCALE/RESET_SCALE/ACTION_SCALE
+   c. scales_calculation            -> paste into DATASET_SCALE/TRAIN_RESET_SCALE/TEST_RESET_SCALE/ACTION_SCALE
 3. Run bayesian_opt (or bayesian_opt_cold_start), then paste the printed
    values into adige.py (default=).
 4. Run build_dataset and train_surrogate if the base dataset/surrogates are
@@ -299,7 +299,8 @@ user instead of `comunian` in the SSH setup, the permission checks, and
 `beam_optimization/config/adige.py` is the single source of truth for the
 physics of one specific beam line: for every parameter it hardcodes a
 `sensitivity`, a hardware range (`hw_min`/`hw_max`), and — shared globally —
-`DATASET_SCALE`, `RESET_SCALE` and `ACTION_SCALE`. All of that is measured
+`DATASET_SCALE`, `TRAIN_RESET_SCALE`, `TEST_RESET_SCALE` and `ACTION_SCALE`.
+All of that is measured
 from the TraceWin workspace configured in section 2. **If you point the
 project at a different lattice/workspace, these numbers no longer describe
 it and must be remeasured.**
@@ -310,7 +311,7 @@ output is consumed by the next:
 ```text
 1. sensitivity                  -> ParameterSpec.sensitivity  (physical scale per parameter)
 2. parameter_bounds_calculation -> ParameterSpec.hw_min/hw_max (operational transport limits)
-3. scales_calculation            -> DATASET_SCALE/RESET_SCALE/ACTION_SCALE (global RL/dataset scales)
+3. scales_calculation            -> DATASET_SCALE/TRAIN_RESET_SCALE/TEST_RESET_SCALE/ACTION_SCALE
 ```
 
 None of them edit `adige.py` automatically — each prints a copy-paste block
@@ -368,17 +369,24 @@ scan is saved to `beam_optimization/results/parameter_bounds.json`.
 
 ### 3.3 `scales_calculation` — global RL/dataset scales
 
-`DATASET_SCALE`, `RESET_SCALE` and `ACTION_SCALE` are the three scalars
+`DATASET_SCALE`, `TRAIN_RESET_SCALE`, `TEST_RESET_SCALE` and `ACTION_SCALE` are
+the four scalars
 (shared by every parameter) that turn a per-parameter `sensitivity` into a
 concrete physical width:
 
 - `DATASET_SCALE`: dataset gaussian bell width, `dataset_std_p = DATASET_SCALE * sensitivity_p`;
-- `RESET_SCALE`: episode-reset gaussian width, `reset_std_p = RESET_SCALE * sensitivity_p`;
+- `TRAIN_RESET_SCALE`: training-reset Gaussian width,
+  `train_reset_std_p = TRAIN_RESET_SCALE * sensitivity_p`;
+- `TEST_RESET_SCALE`: evaluation-reset Gaussian width,
+  `test_reset_std_p = TEST_RESET_SCALE * sensitivity_p`; it is set equal to
+  `DATASET_SCALE`, so tests start from the same parameter distribution used
+  for dataset generation;
 - `ACTION_SCALE`: max per-step RL action, `step_max_p = ACTION_SCALE * sensitivity_p`.
 
 They are derived from one another — `dataset_scale` is chosen freely,
-`reset_scale` and `action_scale` follow so that a reset plus a full episode
-never leaves the dataset's trust region — so this step must run **after**
+`train_reset_scale` and `action_scale` follow so that a training reset plus a
+full episode uses the dataset's trust-region radius. `test_reset_scale` is
+instead exactly `dataset_scale`. This step must run **after**
 `sensitivity` (it calls `sensitivity_vec()` for its diagnostics) and benefits
 from `parameter_bounds_calculation` already being in place (it warns when
 `hw_min`/`hw_max` would clip the dataset bell). Hardware bounds never enter
@@ -390,12 +398,15 @@ full episode trajectory always receives the complete remaining fraction. In
 other words, the calculator enforces the equality
 
 ```text
-k_sigma * RESET_SCALE + MAX_STEPS * ACTION_SCALE
+k_sigma * TRAIN_RESET_SCALE + MAX_STEPS * ACTION_SCALE
     = k_sigma_dataset * DATASET_SCALE
 ```
 
 `ACTION_SCALE` is the complete per-step trajectory budget divided by
-`MAX_STEPS`.
+`MAX_STEPS`. The 25%/75% allocation applies only to training. Evaluation,
+checkpoint selection, benchmark and qualitative test episodes use
+`TEST_RESET_SCALE = DATASET_SCALE`; hardware clipping remains active and no
+additional `3σ` clipping is imposed.
 
 ```bash
 python -m beam_optimization scales_calculation --dataset-scale 0.35
@@ -437,7 +448,7 @@ Available commands:
 sensitivity         compute ADIGE parameter sensitivity from TraceWin finite differences, with one-sided fallback at hardware bounds
 refining_sensitivity refine current ParameterSpec.sensitivity values toward a one-point score change
 parameter_bounds_calculation calculate TraceWin parameter bounds and save JSON
-scales_calculation  compute DATASET_SCALE, RESET_SCALE and ACTION_SCALE
+scales_calculation  compute DATASET_SCALE, TRAIN_RESET_SCALE, TEST_RESET_SCALE and ACTION_SCALE
 bayesian_opt        find new default parameters with real TraceWin evaluations
 bayesian_opt_cold_start find defaults without loading an existing dataset
 build_dataset       generate a new TraceWin dataset
@@ -464,7 +475,7 @@ printed values, and paste them into `adige.py` yourself before continuing
 ```text
 sensitivity -> (update adige.py sensitivity=) ->
 parameter_bounds_calculation -> (update adige.py hw_min=/hw_max=) ->
-scales_calculation -> (update adige.py DATASET_SCALE=/RESET_SCALE=/ACTION_SCALE=) ->
+scales_calculation -> (update adige.py DATASET_SCALE=/TRAIN_RESET_SCALE=/TEST_RESET_SCALE=/ACTION_SCALE=) ->
 bayesian_opt -> (update adige.py default=) ->
 build_dataset -> train_surrogate -> check -> train_policies -> benchmark -> test
 ```

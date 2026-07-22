@@ -12,7 +12,9 @@ import warnings
 from pathlib import Path
 
 from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, load_agent
-from beam_optimization.config.adige import MAX_STEPS, N_PARAMS, action_bounds
+from beam_optimization.config.adige import (
+    MAX_STEPS, N_PARAMS, TEST_RESET_SCALE, action_bounds,
+)
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
     DEFAULT_OUTPUT_DIR,
@@ -56,6 +58,7 @@ def make_env(args):
             model=surrogate,
             dataset=dataset,
             max_steps=args.max_ep_steps,
+            reset_scale=TEST_RESET_SCALE,
         )
 
     from beam_optimization.env.tracewin_env import TraceWinEnv
@@ -67,6 +70,7 @@ def make_env(args):
         calc_dir=str(calc_dir),
         max_steps=args.max_ep_steps,
         timeout=args.tracewin_timeout,
+        reset_scale=TEST_RESET_SCALE,
     )
 
 

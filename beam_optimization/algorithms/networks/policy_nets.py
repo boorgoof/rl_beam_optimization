@@ -7,12 +7,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def format_input(x):
-    """Convert numpy/list input to a batched float32 tensor."""
+def format_input(x, device=None):
+    """Convert numpy/list input to a batched float32 tensor, optionally moved to `device`."""
     if not isinstance(x, torch.Tensor):
         x = torch.tensor(x, dtype=torch.float32)
         if x.dim() == 1:
             x = x.unsqueeze(0)
+    if device is not None:
+        x = x.to(device)
     return x
 
 
@@ -32,7 +34,7 @@ class DeterministicPolicyNetwork(nn.Module):
         return ((x + 1) / 2) * (self.action_max - self.action_min) + self.action_min
 
     def forward(self, state):
-        x = format_input(state).to(self.action_min.device)
+        x = format_input(state, device=self.action_min.device)
         x = self.activation_fc(self.input_layer(x))
         for h in self.hidden_layers:
             x = self.activation_fc(h(x))
@@ -70,7 +72,7 @@ class GaussianPolicyNetwork(nn.Module):
         return torch.log((self.action_max - self.action_min) / 2)
 
     def forward(self, state):
-        x = format_input(state).to(self.action_min.device)
+        x = format_input(state, device=self.action_min.device)
         x = self.activation_fc(self.input_layer(x))
         for h in self.hidden_layers:
             x = self.activation_fc(h(x))

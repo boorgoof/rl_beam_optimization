@@ -54,6 +54,8 @@ from beam_optimization.config.adige import (
     N_OUTPUT_STAGES,
     N_PARAMS,
     PARAM_KEYS,
+    TEST_RESET_SCALE,
+    TRAIN_RESET_SCALE,
     action_bounds,
     default_params,
     observation_dim,
@@ -410,7 +412,10 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     """Train one custom model-free algorithm on the surrogate environment."""
     set_global_seed(seed)
     # Create env first so obs_dim is known before building the agent
-    env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
+    env = SurrogateEnv(
+        model=surrogate, dataset=dataset, max_steps=max_ep_steps,
+        reset_scale=TRAIN_RESET_SCALE,
+    )
     obs_dim = env.observation_space.shape[0]
 
     act_bds = action_bounds()
@@ -435,7 +440,10 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     )
 
     on_policy = is_on_policy(algo)
-    make_eval_env = lambda: SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
+    make_eval_env = lambda: SurrogateEnv(
+        model=surrogate, dataset=dataset, max_steps=max_ep_steps,
+        reset_scale=TEST_RESET_SCALE,
+    )
 
     try:
         if recorder is not None:
@@ -552,7 +560,10 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
     from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
 
     set_global_seed(seed)
-    env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
+    env = SurrogateEnv(
+        model=surrogate, dataset=dataset, max_steps=max_ep_steps,
+        reset_scale=TRAIN_RESET_SCALE,
+    )
 
     logger = _make_logger(out_dir, "sb3_sac", enable_tensorboard)
     recorder = (
@@ -560,7 +571,10 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
         if enable_learning_curve and eval_episodes > 0
         else None
     )
-    make_eval_env = lambda: SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
+    make_eval_env = lambda: SurrogateEnv(
+        model=surrogate, dataset=dataset, max_steps=max_ep_steps,
+        reset_scale=TEST_RESET_SCALE,
+    )
     agent = SB3SAC(
         env,
         hidden_dims=tuple(hidden),
@@ -645,10 +659,14 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
         else None
     )
     eval_every_episodes = max(1, max(1, eval_every) // max(1, horizon))
+    make_eval_env = lambda: SurrogateEnv(
+        model=surrogate, dataset=dataset, max_steps=horizon,
+        reset_scale=TEST_RESET_SCALE,
+    )
 
     try:
         if recorder is not None:
-            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes, seed=EVAL_SEED)
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -676,7 +694,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
                       f"score={result.final_score:.3f}  best={best_score:.3f}")
             if recorder is not None and ep % eval_every_episodes == 0:
                 step = ep * horizon
-                metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes, seed=EVAL_SEED)
+                metrics = evaluate_policy(agent, make_eval_env, eval_episodes, seed=EVAL_SEED)
                 log_learning_curve_eval(
                     recorder=recorder,
                     logger=logger,
@@ -687,7 +705,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
 
         final_step = n_episodes * horizon
         if recorder is not None and (not recorder.rows or recorder.rows[-1]["step"] != final_step):
-            metrics = evaluate_policy(agent, lambda: agent.env, eval_episodes, seed=EVAL_SEED)
+            metrics = evaluate_policy(agent, make_eval_env, eval_episodes, seed=EVAL_SEED)
             log_learning_curve_eval(
                 recorder=recorder,
                 logger=logger,
@@ -759,11 +777,15 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         env = TraceWinEnv(
             project_file=tracewin_project,
             max_steps=max_ep_steps,
+            reset_scale=TRAIN_RESET_SCALE,
         )
         label = "MBPOWithModelUpdate" if use_model_update else "MBPO"
         print(f"  Real env: TraceWin  ({tracewin_project})  [{label}]")
     else:
-        env = SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
+        env = SurrogateEnv(
+            model=surrogate, dataset=dataset, max_steps=max_ep_steps,
+            reset_scale=TRAIN_RESET_SCALE,
+        )
         print("  Real env: surrogate (SurrogateEnv)  [MBPO]")
 
     obs_dim = env.observation_space.shape[0]
@@ -827,8 +849,14 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
     def make_eval_env():
         if tracewin_project:
             from beam_optimization.env.tracewin_env import TraceWinEnv
-            return TraceWinEnv(project_file=tracewin_project, max_steps=max_ep_steps)
-        return SurrogateEnv(model=surrogate, dataset=dataset, max_steps=max_ep_steps)
+            return TraceWinEnv(
+                project_file=tracewin_project, max_steps=max_ep_steps,
+                reset_scale=TEST_RESET_SCALE,
+            )
+        return SurrogateEnv(
+            model=surrogate, dataset=dataset, max_steps=max_ep_steps,
+            reset_scale=TEST_RESET_SCALE,
+        )
 
     try:
         if recorder is not None:

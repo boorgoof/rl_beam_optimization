@@ -127,12 +127,14 @@ EXPLORATION_SCALE: float = 0.35               # shared dataset/Bayesian explorat
 DATASET_SCALE: float = EXPLORATION_SCALE      # dataset gaussian bell width, dataset_std_p = DATASET_SCALE * sensitivity_p
 BAYESIAN_SCALE: float = EXPLORATION_SCALE     # Default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity,default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max.
 
-# RESET_SCALE and ACTION_SCALE are derived from DATASET_SCALE by
+# TRAIN_RESET_SCALE and ACTION_SCALE are derived from DATASET_SCALE by
 # offline_utility/scales_calculation.py (defaults k_sigma_dataset=3, f_reset=0.25, k_sigma=3, max_steps=20):
-#   RESET_SCALE  = f_reset * k_sigma_dataset * DATASET_SCALE / k_sigma  = 0.0875
+#   TRAIN_RESET_SCALE = f_reset * k_sigma_dataset * DATASET_SCALE / k_sigma = 0.0875
 #   ACTION_SCALE = (1-f_reset) * k_sigma_dataset * DATASET_SCALE / max_steps = 0.039375
+# Test/evaluation resets deliberately use the same gaussian width as dataset generation.
 # Note: Re-run `scales_calculation` after changing DATASET_SCALE and paste the values here.
-RESET_SCALE: float =  8.749999999999998e-02   # episode-reset gaussian width, reset_std_p = RESET_SCALE * sensitivity_p
+TRAIN_RESET_SCALE: float = 8.749999999999998e-02
+TEST_RESET_SCALE: float = DATASET_SCALE
 ACTION_SCALE: float =  3.937500000000000e-02  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
 
 # Score assigned when a simulation fails (TraceWin error, invalid output).
@@ -318,9 +320,11 @@ def action_step_vec() -> np.ndarray:
     return sensitivity_vec() * ACTION_SCALE
 
 
-def reset_std_vec() -> np.ndarray:
-    """Return reset Gaussian stddevs: sensitivity * RESET_SCALE."""
-    return sensitivity_vec() * RESET_SCALE
+def reset_std_vec(reset_scale: float) -> np.ndarray:
+    """Return reset Gaussian stddevs for an explicit training/test scale."""
+    if reset_scale < 0:
+        raise ValueError(f"reset_scale must be >= 0, got {reset_scale}")
+    return sensitivity_vec() * float(reset_scale)
 
 
 def dataset_std_vec() -> np.ndarray:

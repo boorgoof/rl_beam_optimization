@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import random
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -95,6 +96,12 @@ class SurrogateTrainer:
                 weight_decay=self.weight_decay,
             )
             save_path = self._checkpoint_path(local_index)
+            print(
+                f"\nTraining {save_path.stem} on {self.device} "
+                f"({len(train_dataset):,} train, "
+                f"{len(val_dataset) if val_dataset is not None else 0:,} validation samples)",
+                flush=True,
+            )
             logger = (
                 Logger(self.log_dir / save_path.stem, algorithm="surrogate")
                 if self.enable_tensorboard
@@ -108,6 +115,7 @@ class SurrogateTrainer:
                     train_dataset,
                     val_dataset,
                     logger=logger,
+                    progress_label=save_path.stem,
                 )
             finally:
                 if logger is not None:
@@ -160,11 +168,13 @@ class SurrogateTrainer:
         train_dataset: BeamDataset,
         val_dataset: Optional[BeamDataset],
         logger: Optional[Logger] = None,
+        progress_label: str = "surrogate",
     ) -> tuple[list[dict], dict, float]:
         criterion = nn.MSELoss()
         history: list[dict] = []
         best_state = copy.deepcopy(model.state_dict())
         best_val_loss = float("inf")
+        training_started = time.monotonic()
 
         for epoch in range(1, self.max_epochs + 1):
             model.train()
@@ -240,6 +250,14 @@ class SurrogateTrainer:
                 for i, stage_loss in enumerate(stage_loss_means, start=1):
                     metrics[f"stage_{i}_train_loss"] = stage_loss
                 logger.log(metrics, step=epoch)
+
+            elapsed = time.monotonic() - training_started
+            print(
+                f"  [{progress_label}] epoch {epoch:03d}/{self.max_epochs} "
+                f"train_loss={train_loss:.6g} val_loss={val_loss:.6g} "
+                f"best_val={best_val_loss:.6g} elapsed={elapsed:.1f}s",
+                flush=True,
+            )
 
         return history, best_state, best_val_loss
 

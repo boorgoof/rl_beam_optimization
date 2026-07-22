@@ -21,6 +21,8 @@ Gradient estimator:
 No value baseline — high variance but conceptually the simplest policy
 gradient algorithm.
 """
+from typing import Optional, Union
+
 import numpy as np
 import torch
 import torch.optim as optim
@@ -38,14 +40,16 @@ class REINFORCE:
                  actor_lr: float = 7e-4,
                  gamma: float = 0.99,
                  entropy_loss_weight: float = 0.001,
-                 policy_max_grad_norm: float = 1.0):
+                 policy_max_grad_norm: float = 1.0,
+                 device: Optional[Union[str, torch.device]] = None):
         self.gamma                = gamma
         self.entropy_loss_weight  = entropy_loss_weight
         self.policy_max_grad_norm = policy_max_grad_norm
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims)
+        self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims).to(self.device)
         self.optimizer      = optim.Adam(self.policy_network.parameters(), lr=actor_lr)
-        self.episode_buffer = EpisodeBuffer(gamma=gamma, tau=1.0)
+        self.episode_buffer = EpisodeBuffer(gamma=gamma, tau=1.0, device=self.device)
 
     def select_action(self, state, training: bool = True):
         if training:
@@ -65,7 +69,7 @@ class REINFORCE:
 
         discounts = torch.tensor(
             np.logspace(0, T, num=T, base=self.gamma, endpoint=False),
-            dtype=torch.float32)
+            dtype=torch.float32, device=self.device)
 
         log_probs    = self.policy_network.log_prob(states, actions).squeeze(-1)
         entropy_loss = log_probs.mean()

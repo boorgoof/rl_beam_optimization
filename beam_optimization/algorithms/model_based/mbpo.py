@@ -30,6 +30,7 @@ from typing import List, Optional, Union
 import numpy as np
 from beam_optimization.algorithms.utils.replay_buffer import MixedReplayBuffer
 from beam_optimization.env.surrogate_env import SurrogateEnv
+from beam_optimization.config.adige import TRAIN_RESET_SCALE
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
@@ -87,11 +88,16 @@ class MBPO:
             dataset=dataset,
             max_steps=max(1, self.rollout_length),
             device=device,
+            reset_scale=TRAIN_RESET_SCALE,
         )
 
-        # Replace inner agent's replay buffer with mixed one
+        # Replace inner agent's replay buffer with mixed one, on the same
+        # device as the agent's own networks (both auto-detect the same way
+        # when unset, but pinning it explicitly avoids relying on that
+        # coincidence if the agent was built with an explicit device).
         self.mixed_buffer = MixedReplayBuffer(
-            obs_dim, act_dim, real_buffer_size, synth_buffer_size, real_ratio
+            obs_dim, act_dim, real_buffer_size, synth_buffer_size, real_ratio,
+            device=getattr(agent, "device", None),
         )
         agent.replay = self.mixed_buffer
 

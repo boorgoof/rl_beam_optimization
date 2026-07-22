@@ -1,19 +1,22 @@
-"""Offline calculation of the three global RL/dataset scales for ADIGE.
+"""Offline calculation of the global RL/dataset scales for ADIGE.
 
-Three scalars are shared by every parameter (in sensitivity units), derived in
+Four scalars are shared by every parameter (in sensitivity units), derived in
 this order because each depends on the previous one:
 
-    dataset_scale -> reset_scale -> action_scale
+    dataset_scale -> train_reset_scale, test_reset_scale, action_scale
 
 dataset_scale is chosen freely first (how wide the surrogate's trust region
-should be). reset_scale and action_scale are then derived so that, in the
+should be). train_reset_scale and action_scale are then derived so that, in the
 calibrated case, a reset plus a full episode trajectory uses exactly the
 dataset trust-region radius:
 
-    k_sigma * reset_scale + action_scale * max_steps = k_sigma_dataset * dataset_scale
+    k_sigma * train_reset_scale + action_scale * max_steps = k_sigma_dataset * dataset_scale
+
+Test/evaluation resets use test_reset_scale = dataset_scale, matching the
+Gaussian parameter distribution used to build the dataset.
 
 Because sensitivity cancels out of this inequality, the constraint — and the
-three scales themselves — are identical for every parameter; only the derived
+scales themselves — are identical for every parameter; only the derived
 per-parameter physical quantities (dataset_std_p, reset_std_p, step_max_p,
 trajectory_max_p) depend on each parameter's sensitivity.
 
@@ -47,7 +50,7 @@ def compute_scales(
     k_sigma: float = DEFAULT_K_SIGMA,
     max_steps: int = MAX_STEPS,
 ) -> dict:
-    """Compute the three global scalars, in order: dataset_scale (given), reset_scale, action_scale.
+    """Compute dataset, training-reset, test-reset, and action scales.
 
     Args:
         dataset_scale: Chosen first, freely — width of the dataset's gaussian bell.
@@ -58,7 +61,7 @@ def compute_scales(
         max_steps: Episode horizon in RL steps.
 
     Returns:
-        dict with dataset_scale, reset_scale, and action_scale.
+        dict with dataset_scale, train_reset_scale, test_reset_scale, and action_scale.
     """
     if dataset_scale <= 0:
         raise ValueError(f"dataset_scale must be > 0, got {dataset_scale}")
@@ -71,12 +74,14 @@ def compute_scales(
     if max_steps <= 0:
         raise ValueError(f"max_steps must be > 0, got {max_steps}")
 
-    reset_scale = f_reset * k_sigma_dataset * dataset_scale / k_sigma
+    train_reset_scale = f_reset * k_sigma_dataset * dataset_scale / k_sigma
+    test_reset_scale = dataset_scale
     action_scale = (1.0 - f_reset) * k_sigma_dataset * dataset_scale / max_steps
 
     return {
         "dataset_scale": dataset_scale,
-        "reset_scale": reset_scale,
+        "train_reset_scale": train_reset_scale,
+        "test_reset_scale": test_reset_scale,
         "action_scale": action_scale,
     }
 
@@ -84,7 +89,7 @@ def compute_scales(
 def verify_constraints(
     *,
     dataset_scale: float,
-    reset_scale: float,
+    train_reset_scale: float,
     action_scale: float,
     k_sigma_dataset: float = DEFAULT_K_SIGMA_DATASET,
     k_sigma: float = DEFAULT_K_SIGMA,
@@ -94,7 +99,7 @@ def verify_constraints(
 
     The core constraint is parameter-independent (sensitivity cancels out):
 
-        k_sigma * reset_scale + action_scale * max_steps <= k_sigma_dataset * dataset_scale
+        k_sigma * train_reset_scale + action_scale * max_steps <= k_sigma_dataset * dataset_scale
 
     In addition, for parameters with known hardware bounds, warn if the
     dataset's gaussian bell (k_sigma_dataset * dataset_std_p) would be
@@ -103,11 +108,11 @@ def verify_constraints(
     """
     warnings: List[str] = []
 
-    lhs = k_sigma * reset_scale + action_scale * max_steps
+    lhs = k_sigma * train_reset_scale + action_scale * max_steps
     rhs = k_sigma_dataset * dataset_scale
     if lhs > rhs:
         warnings.append(
-            f"VIOLATION — k_sigma*reset_scale + action_scale*max_steps = {lhs:.6g} "
+            f"VIOLATION — k_sigma*train_reset_scale + action_scale*max_steps = {lhs:.6g} "
             f"> k_sigma_dataset*dataset_scale = {rhs:.6g}"
         )
 
@@ -145,7 +150,8 @@ def report(
         k_sigma=k_sigma,
         max_steps=max_steps,
     )
-    reset_scale = scales["reset_scale"]
+    train_reset_scale = scales["train_reset_scale"]
+    test_reset_scale = scales["test_reset_scale"]
     action_scale = scales["action_scale"]
 
     print("\nScale Calculation")
@@ -153,7 +159,10 @@ def report(
         f"dataset_scale={dataset_scale}  k_sigma_dataset={k_sigma_dataset}  "
         f"f_reset={f_reset}  k_sigma={k_sigma}  max_steps={max_steps}"
     )
-    print(f"-> reset_scale={reset_scale:.6g}  action_scale={action_scale:.6g}")
+    print(
+        f"-> train_reset_scale={train_reset_scale:.6g}  "
+        f"test_reset_scale={test_reset_scale:.6g}  action_scale={action_scale:.6g}"
+    )
     print(
         f"-> trust-region budget: reset={f_reset:.1%}  "
         f"full trajectory={1.0 - f_reset:.1%}"
@@ -162,13 +171,14 @@ def report(
 
     sens = sensitivity_vec()
     dataset_std = dataset_scale * sens
-    reset_std = reset_scale * sens
+    train_reset_std = train_reset_scale * sens
+    test_reset_std = test_reset_scale * sens
     step_max = action_scale * sens
     trajectory_max = step_max * max_steps
 
     header = (
-        f"{'Parameter':<14} {'dataset_std':>14} {'reset_std':>14} "
-        f"{'step_max':>14} {'trajectory_max':>18}"
+        f"{'Parameter':<14} {'dataset_std':>14} {'train_reset_std':>17} "
+        f"{'test_reset_std':>16} {'step_max':>14} {'trajectory_max':>18}"
     )
     sep = "-" * len(header)
     print(sep)
@@ -176,14 +186,15 @@ def report(
     print(sep)
     for i, p in enumerate(PARAMETERS):
         print(
-            f"{p.name:<14} {dataset_std[i]:>14.6g} {reset_std[i]:>14.6g} "
-            f"{step_max[i]:>14.6g} {trajectory_max[i]:>18.6g}"
+            f"{p.name:<14} {dataset_std[i]:>14.6g} {train_reset_std[i]:>17.6g} "
+            f"{test_reset_std[i]:>16.6g} {step_max[i]:>14.6g} "
+            f"{trajectory_max[i]:>18.6g}"
         )
     print(sep)
 
     warnings = verify_constraints(
         dataset_scale=dataset_scale,
-        reset_scale=reset_scale,
+        train_reset_scale=train_reset_scale,
         action_scale=action_scale,
         k_sigma_dataset=k_sigma_dataset,
         k_sigma=k_sigma,
@@ -199,7 +210,8 @@ def report(
     print("Copy-paste block for adige.py:")
     print(bar)
     print(f"DATASET_SCALE: float = {dataset_scale!r}")
-    print(f"RESET_SCALE: float = {reset_scale:.15e}")
+    print(f"TRAIN_RESET_SCALE: float = {train_reset_scale:.15e}")
+    print("TEST_RESET_SCALE: float = DATASET_SCALE")
     print(f"ACTION_SCALE: float = {action_scale:.15e}")
     print(bar)
 

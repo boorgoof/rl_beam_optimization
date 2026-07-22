@@ -3,6 +3,8 @@ TD3 — Twin Delayed DDPG (Fujimoto et al., 2018).
 Adapted from reinforcement_learning_2/rl/algorithms/continuous/td3.py.
 """
 import copy
+from typing import Optional, Union
+
 import numpy as np
 import torch
 import torch.optim as optim
@@ -29,7 +31,8 @@ class TD3:
                  exploration_noise: float = 0.1,
                  policy_noise: float = 0.2,
                  noise_clip: float = 0.5,
-                 policy_frequency: int = 2):
+                 policy_frequency: int = 2,
+                 device: Optional[Union[str, torch.device]] = None):
         self.gamma             = gamma
         self.tau               = tau
         self.batch_size        = batch_size
@@ -39,31 +42,39 @@ class TD3:
         self.noise_clip        = noise_clip
         self.policy_frequency  = policy_frequency
         self.update_count      = 0
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.action_low  = torch.tensor(action_bounds[0], dtype=torch.float32)
-        self.action_high = torch.tensor(action_bounds[1], dtype=torch.float32)
+        # Kept as numpy too: select_action()'s exploration-noise clipping runs
+        # in plain numpy every env step, where a GPU round-trip would only add
+        # overhead for a batch-of-1 op.
+        self._action_low_np  = np.asarray(action_bounds[0], dtype=np.float32)
+        self._action_high_np = np.asarray(action_bounds[1], dtype=np.float32)
+
+        self.action_low  = torch.tensor(action_bounds[0], dtype=torch.float32, device=self.device)
+        self.action_high = torch.tensor(action_bounds[1], dtype=torch.float32, device=self.device)
         # Per-dimension action half-range. exploration_noise / policy_noise /
         # noise_clip follow the TD3 paper's convention for actions normalized
         # to [-1, 1], so in this physical action space (whose per-dimension
         # bounds span several orders of magnitude) they must be rescaled by
         # each dimension's half-range to keep their intended meaning.
         self.action_halfrange = (self.action_high - self.action_low) / 2.0
+        self._action_halfrange_np = (self._action_high_np - self._action_low_np) / 2.0
 
-        self.actor  = DeterministicPolicyNetwork(obs_dim, act_dim, action_bounds, hidden_dims)
-        self.critic = TwinQNetwork(obs_dim, act_dim, hidden_dims)
+        self.actor  = DeterministicPolicyNetwork(obs_dim, act_dim, action_bounds, hidden_dims).to(self.device)
+        self.critic = TwinQNetwork(obs_dim, act_dim, hidden_dims).to(self.device)
         self.target_actor  = copy.deepcopy(self.actor);  [p.requires_grad_(False) for p in self.target_actor.parameters()]
         self.target_critic = copy.deepcopy(self.critic); [p.requires_grad_(False) for p in self.target_critic.parameters()]
 
         self.actor_opt  = optim.Adam(self.actor.parameters(),  lr=actor_lr)
         self.critic_opt = optim.Adam(self.critic.parameters(), lr=critic_lr)
-        self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size)
+        self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size, device=self.device)
 
     def select_action(self, state, training: bool = True):
         action = self.actor.select_action(state)
         if training:
-            scale  = self.exploration_noise * self.action_halfrange.numpy()
+            scale  = self.exploration_noise * self._action_halfrange_np
             noise  = np.random.normal(0, scale, size=action.shape)
-            action = (action + noise).clip(self.action_low.numpy(), self.action_high.numpy())
+            action = (action + noise).clip(self._action_low_np, self._action_high_np)
         return action
 
     def store(self, s, a, r, ns, done):

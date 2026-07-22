@@ -24,6 +24,8 @@ Core idea:
         4. Backtracking line search to enforce KL ≤ δ
         5. Critic updated separately with Adam (MSE on returns)
 """
+from typing import Optional, Union
+
 import torch
 import torch.optim as optim
 
@@ -48,16 +50,18 @@ class TRPO:
                  max_kl: float = 0.01,
                  cg_steps: int = 10,
                  cg_damping: float = 0.1,
-                 value_epochs: int = 5):
+                 value_epochs: int = 5,
+                 device: Optional[Union[str, torch.device]] = None):
         self.max_kl       = max_kl
         self.cg_steps     = cg_steps
         self.cg_damping   = cg_damping
         self.value_epochs = value_epochs
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims)
-        self.value_network  = ValueNetwork(obs_dim, hidden_dims)
+        self.policy_network = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims).to(self.device)
+        self.value_network  = ValueNetwork(obs_dim, hidden_dims).to(self.device)
         self.value_optimizer = optim.Adam(self.value_network.parameters(), lr=critic_lr)
-        self.episode_buffer  = EpisodeBuffer(gamma=gamma, tau=tau)
+        self.episode_buffer  = EpisodeBuffer(gamma=gamma, tau=tau, device=self.device)
 
     def select_action(self, state, training: bool = True):
         if training:

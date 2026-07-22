@@ -19,7 +19,7 @@ class ValueNetwork(nn.Module):
         self.output_layer  = nn.Linear(hidden_dims[-1], 1)
 
     def forward(self, state):
-        x = format_input(state)
+        x = format_input(state, device=self.input_layer.weight.device)
         x = self.activation_fc(self.input_layer(x))
         for h in self.hidden_layers:
             x = self.activation_fc(h(x))
@@ -37,7 +37,8 @@ class QNetwork(nn.Module):
         self.output_layer  = nn.Linear(hidden_dims[-1], 1)
 
     def forward(self, state, action):
-        x = torch.cat((format_input(state), format_input(action)), dim=1)
+        device = self.input_layer.weight.device
+        x = torch.cat((format_input(state, device=device), format_input(action, device=device)), dim=1)
         x = self.activation_fc(self.input_layer(x))
         for h in self.hidden_layers:
             x = self.activation_fc(h(x))

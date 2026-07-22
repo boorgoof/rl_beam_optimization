@@ -12,7 +12,7 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
 fi
 
 python -m beam_optimization train_surrogate \
-  --n-surrogates 3
+  --n-surrogates 1
   # --train-dataset/--val-dataset default to the latest numbered dataset's
   # train/val splits in env/dataset/ (e.g. env/dataset/001/dataset_train.pt);
   # pass --train-dataset/--val-dataset <path> to pin a specific one

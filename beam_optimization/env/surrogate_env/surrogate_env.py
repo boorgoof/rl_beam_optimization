@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Union
 
-from beam_optimization.config.adige import MAX_STEPS
+from beam_optimization.config.adige import MAX_STEPS, TRAIN_RESET_SCALE
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.surrogate_env.surrogate.surrogate_simulator import (
     SurrogateBeamSimulator,
@@ -51,6 +51,7 @@ class SurrogateEnv(BaseBeamEnv):
         max_steps:    Episode length.
         observation:   Selected by OBSERVATION_STAGE_MASK in adige.py.
         device:       Torch device for inference.
+        reset_scale:  Gaussian reset width in sensitivity units.
     """
 
     def __init__(
@@ -60,6 +61,7 @@ class SurrogateEnv(BaseBeamEnv):
         max_steps: int = MAX_STEPS,
         device: Optional[str] = None,
         simulator_seed: Optional[int] = None,
+        reset_scale: float = TRAIN_RESET_SCALE,
     ):
         # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator
         self._simulator_kwargs = {
@@ -70,7 +72,7 @@ class SurrogateEnv(BaseBeamEnv):
         }
         
         # Call the base class constructor
-        super().__init__(max_steps=max_steps)
+        super().__init__(max_steps=max_steps, reset_scale=reset_scale)
 
 
     def _build_simulator(self) -> SurrogateBeamSimulator:

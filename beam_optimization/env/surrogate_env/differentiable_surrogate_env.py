@@ -18,6 +18,7 @@ from beam_optimization.config.adige import (
     N_OUTPUT_STAGES,
     N_PARAMS,
     STAGE_PARAM_SIZES,
+    TRAIN_RESET_SCALE,
     action_step_vec,
     clip_param_tensor_to_hw,
     default_params,
@@ -71,16 +72,18 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         max_steps: int = MAX_STEPS,
         device: Optional[str] = None,
         stage_weights: Optional[List[float]] = None,
+        reset_scale: float = TRAIN_RESET_SCALE,
     ):
         super().__init__(
             model=model,
             dataset=dataset,
             max_steps=max_steps,
             device=device,
+            reset_scale=reset_scale,
         )
         self.device = self.simulator.device
         self._reset_std_t = torch.tensor(
-            reset_std_vec(), dtype=torch.float32, device=self.device
+            reset_std_vec(reset_scale), dtype=torch.float32, device=self.device
         )
         self._action_step_t = torch.tensor(
             action_step_vec(), dtype=torch.float32, device=self.device

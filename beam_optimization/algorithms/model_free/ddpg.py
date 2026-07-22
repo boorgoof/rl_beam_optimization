@@ -17,6 +17,8 @@ Key components:
     - Decaying Gaussian exploration noise
 """
 import copy
+from typing import Optional, Union
+
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -42,15 +44,17 @@ class DDPG:
                  warmup_steps: int = 1000,
                  init_noise_ratio: float = 0.5,
                  min_noise_ratio: float = 0.01,
-                 decay_steps: int = 50_000):
+                 decay_steps: int = 50_000,
+                 device: Optional[Union[str, torch.device]] = None):
         self.gamma        = gamma
         self.tau          = tau
         self.batch_size   = batch_size
         self.warmup_steps = warmup_steps
         self.total_steps  = 0
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.actor  = DeterministicPolicyNetwork(obs_dim, act_dim, action_bounds, hidden_dims)
-        self.critic = QNetwork(obs_dim, act_dim, hidden_dims)
+        self.actor  = DeterministicPolicyNetwork(obs_dim, act_dim, action_bounds, hidden_dims).to(self.device)
+        self.critic = QNetwork(obs_dim, act_dim, hidden_dims).to(self.device)
 
         self.target_actor  = copy.deepcopy(self.actor)
         self.target_critic = copy.deepcopy(self.critic)
@@ -60,7 +64,11 @@ class DDPG:
         self.actor_opt  = optim.Adam(self.actor.parameters(),  lr=actor_lr)
         self.critic_opt = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
-        self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size)
+        self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size, device=self.device)
+        # Pure-numpy exploration noise: model.select_action() already returns
+        # a CPU numpy array regardless of the network's device (see
+        # DeterministicPolicyNetwork.select_action), so no device handling
+        # is needed here.
         self.noise  = NormalNoiseDecayStrategy(
             action_bounds, init_noise_ratio, min_noise_ratio, decay_steps)
 

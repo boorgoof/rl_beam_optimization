@@ -37,6 +37,7 @@ import torch
 import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
+from beam_optimization.config.adige import TRAIN_RESET_SCALE
 from beam_optimization.env.surrogate_env import DifferentiableSurrogateEnv
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
@@ -116,6 +117,7 @@ class SVGAgent:
             max_steps=n_step,
             device=str(self.device),
             stage_weights=stage_weights,
+            reset_scale=TRAIN_RESET_SCALE,
         )
 
         self.obs_dim = int(obs_dim)

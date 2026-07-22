@@ -4,6 +4,8 @@ Off-policy maximum-entropy algorithm with automatic entropy tuning.
 Adapted from reinforcement_learning_2/rl/algorithms/continuous/sac.py.
 """
 import copy
+from typing import Optional, Union
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,19 +30,24 @@ class SAC:
                  tau: float = 0.005,
                  batch_size: int = 256,
                  buffer_size: int = int(1e6),
-                 warmup_steps: int = 1000):
+                 warmup_steps: int = 1000,
+                 device: Optional[Union[str, torch.device]] = None):
         self.gamma        = gamma
         self.tau          = tau
         self.batch_size   = batch_size
         self.warmup_steps = warmup_steps
+        # SAC is a plain class, not an nn.Module: each sub-network is moved to
+        # `device` individually (module.to() does not cascade automatically
+        # across unrelated attributes the way it does for registered children).
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.policy  = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims)
-        self.critic1 = QNetwork(obs_dim, act_dim, hidden_dims)
-        self.critic2 = QNetwork(obs_dim, act_dim, hidden_dims)
+        self.policy  = GaussianPolicyNetwork(obs_dim, action_bounds, hidden_dims).to(self.device)
+        self.critic1 = QNetwork(obs_dim, act_dim, hidden_dims).to(self.device)
+        self.critic2 = QNetwork(obs_dim, act_dim, hidden_dims).to(self.device)
         self.tc1 = copy.deepcopy(self.critic1); [p.requires_grad_(False) for p in self.tc1.parameters()]
         self.tc2 = copy.deepcopy(self.critic2); [p.requires_grad_(False) for p in self.tc2.parameters()]
 
-        self.logalpha       = nn.Parameter(torch.zeros(1))
+        self.logalpha       = nn.Parameter(torch.zeros(1, device=self.device))
         # The standard SAC target entropy -act_dim assumes actions normalized
         # to [-1, 1]. In this physical action space each dimension i has range
         # (hi_i - lo_i), which shifts the policy's log-density by
@@ -55,7 +62,7 @@ class SAC:
         self.critic1_opt = optim.Adam(self.critic1.parameters(), lr=critic_lr)
         self.critic2_opt = optim.Adam(self.critic2.parameters(), lr=critic_lr)
         self.alpha_opt   = optim.Adam([self.logalpha],           lr=alpha_lr)
-        self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size)
+        self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size, device=self.device)
 
     def select_action(self, state, training: bool = True):
         return (self.policy.select_action(state) if training

@@ -16,7 +16,8 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from beam_optimization.config.adige import (
-    ERROR_SCORE, FAILURE_PENALTY, MAX_STEPS, PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
+    ERROR_SCORE, FAILURE_PENALTY, MAX_STEPS, TRAIN_RESET_SCALE,
+    PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
     observation_dim, observation_stage_labels, observation_stage_indices,
     select_observation_stages, clip_params_to_hw, params_to_vec,
@@ -31,6 +32,8 @@ class BaseBeamEnv(gym.Env, ABC):
 
     Args:
         max_steps:    Episode length.
+        reset_scale:  Gaussian reset width in sensitivity units. Training is
+                      the default; evaluation workflows pass TEST_RESET_SCALE.
         Observation stages are selected by OBSERVATION_STAGE_MASK in adige.py.
     """
 
@@ -41,6 +44,7 @@ class BaseBeamEnv(gym.Env, ABC):
     def __init__(
         self,
         max_steps: int = MAX_STEPS,
+        reset_scale: float = TRAIN_RESET_SCALE,
     ):
         super().__init__()
 
@@ -66,8 +70,10 @@ class BaseBeamEnv(gym.Env, ABC):
         act_low, act_high = action_bounds()
         self.action_space = spaces.Box(low=act_low, high=act_high, dtype=np.float32)
 
-        # Per-parameter reset stddevs from ParameterSpec.
-        self._reset_std = reset_std_vec().astype(np.float32)
+        # Per-parameter reset stddevs from ParameterSpec. Callers explicitly
+        # choose the training or test/evaluation reset distribution.
+        self.reset_scale = float(reset_scale)
+        self._reset_std = reset_std_vec(self.reset_scale).astype(np.float32)
 
         # Episode state
         self._step_count     = 0
@@ -130,7 +136,13 @@ class BaseBeamEnv(gym.Env, ABC):
         self._score_history = [float(score)]
         self._reward_history = [0.0]
 
-        info = {"score": score, "step": 0, "reset_randomized": randomize_params, **extra}
+        info = {
+            "score": score,
+            "step": 0,
+            "reset_randomized": randomize_params,
+            "reset_scale": self.reset_scale,
+            **extra,
+        }
         return obs.copy(), info
 
     def step(self, action: np.ndarray):

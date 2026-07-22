@@ -1,20 +1,34 @@
 """Uniform replay buffer for off-policy algorithms (SAC, TD3).
 Adapted from reinforcement_learning_2/rl/utils/replay_buffer.py.
 """
+from typing import Optional, Union
+
 import numpy as np
 import torch
 
 
 class ReplayBuffer:
-    def __init__(self, obs_dim: int, act_dim: int, max_size: int = int(1e6)):
+    def __init__(
+        self,
+        obs_dim: int,
+        act_dim: int,
+        max_size: int = int(1e6),
+        device: Optional[Union[str, torch.device]] = None,
+    ):
         self.max_size = max_size
         self.ptr  = 0
         self.size = 0
+        # Storage stays on host memory (numpy) regardless of device: writes
+        # come one transition at a time from the env loop, where GPU transfer
+        # overhead would dominate. Only sample() moves a batch to `device`.
         self.states      = np.zeros((max_size, obs_dim), dtype=np.float32)
         self.actions     = np.zeros((max_size, act_dim), dtype=np.float32)
         self.rewards     = np.zeros((max_size, 1),       dtype=np.float32)
         self.next_states = np.zeros((max_size, obs_dim), dtype=np.float32)
         self.terminals   = np.zeros((max_size, 1),       dtype=np.float32)
+        self.device = torch.device(
+            device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
 
     def store(self, state, action, reward, next_state, done):
         self.states[self.ptr]      = state
@@ -28,11 +42,11 @@ class ReplayBuffer:
     def sample(self, batch_size: int = 256):
         idx = np.random.randint(0, self.size, size=batch_size)
         return (
-            torch.tensor(self.states[idx]),
-            torch.tensor(self.actions[idx]),
-            torch.tensor(self.rewards[idx]),
-            torch.tensor(self.next_states[idx]),
-            torch.tensor(self.terminals[idx]),
+            torch.tensor(self.states[idx], device=self.device),
+            torch.tensor(self.actions[idx], device=self.device),
+            torch.tensor(self.rewards[idx], device=self.device),
+            torch.tensor(self.next_states[idx], device=self.device),
+            torch.tensor(self.terminals[idx], device=self.device),
         )
 
     def __len__(self):
@@ -57,9 +71,10 @@ class MixedReplayBuffer:
         real_size: int = int(1e5),
         synth_size: int = int(1e6),
         real_ratio: float = 0.05,
+        device: Optional[Union[str, torch.device]] = None,
     ):
-        self.real_buffer  = ReplayBuffer(obs_dim, act_dim, real_size)
-        self.synth_buffer = ReplayBuffer(obs_dim, act_dim, synth_size)
+        self.real_buffer  = ReplayBuffer(obs_dim, act_dim, real_size, device=device)
+        self.synth_buffer = ReplayBuffer(obs_dim, act_dim, synth_size, device=device)
         self.real_ratio   = float(real_ratio)
 
     def store_real(self, s, a, r, ns, done):
