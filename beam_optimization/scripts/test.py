@@ -13,7 +13,7 @@ from pathlib import Path
 
 from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, load_agent
 from beam_optimization.config.adige import (
-    MAX_STEPS, N_PARAMS, TEST_RESET_SCALE, action_bounds,
+    MAX_STEPS, N_PARAMS, TEST_RESET_SCALE, TRAIN_RESET_SCALE, action_bounds,
 )
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
@@ -49,8 +49,15 @@ def load_surrogate(path: str | Path):
     return model
 
 
+def resolve_reset_scale(mode: str) -> float:
+    """Map the --reset-scale CLI choice to its adige.py constant."""
+    return TRAIN_RESET_SCALE if mode == "train" else TEST_RESET_SCALE
+
+
 def make_env(args):
     """Create the selected test environment."""
+    reset_scale = resolve_reset_scale(args.reset_scale)
+
     if args.env == "surrogate":
         surrogate = load_surrogate(args.surrogate)
         dataset = BeamDataset.load(args.dataset)
@@ -58,7 +65,7 @@ def make_env(args):
             model=surrogate,
             dataset=dataset,
             max_steps=args.max_ep_steps,
-            reset_scale=TEST_RESET_SCALE,
+            reset_scale=reset_scale,
         )
 
     from beam_optimization.env.tracewin_env import TraceWinEnv
@@ -70,7 +77,7 @@ def make_env(args):
         calc_dir=str(calc_dir),
         max_steps=args.max_ep_steps,
         timeout=args.tracewin_timeout,
-        reset_scale=TEST_RESET_SCALE,
+        reset_scale=reset_scale,
     )
 
 
@@ -254,6 +261,11 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--deterministic-reset", action="store_true",
                         help="Start the episode from nominal default parameters instead of a randomized reset.")
+    parser.add_argument("--reset-scale", choices=["test", "train"], default="test",
+                        help="Gaussian reset width: 'test' = TEST_RESET_SCALE (default, "
+                             "same width as the dataset), 'train' = TRAIN_RESET_SCALE "
+                             "(same width used during training). Ignored with "
+                             "--deterministic-reset.")
 
     parser.add_argument("--surrogate", default=str(DEFAULT_BASE_SURROGATE_DIR))
     parser.add_argument("--dataset", default=str(default_dataset_path()))
@@ -266,8 +278,9 @@ def main():
     parser.add_argument("--render-dir", default=str(DEFAULT_OUTPUT_DIR / "renders"))
     parser.add_argument("--render-every", type=int, default=1)
     parser.add_argument("--dpi", type=int, default=130)
-    parser.add_argument("--episode-video", action="store_true",
-                        help="Save parameter/beam-feature trend GIFs for the test episode into --render-dir.")
+    parser.add_argument("--episode-video", action=argparse.BooleanOptionalAction, default=True,
+                        help="Save parameter/beam-feature trend GIFs for the test episode into "
+                             "--render-dir (default: on; pass --no-episode-video to disable).")
     parser.add_argument("--episode-video-fps", type=int, default=2,
                         help="Frame rate for --episode-video GIFs (default: %(default)s)")
     parser.add_argument("--tracewin-phase-space", action=argparse.BooleanOptionalAction, default=True,
@@ -286,6 +299,10 @@ def main():
     print(f"Environment: {args.env}")
     print(f"Policy:      {args.policy}")
     print(f"Observation: configured mask ({obs_dim} dims)")
+    if args.deterministic_reset:
+        print("Reset:       deterministic (nominal defaults, --reset-scale ignored)")
+    else:
+        print(f"Reset scale: {args.reset_scale} ({env.reset_scale:.4g})")
     if args.render or args.episode_video:
         print(f"Render dir:  {algorithm_render_dir(args)}")
 
@@ -297,6 +314,9 @@ def main():
         "policy": args.policy,
         "env": args.env,
         "observation_dim": obs_dim,
+        "deterministic_reset": bool(args.deterministic_reset),
+        "reset_scale_mode": None if args.deterministic_reset else args.reset_scale,
+        "reset_scale": None if args.deterministic_reset else float(env.reset_scale),
         "episode": result,
         "final_score": float(result["final_score"]),
         "total_reward": float(result["total_reward"]),

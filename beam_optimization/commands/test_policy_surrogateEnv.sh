@@ -16,6 +16,7 @@ python -m beam_optimization test \
   --env surrogate \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --seed 42 \
-  --render
+  --render \
+  --episode-video
   # --dataset defaults to the latest numbered dataset in env/dataset/ (or
   # the next one to be built, if none exist yet); pass --dataset <path> to pin one

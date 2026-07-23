@@ -449,14 +449,17 @@ sensitivity         compute ADIGE parameter sensitivity from TraceWin finite dif
 refining_sensitivity refine current ParameterSpec.sensitivity values toward a one-point score change
 parameter_bounds_calculation calculate TraceWin parameter bounds and save JSON
 scales_calculation  compute DATASET_SCALE, TRAIN_RESET_SCALE, TEST_RESET_SCALE and ACTION_SCALE
+fail_scale_calculation find the reset scale with at least 90% definitive TraceWin physics failures
 bayesian_opt        find new default parameters with real TraceWin evaluations
 bayesian_opt_cold_start find defaults without loading an existing dataset
 build_dataset       generate a new TraceWin dataset
+merge_datasets      merge completed BeamDataset files and regenerate train/val/test splits
 train_surrogate     train new base surrogate checkpoints from an existing dataset
-evaluate_surrogate  evaluate surrogate_*.pt checkpoints on a BeamDataset (MSE/RMSE)
+evaluate_surrogate  evaluate beam-feature and final-score accuracy on a test BeamDataset
 check               procedural onboarding check, including real TraceWin reset+step
 train_policies      train RL agents on SurrogateEnv, optionally with TraceWin MBPO
 benchmark           compare Bayesian optimization, SVG, and optional RL checkpoints
+fail_scale_benchmark stress-test a trained policy with TraceWin outside the dataset trust region
 test                run one trained policy for one qualitative episode
 ```
 
@@ -526,6 +529,36 @@ Equivalent launcher:
 
 ```bash
 beam_optimization/commands/offline_utility/scales_calculation.sh --dataset-scale 0.35
+```
+
+### `fail_scale_calculation`
+
+This real-TraceWin calibration finds the smallest Gaussian reset scale for
+which at least 90% of the probes produce one of the three definitive physical
+failures: all particles lost, synchronous particle not reaching the end of a
+field map, or part of the beam distribution not reaching it. Technical
+failures abort the measurement and are never counted as beam loss.
+
+```bash
+python -m beam_optimization fail_scale_calculation \
+  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
+  --update-config
+```
+
+The default uses 32 common Gaussian samples at every candidate scale, expands
+from `TEST_RESET_SCALE` by a factor of 1.5, then performs five bisection steps.
+The report is saved to `beam_optimization/results/fail_scale.json`.
+`--update-config` is explicit: only when supplied does the command atomically
+replace `ALL_PARTICLE_LOST_SCALE` in `adige.py`. Without it, the command prints
+the declaration to copy manually. If no scale reaches the target, the config
+is not changed.
+
+Equivalent launcher:
+
+```bash
+beam_optimization/commands/offline_utility/fail_scale_calculation.sh \
+  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
+  --update-config
 ```
 
 ### `bayesian_opt`
@@ -664,6 +697,36 @@ running count, score). If the process is interrupted, rerun the same command
 with `--dataset-dir` pointing at the unfinished numbered directory to resume
 exactly where it left off — nothing already accepted is redone.
 
+### `merge_datasets`
+
+Use `merge_datasets` to concatenate two or more completed `dataset_all.pt`
+files and create a fresh shuffled 80/10/10 split:
+
+```bash
+python -m beam_optimization merge_datasets \
+  --inputs \
+    beam_optimization/env/dataset/001/dataset_all.pt \
+    beam_optimization/env/dataset/002/dataset_all.pt \
+    beam_optimization/env/dataset/003/dataset_all.pt \
+    beam_optimization/env/dataset/004/dataset_all.pt \
+  --output-dir beam_optimization/env/dataset/005
+```
+
+The command writes `dataset_all.pt`, `dataset_train.pt`, `dataset_val.pt` and
+`dataset_test.pt` without changing the inputs. `dataset_all.pt` preserves input
+and sample order; the three splits are shuffled reproducibly with `--seed 123`
+by default. Exact duplicate samples are retained. Input schemas and finite
+values are validated, scores are recalculated with the current official score
+function, and existing outputs are never overwritten. A dataset whose adjacent
+`builder_state.json` is still marked `running` is rejected to avoid reading it
+while `build_dataset` is rewriting it.
+
+Equivalent launcher (configured for datasets `001` through `004`):
+
+```bash
+beam_optimization/commands/merge_datasets.sh
+```
+
 ### `train_surrogate`
 
 Use `train_surrogate` to train new base surrogate checkpoints from an
@@ -713,14 +776,27 @@ beam_optimization/runs/surrogate/
 ### `evaluate_surrogate`
 
 Evaluates every `surrogate_*.pt` checkpoint in a folder against a
-`BeamDataset`, reporting per-stage MSE/RMSE on beam-state predictions:
+`BeamDataset`. By default it uses the latest numbered dataset's **test split**
+and reports:
+
+- backward-compatible global and per-stage MSE/RMSE;
+- MSE/RMSE/MAE for every beam feature, across all stages and at the final stage;
+- final-score MAE, RMSE, bias, Pearson correlation and R²;
+- score scatter, score-residual and feature×stage RMSE heatmap PNG files.
 
 ```bash
 python -m beam_optimization evaluate_surrogate \
   --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --dataset beam_optimization/env/dataset/001/dataset_all.pt \
+  --dataset beam_optimization/env/dataset/001/dataset_test.pt \
   --output beam_optimization/results/surrogate_eval.json
 ```
+
+When `--output` is supplied, plots are saved by default beside the JSON in
+`<output_stem>_plots/`. Override that directory with `--plots-dir PATH`.
+Without either option, evaluation prints its numerical tables without writing
+JSON or images. The evaluator remains entirely offline: cumulative multi-step
+validation is not inferred from independent dataset rows and would require a
+separate real TraceWin validation.
 
 This is a thin CLI wrapper; the full set of options is documented in
 `beam_optimization/env/surrogate_env/surrogate/model/evaluator.py`.
@@ -1041,6 +1117,48 @@ All options:
 --mbpo CKPT          optional trained MBPO/Dyna inner SAC checkpoint
 --svg-finale CKPT    optional trained SVG final-stage checkpoint
 --svg-uniform CKPT   optional trained SVG uniform-stage checkpoint
+```
+
+### `fail_scale_benchmark`
+
+Use this dedicated real-TraceWin benchmark after calibrating
+`ALL_PARTICLE_LOST_SCALE`. It draws reset configurations only from the shell
+outside the dataset's `3σ` trust region and inside the calibrated failure-scale
+edge. Failed reset probes are recorded and resampled; the policy is evaluated
+only when TraceWin provides a valid initial beam observation.
+
+```bash
+python -m beam_optimization fail_scale_benchmark \
+  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
+  --algo sac \
+  --policy beam_optimization/runs/sac_001/sac/sac_agent.pt \
+  --dataset beam_optimization/env/dataset/005/dataset_all.pt \
+  --episodes 3 \
+  --max-reset-attempts 96
+```
+
+This benchmark never uses the surrogate for transitions. For every valid
+trajectory it saves an adjacent KNN-distance/TraceWin-score plot plus the
+RMS sensitivity-normalized distance from `default_params()`. JSON and CSV
+outputs retain every reset attempt and step, including physical failure text,
+parameters, score, KNN distance and distance from the optimized defaults.
+Defaults:
+
+```text
+output:             beam_optimization/results/fail_scale_benchmark.json
+plots:              beam_optimization/results/fail_scale_benchmark_plots/
+valid episodes:     3
+maximum reset tries: 96
+episode horizon:    20
+```
+
+Equivalent launcher (pass the same CLI arguments):
+
+```bash
+beam_optimization/commands/fail_scale_benchmark_tracewin.sh \
+  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
+  --policy beam_optimization/runs/sac_001/sac/sac_agent.pt \
+  --dataset beam_optimization/env/dataset/005/dataset_all.pt
 ```
 
 

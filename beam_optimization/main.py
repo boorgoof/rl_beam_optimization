@@ -10,17 +10,20 @@ from typing import Sequence
 COMMAND_MODULES = {
     "scales_calculation": "beam_optimization.config.offline_utility.scales_calculation",
     "exploration_scale_calculation": "beam_optimization.config.offline_utility.exploration_scale_calculation",
+    "fail_scale_calculation": "beam_optimization.config.offline_utility.fail_scale_calculation",
     "check": "beam_optimization.scripts.check",
     "sensitivity": "beam_optimization.config.offline_utility.sensitivity",
     "refining_sensitivity": "beam_optimization.config.offline_utility.refining_sensitivity",
     "parameter_bounds_calculation": "beam_optimization.config.offline_utility.parameter_bounds_calculation",
     "build_dataset": "beam_optimization.scripts.build_dataset",
+    "merge_datasets": "beam_optimization.scripts.merge_datasets",
     "train_surrogate": "beam_optimization.scripts.train_surrogate",
     "evaluate_surrogate": "beam_optimization.scripts.evaluate_surrogate",
     "bayesian_opt": "beam_optimization.scripts.bayesian_opt",
     "bayesian_opt_cold_start": "beam_optimization.scripts.bayesian_opt_cold_start",
     "train_policies": "beam_optimization.scripts.train_policies",
     "benchmark": "beam_optimization.scripts.benchmark",
+    "fail_scale_benchmark": "beam_optimization.scripts.fail_scale_benchmark",
     "test": "beam_optimization.scripts.test",
 }
 

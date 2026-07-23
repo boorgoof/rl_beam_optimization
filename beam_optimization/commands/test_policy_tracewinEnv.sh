@@ -16,11 +16,16 @@ fi
 
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --policy beam_optimization/runs/sac_001/sac/sac_agent.pt \
   --env tracewin \
+  --calc-dir beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/tracewin_calc_test \
   --max-ep-steps 5 \
   --seed 42 \
   --deterministic-reset \
   --render \
   --episode-video \
   --tracewin-phase-space
+  # --calc-dir avoids TraceWin_workspace/calc, currently owned by comunian
+  # (0755) from a stale run: almalinux can't chmod/clean it. Fix that
+  # directory (sudo -u comunian rm -rf .../calc/*) if you want to drop
+  # --calc-dir and use the plain default again.

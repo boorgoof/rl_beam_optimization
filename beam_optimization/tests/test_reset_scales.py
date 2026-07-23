@@ -56,6 +56,28 @@ class ResetScaleTests(unittest.TestCase):
         self.assertFalse(info["reset_randomized"])
         self.assertEqual(env._current_params, default_params())
 
+    def test_explicit_reset_uses_exact_hardware_valid_parameters(self):
+        env = _Env(reset_scale=TEST_RESET_SCALE)
+        params = default_params()
+        first = PARAMETERS[0]
+        params[first.key] += 0.1 * first.sensitivity
+        _, info = env.reset(seed=7, options={"initial_params": params})
+        self.assertFalse(info["reset_randomized"])
+        self.assertEqual(info["reset_source"], "explicit_params")
+        self.assertEqual(env.current_params, params)
+
+    def test_explicit_reset_validates_keys_and_conflicting_randomization(self):
+        env = _Env()
+        params = default_params()
+        params.pop(PARAMETERS[0].key)
+        with self.assertRaisesRegex(ValueError, "must contain every configured parameter"):
+            env.reset(options={"initial_params": params})
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            env.reset(options={
+                "initial_params": default_params(),
+                "randomize_params": True,
+            })
+
     def test_random_reset_is_clipped_to_known_hardware_bounds(self):
         env = _Env(reset_scale=1e6)
         env.reset(seed=3)
@@ -69,13 +91,21 @@ class ResetScaleTests(unittest.TestCase):
     def test_workflows_route_training_and_evaluation_scales_explicitly(self):
         root = Path(__file__).resolve().parents[1]
         train_source = (root / "scripts" / "train_policies.py").read_text()
-        test_source = (root / "scripts" / "test.py").read_text()
         benchmark_source = (root / "scripts" / "benchmark.py").read_text()
 
         self.assertIn("reset_scale=TRAIN_RESET_SCALE", train_source)
         self.assertIn("reset_scale=TEST_RESET_SCALE", train_source)
-        self.assertIn("reset_scale=TEST_RESET_SCALE", test_source)
         self.assertIn("reset_scale=TEST_RESET_SCALE", benchmark_source)
+
+    def test_test_cli_defaults_to_evaluation_scale_and_can_select_training_scale(self):
+        # scripts/test.py exposes --reset-scale {test,train} so a qualitative
+        # test episode can be run against either distribution; check the
+        # actual routing function instead of grepping source text, since the
+        # mapping is now chosen at runtime rather than hardcoded per file.
+        from beam_optimization.scripts.test import resolve_reset_scale
+
+        self.assertAlmostEqual(resolve_reset_scale("test"), TEST_RESET_SCALE)
+        self.assertAlmostEqual(resolve_reset_scale("train"), TRAIN_RESET_SCALE)
 
 
 if __name__ == "__main__":

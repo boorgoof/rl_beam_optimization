@@ -1,9 +1,7 @@
-"""Evaluate surrogate command — thin CLI entry point for the evaluator module.
+"""CLI entry point for the complete offline surrogate evaluator.
 
-The actual evaluation (per-stage MSE/RMSE over surrogate_*.pt checkpoints)
-lives entirely in
-beam_optimization/env/surrogate_env/surrogate/model/evaluator.py and is
-unchanged here.
+Per-stage/per-feature errors, final-score metrics and plots live in
+``env/surrogate_env/surrogate/model/evaluator.py``.
 """
 from __future__ import annotations
 

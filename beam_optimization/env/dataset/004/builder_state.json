@@ -1,8 +1,8 @@
 {
   "version": 1,
   "status": "running",
-  "attempt_index": 14933,
-  "accepted_count": 14050,
+  "attempt_index": 17257,
+  "accepted_count": 16219,
   "config": {
     "target_samples": 20000,
     "split_ratios": [

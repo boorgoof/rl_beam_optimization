@@ -137,6 +137,11 @@ TRAIN_RESET_SCALE: float = 8.749999999999998e-02
 TEST_RESET_SCALE: float = DATASET_SCALE
 ACTION_SCALE: float =  3.937500000000000e-02  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
 
+# Gaussian reset scale at which at least 90% of TraceWin probes produce one
+# of the definitive physical beam-loss failures. It is intentionally unset
+# until `fail_scale_calculation` measures it on the current configuration.
+ALL_PARTICLE_LOST_SCALE = None
+
 # Score assigned when a simulation fails (TraceWin error, invalid output).
 ERROR_SCORE: float = -999.0
 

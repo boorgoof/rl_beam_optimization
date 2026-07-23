@@ -17,7 +17,7 @@ from gymnasium import spaces
 
 from beam_optimization.config.adige import (
     ERROR_SCORE, FAILURE_PENALTY, MAX_STEPS, TRAIN_RESET_SCALE,
-    PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
+    PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM, SCORE_REFERENCES,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
     observation_dim, observation_stage_labels, observation_stage_indices,
     select_observation_stages, clip_params_to_hw, params_to_vec,
@@ -102,17 +102,42 @@ class BaseBeamEnv(gym.Env, ABC):
         super().reset(seed=seed)
         self._step_count = 0
 
+        options = dict(options or {})
+        explicit_params = options.get("initial_params")
+        if explicit_params is not None and options.get("randomize_params", False):
+            raise ValueError(
+                "reset options 'initial_params' and randomize_params=True are mutually exclusive"
+            )
+
         # Sample random initial params and perturb them with per-parameter reset stddevs.
         # Tests against the real TraceWin backend can disable this through
         # options={"randomize_params": False} to start from the nominal machine.
-        randomize_params = True
-        if options is not None and "randomize_params" in options:
-            randomize_params = bool(options["randomize_params"])
-
-        params = default_params()
-        if randomize_params:
-            for key, std in zip(PARAM_KEYS, self._reset_std):
-                params[key] += float(self.np_random.normal(0.0, std))
+        randomize_params = bool(options.get("randomize_params", True))
+        if explicit_params is not None:
+            if not isinstance(explicit_params, dict):
+                raise ValueError("reset option 'initial_params' must be a parameter dictionary")
+            expected_keys = set(PARAM_KEYS)
+            supplied_keys = set(explicit_params)
+            if supplied_keys != expected_keys:
+                missing = sorted(expected_keys - supplied_keys)
+                extra = sorted(supplied_keys - expected_keys)
+                raise ValueError(
+                    "reset option 'initial_params' must contain every configured parameter "
+                    f"exactly once; missing={missing}, extra={extra}"
+                )
+            params = {key: float(explicit_params[key]) for key in PARAM_KEYS}
+            if not np.isfinite(np.asarray(list(params.values()), dtype=np.float64)).all():
+                raise ValueError("reset option 'initial_params' contains NaN or infinite values")
+            randomize_params = False
+            reset_source = "explicit_params"
+        else:
+            params = default_params()
+            if randomize_params:
+                for key, std in zip(PARAM_KEYS, self._reset_std):
+                    params[key] += float(self.np_random.normal(0.0, std))
+                reset_source = "gaussian"
+            else:
+                reset_source = "defaults"
         params = clip_params_to_hw(params)
         self._current_params = params
 
@@ -140,10 +165,16 @@ class BaseBeamEnv(gym.Env, ABC):
             "score": score,
             "step": 0,
             "reset_randomized": randomize_params,
+            "reset_source": reset_source,
             "reset_scale": self.reset_scale,
             **extra,
         }
         return obs.copy(), info
+
+    @property
+    def current_params(self) -> Dict[str, float]:
+        """Return a defensive copy of the parameters at the current episode step."""
+        return dict(self._current_params)
 
     def step(self, action: np.ndarray):
 
@@ -391,9 +422,9 @@ class BaseBeamEnv(gym.Env, ABC):
         """Per-segment green/red/gray color for each consecutive pair in values.
 
         Gray if the value did not change between the two steps. Otherwise,
-        if `feature` is given, reuses _feature_improved's "minimize
-        everything except npart_ratio" convention; otherwise (score/reward)
-        higher is always better.
+        if `feature` is given, uses _feature_improved's per-feature
+        SCORE_REFERENCES convention; otherwise (score/reward) higher is
+        always better.
         """
         colors = []
         for before, after in zip(values[:-1], values[1:]):
@@ -519,14 +550,32 @@ class BaseBeamEnv(gym.Env, ABC):
         df.insert(0, "stage", labels)
         return df
 
-    @staticmethod
-    def _feature_improved(feature: str, before: float, after: float) -> bool:
-        """Return True if the feature value improved from before to after, False otherwise.
-        Every feature is minimized (green when it goes down, red when it goes up),
-        except npart_ratio which is maximized (green when it goes up).
+    _OFFSET_ANGLE_FEATURES = frozenset({"x0", "y0", "x'0", "y'0"})
+    _SIZE_FEATURES = frozenset({"SizeX", "SizeY"})
+    _EMITTANCE_FEATURES = frozenset({"ex", "ey"})
+
+    @classmethod
+    def _feature_improved(cls, feature: str, before: float, after: float) -> bool:
+        """Return True if the feature value moved toward its SCORE_REFERENCES target.
+
+        - npart_ratio: maximized (green when it goes up).
+        - x0/y0/x'0/y'0 (reference 0): trend toward zero — green when the
+          distance to zero shrinks (|after| < |before|), regardless of sign.
+        - SizeX/SizeY (reference 5 mm): threshold — green once the value is
+          at or below 5 mm, red otherwise (even if it's shrinking but still
+          above 5).
+        - ex/ey (reference 0.05 mm.mrad): threshold, opposite direction —
+          green once the value is at or above 0.05 mm.mrad.
+        - anything else (e.g. knn_distance): minimized (green when it goes down).
         """
         if feature == "npart_ratio":
             return round(float(after), 3) >= round(float(before), 3)
+        if feature in cls._OFFSET_ANGLE_FEATURES:
+            return abs(float(after)) < abs(float(before))
+        if feature in cls._SIZE_FEATURES:
+            return float(after) <= SCORE_REFERENCES[feature]
+        if feature in cls._EMITTANCE_FEATURES:
+            return float(after) >= SCORE_REFERENCES[feature]
         return after < before
 
     @staticmethod
