@@ -6,7 +6,7 @@ The actual ModularMLP forward pass lives in SurrogateBeamSimulator.
 
 State / Observation:
     Beam states selected by OBSERVATION_STAGE_MASK in adige.py and flattened
-    into a 1-D vector.
+    into a 1-D vector. Machine parameters are not appended.
     The initial beam state (stage 0) is sampled from the dataset at episode reset and
     stays fixed for the whole episode, giving the agent the physics context.
 
@@ -14,26 +14,31 @@ Action:
     Delta on all configured parameters, bounded by per-parameter action_step_vec().
 
 Reward:
-    score(t+1) - score(t) 
+    LOW_TRANSMISSION_REWARD for particle loss; otherwise
+    score(t+1) / REWARD_SCORE_SCALE
 
 Episode design:
     RESET:
         1. Sample beam0 from the dataset
         2. Run surrogate(params) -> beam_states at all 12 stages
-        3. obs = selected/flattened beam_states -> initial RL state
+        3. obs = selected/flattened beam states
     STEP:
         params_{t+1} = params_t + action
         surrogate(params_{t+1}) -> obs_{t+1}
-        reward = score(t+1) - score(t)
+        reward = bounded failure reward or score(t+1) / REWARD_SCORE_SCALE
 
-    Truncated after max_steps steps. Terminated early only if the simulator
-    reports a failure (bounded FAILURE_PENALTY reward, see BaseBeamEnv.step).
+    Physical beam losses remain recoverable and the episode is truncated only
+    after max_steps. Technical simulator failures truncate the affected rollout.
 """
 from __future__ import annotations
 
 from typing import List, Optional, Union
 
-from beam_optimization.config.adige import MAX_STEPS, TRAIN_RESET_SCALE
+from beam_optimization.config.adige import (
+    MAX_STEPS,
+    TEST_RESET_SCALE,
+    TRAIN_RESET_SCALE,
+)
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.surrogate_env.surrogate.surrogate_simulator import (
     SurrogateBeamSimulator,
@@ -62,6 +67,8 @@ class SurrogateEnv(BaseBeamEnv):
         device: Optional[str] = None,
         simulator_seed: Optional[int] = None,
         reset_scale: float = TRAIN_RESET_SCALE,
+        recovery_reset_probability: float = 0.0,
+        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
         # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator
         self._simulator_kwargs = {
@@ -72,7 +79,12 @@ class SurrogateEnv(BaseBeamEnv):
         }
         
         # Call the base class constructor
-        super().__init__(max_steps=max_steps, reset_scale=reset_scale)
+        super().__init__(
+            max_steps=max_steps,
+            reset_scale=reset_scale,
+            recovery_reset_probability=recovery_reset_probability,
+            recovery_reset_scale=recovery_reset_scale,
+        )
 
 
     def _build_simulator(self) -> SurrogateBeamSimulator:

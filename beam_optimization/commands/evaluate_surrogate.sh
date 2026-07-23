@@ -13,7 +13,7 @@ fi
 
 python -m beam_optimization evaluate_surrogate \
   --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --output beam_optimization/results/surrogate_eval.json \
+  --output beam_optimization/results/benchmark/surrogate_eval.json \
   "$@"
   # --dataset defaults to the latest numbered dataset's test split; pass
   # --dataset <path> to pin a specific numbered dataset.

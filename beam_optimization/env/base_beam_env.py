@@ -16,8 +16,9 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from beam_optimization.config.adige import (
-    ERROR_SCORE, FAILURE_PENALTY, MAX_STEPS, TRAIN_RESET_SCALE,
-    PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM, SCORE_REFERENCES,
+    ERROR_SCORE, LOW_TRANSMISSION_REWARD, MAX_STEPS, REWARD_SCORE_SCALE,
+    TEST_RESET_SCALE, TRAIN_RESET_SCALE, SCORE_REFERENCES,
+    PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
     observation_dim, observation_stage_labels, observation_stage_indices,
     select_observation_stages, clip_params_to_hw, params_to_vec,
@@ -34,7 +35,10 @@ class BaseBeamEnv(gym.Env, ABC):
         max_steps:    Episode length.
         reset_scale:  Gaussian reset width in sensitivity units. Training is
                       the default; evaluation workflows pass TEST_RESET_SCALE.
-        Observation stages are selected by OBSERVATION_STAGE_MASK in adige.py.
+        recovery_reset_probability: probability of using the wider recovery
+                      reset distribution. Training workflows pass 15%;
+                      evaluation leaves it disabled.
+        Observation stages are selected by OBSERVATION_STAGE_MASK.
     """
 
     metadata = {"render_modes": ["human"]}
@@ -45,6 +49,8 @@ class BaseBeamEnv(gym.Env, ABC):
         self,
         max_steps: int = MAX_STEPS,
         reset_scale: float = TRAIN_RESET_SCALE,
+        recovery_reset_probability: float = 0.0,
+        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
         super().__init__()
 
@@ -74,6 +80,13 @@ class BaseBeamEnv(gym.Env, ABC):
         # choose the training or test/evaluation reset distribution.
         self.reset_scale = float(reset_scale)
         self._reset_std = reset_std_vec(self.reset_scale).astype(np.float32)
+        self.recovery_reset_probability = float(recovery_reset_probability)
+        if not 0.0 <= self.recovery_reset_probability <= 1.0:
+            raise ValueError("recovery_reset_probability must be between 0 and 1")
+        self.recovery_reset_scale = float(recovery_reset_scale)
+        self._recovery_reset_std = reset_std_vec(
+            self.recovery_reset_scale
+        ).astype(np.float32)
 
         # Episode state
         self._step_count     = 0
@@ -133,11 +146,28 @@ class BaseBeamEnv(gym.Env, ABC):
         else:
             params = default_params()
             if randomize_params:
-                for key, std in zip(PARAM_KEYS, self._reset_std):
+                recovery_reset = (
+                    self.recovery_reset_probability > 0.0
+                    and self.np_random.random() < self.recovery_reset_probability
+                )
+                active_reset_scale = (
+                    self.recovery_reset_scale if recovery_reset else self.reset_scale
+                )
+                active_reset_std = (
+                    self._recovery_reset_std if recovery_reset else self._reset_std
+                )
+                for key, std in zip(PARAM_KEYS, active_reset_std):
                     params[key] += float(self.np_random.normal(0.0, std))
-                reset_source = "gaussian"
+                reset_source = (
+                    "recovery_gaussian" if recovery_reset else "gaussian"
+                )
             else:
+                recovery_reset = False
+                active_reset_scale = self.reset_scale
                 reset_source = "defaults"
+        if explicit_params is not None:
+            recovery_reset = False
+            active_reset_scale = self.reset_scale
         params = clip_params_to_hw(params)
         self._current_params = params
 
@@ -147,6 +177,11 @@ class BaseBeamEnv(gym.Env, ABC):
 
         # Run the simulator with the initial parameters.
         result = self.simulator.simulate(params)
+        if self._is_technical_failure(result):
+            raise RuntimeError(
+                "Simulator failed while creating the initial episode state: "
+                f"{result.error or 'no usable beam states were produced'}"
+            )
 
         obs, score, extra = self._result_to_obs_score_info(result)
         self._current_obs    = obs
@@ -166,7 +201,9 @@ class BaseBeamEnv(gym.Env, ABC):
             "step": 0,
             "reset_randomized": randomize_params,
             "reset_source": reset_source,
-            "reset_scale": self.reset_scale,
+            "reset_scale": active_reset_scale,
+            "recovery_reset": recovery_reset,
+            "recovery_reset_probability": self.recovery_reset_probability,
             **extra,
         }
         return obs.copy(), info
@@ -177,6 +214,8 @@ class BaseBeamEnv(gym.Env, ABC):
         return dict(self._current_params)
 
     def step(self, action: np.ndarray):
+
+        previous_params = dict(self._current_params)
 
         # action to perform. It is a delta to apply to the current parameters. 
         # The action is clipped to the action space bounds.
@@ -191,16 +230,44 @@ class BaseBeamEnv(gym.Env, ABC):
         # perform concretely the action (the simulation) and get the new observation and final score.
         prev_score = self._current_score
         result = self.simulator.simulate(self._current_params)
+
+        # Infrastructure failures are not physical transitions. Restore the
+        # last usable state, add no reward, and truncate this rollout so the
+        # replay buffer never learns from an SSH/Qt/timeout artifact.
+        if self._is_technical_failure(result):
+            self._current_params = previous_params
+            self._current_result = result
+            self._previous_obs = prev_obs
+            self._last_action = action.copy()
+            self._last_reward = 0.0
+            self._step_count += 1
+
+            self._params_history.append(dict(self._current_params))
+            self._obs_history.append(prev_obs.copy())
+            self._score_history.append(float(prev_score))
+            self._reward_history.append(0.0)
+
+            info = {
+                "score": prev_score,
+                "prev_score": prev_score,
+                "reward": 0.0,
+                "step": self._step_count,
+                "best_score": self.best_score,
+                "technical_failure": True,
+                "sim_result": result,
+            }
+            return prev_obs, 0.0, False, True, info
+
         obs, score, extra = self._result_to_obs_score_info(result)
 
-        # compute reward. A failed simulation must not enter the delta-score
-        # reward as ERROR_SCORE (-999): that would produce a ~-1000 spike now
-        # and a ~+1000 spike on the next successful step, both of which would
-        # dominate any training batch. Instead the episode ends here
-        # (terminated=True: the machine state is invalid, there is no next
-        # state to bootstrap from) with a bounded penalty.
-        failed = not result.success
-        reward = -FAILURE_PENALTY if failed else score - prev_score
+        # Absolute reward prevents beam-loss/recovery cycles from farming a
+        # positive delta. Low transmission has a bounded -1 reward so recovery
+        # remains explorable; valid states use normalized physical score.
+        reward = (
+            LOW_TRANSMISSION_REWARD
+            if extra["low_transmission"]
+            else score / REWARD_SCORE_SCALE
+        )
 
         # update episode state
         self._current_obs    = obs
@@ -222,11 +289,15 @@ class BaseBeamEnv(gym.Env, ABC):
 
         # update step count
         self._step_count += 1
-        terminated = failed
-        truncated = not terminated and self._step_count >= self.max_steps
+        terminated = False
+        truncated = self._step_count >= self.max_steps
 
-        info = {"score": score, "prev_score": prev_score, "step": self._step_count,
-                "best_score": self.best_score, **extra}
+        info = {"score": score, "prev_score": prev_score, "reward": reward,
+                "step": self._step_count,
+                "best_score": self.best_score,
+                "physics_failure": self._is_physics_failure(result),
+                "technical_failure": False,
+                **extra}
 
         return obs.copy(), reward, terminated, truncated, info
 
@@ -313,15 +384,18 @@ class BaseBeamEnv(gym.Env, ABC):
 
         state_updaters: list = []
         for row, feature in enumerate(BEAM_STATE_FEATURES):
+            reference = self._STATE_FEATURE_REFERENCE.get(feature)
             for col, stage in enumerate(stage_titles):
                 values = [float(df.loc[col, feature]) for df in stage_frames]
 
                 ax = state_axes[row, col]
                 ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
+                if reference is not None:
+                    ax.axhline(reference, color="tab:blue", lw=1, linestyle=":", label="target")
                 lc, points, segments = self._plot_colored_trend(ax, steps, values, n_init, feature=feature)
                 state_updaters.append(self._colored_trend_updater(lc, points, segments, steps, values))
                 ax.set_xlim(0, self.max_steps)
-                ax.set_ylim(*self._series_ylim(values))
+                ax.set_ylim(*self._series_ylim(values, reference=reference))
                 if row == 0:
                     ax.set_title(stage, fontsize=9)
                 if col == 0:
@@ -422,9 +496,8 @@ class BaseBeamEnv(gym.Env, ABC):
         """Per-segment green/red/gray color for each consecutive pair in values.
 
         Gray if the value did not change between the two steps. Otherwise,
-        if `feature` is given, uses _feature_improved's per-feature
-        SCORE_REFERENCES convention; otherwise (score/reward) higher is
-        always better.
+        if `feature` is given, uses _feature_improved's per-feature trend
+        convention; otherwise (score/reward) higher is always better.
         """
         colors = []
         for before, after in zip(values[:-1], values[1:]):
@@ -523,14 +596,32 @@ class BaseBeamEnv(gym.Env, ABC):
     def _result_to_obs_score_info(self, result: BeamSimulationResult) -> tuple[np.ndarray, float, dict]:
         """Convert a BeamSimulationResult into (obs, score, info_extras)."""
         
-        # If the simulation failed, return a zero observation and the error score.
-        if not result.success or result.beam_states is None:
+        # A missing trajectory is a technical failure. Physical beam losses
+        # retain all available stages and therefore remain observable.
+        if result.beam_states is None:
             obs = np.zeros(self.observation_space.shape, dtype=np.float32)
-            return obs, ERROR_SCORE, {"sim_result": result}
+            return obs, ERROR_SCORE, {
+                "sim_result": result,
+                "low_transmission": False,
+            }
 
         # Select the beam stages configured in adige.py for the Gym observation.
         obs = select_observation_stages(result.beam_states)
-        return obs, result.score_val, {"sim_result": result}
+        return obs, result.score_val, {
+            "sim_result": result,
+            "low_transmission": result.score_val == ERROR_SCORE,
+        }
+
+    @staticmethod
+    def _is_physics_failure(result: BeamSimulationResult) -> bool:
+        return bool((result.metadata or {}).get("physics_failure"))
+
+    @classmethod
+    def _is_technical_failure(cls, result: BeamSimulationResult) -> bool:
+        return (
+            result.beam_states is None
+            or (not result.success and not cls._is_physics_failure(result))
+        )
 
     
     # Render helpers
@@ -543,51 +634,59 @@ class BaseBeamEnv(gym.Env, ABC):
         import pandas as pd
 
         obs = np.asarray(obs, dtype=np.float32)
-        # Convert the observation into a DataFrame with columns  ["stage", *BEAM_STATE_FEATURES] = ["stage",  "npart_ratio", "x0", "y0", "SizeX", "SizeY", "ex", "ey", "x'0", "y'0"].
+        # Only the beam prefix is rendered here. The normalized parameter
+        # suffix has its own physical-value figure above.
         labels = observation_stage_labels()
-        arr = obs.reshape(len(labels), BEAM_STATE_DIM)
+        beam_obs_dim = len(labels) * BEAM_STATE_DIM
+        arr = obs[:beam_obs_dim].reshape(len(labels), BEAM_STATE_DIM)
         df = pd.DataFrame(arr, columns=BEAM_STATE_FEATURES)
         df.insert(0, "stage", labels)
         return df
 
     _OFFSET_ANGLE_FEATURES = frozenset({"x0", "y0", "x'0", "y'0"})
-    _SIZE_FEATURES = frozenset({"SizeX", "SizeY"})
     _EMITTANCE_FEATURES = frozenset({"ex", "ey"})
 
     @classmethod
     def _feature_improved(cls, feature: str, before: float, after: float) -> bool:
-        """Return True if the feature value moved toward its SCORE_REFERENCES target.
+        """Return True if the feature value's trend from before to after is good.
 
         - npart_ratio: maximized (green when it goes up).
         - x0/y0/x'0/y'0 (reference 0): trend toward zero — green when the
           distance to zero shrinks (|after| < |before|), regardless of sign.
-        - SizeX/SizeY (reference 5 mm): threshold — green once the value is
-          at or below 5 mm, red otherwise (even if it's shrinking but still
-          above 5).
-        - ex/ey (reference 0.05 mm.mrad): threshold, opposite direction —
-          green once the value is at or above 0.05 mm.mrad.
-        - anything else (e.g. knn_distance): minimized (green when it goes down).
+        - ex/ey: maximized (green when they go up, red when they go down).
+        - anything else (SizeX/SizeY, knn_distance, ...): minimized (green
+          when it goes down, red when it goes up).
         """
         if feature == "npart_ratio":
             return round(float(after), 3) >= round(float(before), 3)
         if feature in cls._OFFSET_ANGLE_FEATURES:
             return abs(float(after)) < abs(float(before))
-        if feature in cls._SIZE_FEATURES:
-            return float(after) <= SCORE_REFERENCES[feature]
         if feature in cls._EMITTANCE_FEATURES:
-            return float(after) >= SCORE_REFERENCES[feature]
+            return float(after) > float(before)
         return after < before
 
+    # Target value shown as a reference line on each state panel, so a trend
+    # can be read as "is it heading toward its goal" instead of just "is it
+    # moving". Reuses SCORE_REFERENCES (adige.py); npart_ratio has no entry
+    # there (score() rewards its raw value, not a distance from a reference)
+    # but its goal is unambiguously full transmission, so it is added here
+    # for the render only.
+    _STATE_FEATURE_REFERENCE: Dict[str, float] = {**SCORE_REFERENCES, "npart_ratio": 1.0}
+
     @staticmethod
-    def _series_ylim(values) -> tuple[float, float]:
+    def _series_ylim(values, reference: float | None = None) -> tuple[float, float]:
         """Y-axis limits for a full-episode line trend.
 
         Does not force zero into the range: a parameter or feature that
         never crosses zero (e.g. always negative) should not have its axis
-        padded down to 0.
+        padded down to 0. `reference`, when given, is always included in the
+        range (padded like any other point) so the target value stays
+        visible even if the episode never gets close to it.
         """
         values = np.asarray(values, dtype=float)
         values = values[np.isfinite(values)]
+        if reference is not None and np.isfinite(reference):
+            values = np.append(values, float(reference))
         if values.size == 0:
             return -1.0, 1.0
         lo, hi = float(np.min(values)), float(np.max(values))

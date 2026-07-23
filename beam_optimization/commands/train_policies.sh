@@ -14,7 +14,7 @@ fi
 
 python -m beam_optimization train_policies \
   --base-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --output beam_optimization/runs/all \
+  --output beam_optimization/results/train/rl/all \
   --rl-steps 200000 \
   --svg-episodes 1000 \
   --seed 42 \

@@ -93,19 +93,41 @@ def default_single_surrogate_model() -> Path:
         return candidates[0]
     return DEFAULT_BASE_SURROGATE_DIR / "surrogate_0.pt"
 
-# Root directory where training scripts write RL agent checkpoints and logs.
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "runs/all"
-DEFAULT_SURROGATE_LOG_DIR = PROJECT_ROOT / "runs/surrogate"
+# All command output lives under results/, one subfolder per execution stage
+# (offline_utility, train, benchmark, test, bayesian_opt). env/dataset/ (the
+# TraceWin dataset corpus) and the surrogate checkpoint folders above are
+# deliberately outside results/: they are inputs consumed by other stages,
+# not results to inspect.
+DEFAULT_RESULTS_ROOT = PROJECT_ROOT / "results"
 
-# JSON file written by the benchmark command.
-DEFAULT_BENCHMARK_OUTPUT = PROJECT_ROOT / "results/benchmark.json"
+# Root directory where training scripts write checkpoints and logs, split by
+# what's being trained: RL policies (train_policies.py) vs. the surrogate
+# model (train_surrogate.py).
+DEFAULT_OUTPUT_DIR = DEFAULT_RESULTS_ROOT / "train/rl/all"
+DEFAULT_SURROGATE_LOG_DIR = DEFAULT_RESULTS_ROOT / "train/surrogate"
+
+# JSON file written by the benchmark command, and its siblings (surrogate
+# accuracy, fail-scale policy benchmark) -- all "did this already-trained
+# thing perform well" reports live together under benchmark/.
+DEFAULT_BENCHMARK_OUTPUT = DEFAULT_RESULTS_ROOT / "benchmark/benchmark.json"
+DEFAULT_SURROGATE_EVAL_OUTPUT = DEFAULT_RESULTS_ROOT / "benchmark/surrogate_eval.json"
+DEFAULT_FAIL_SCALE_BENCHMARK_OUTPUT = DEFAULT_RESULTS_ROOT / "benchmark/fail_scale_benchmark.json"
 
 # Dedicated folder for Bayesian Optimization checkpoints, samples and plots.
-DEFAULT_BAYESIAN_RESULTS_DIR = PROJECT_ROOT / "results/bayesian_optimization"
+DEFAULT_BAYESIAN_RESULTS_DIR = DEFAULT_RESULTS_ROOT / "bayesian_opt"
 
-# JSON reports written by the TraceWin calibration commands.
-DEFAULT_SENSITIVITY_OUTPUT = PROJECT_ROOT / "results/sensitivity.json"
-DEFAULT_PARAMETER_BOUNDS_OUTPUT = PROJECT_ROOT / "results/parameter_bounds.json"
+# JSON reports written by the TraceWin calibration commands
+# (config/offline_utility/*.py).
+DEFAULT_SENSITIVITY_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/sensitivity.json"
+DEFAULT_PARAMETER_BOUNDS_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/parameter_bounds.json"
+DEFAULT_REFINING_SENSITIVITY_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/refining_sensitivity.json"
+DEFAULT_EXPLORATION_SCALE_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/exploration_scale.json"
+DEFAULT_FAIL_SCALE_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/fail_scale.json"
+
+# Output written by scripts/test.py -- deliberately its own stage, separate
+# from train/ (it evaluates an already-trained checkpoint for one episode).
+DEFAULT_TEST_OUTPUT = DEFAULT_RESULTS_ROOT / "test_RL/test.json"
+DEFAULT_TEST_RENDER_DIR = DEFAULT_RESULTS_ROOT / "test_RL/renders"
 
 # TraceWin project file used when a command runs the real simulator program
 DEFAULT_TRACEWIN_INI = (

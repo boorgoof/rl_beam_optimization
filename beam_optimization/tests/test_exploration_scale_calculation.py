@@ -9,6 +9,7 @@ import numpy as np
 
 from beam_optimization.config.adige import PARAMETERS
 from beam_optimization.config.offline_utility.exploration_scale_calculation import (
+    DEFAULT_START_SCALE,
     calibrate_exploration_scale,
     candidate_scales,
     classify_result,
@@ -57,7 +58,7 @@ class _SequenceSimulator(_AlwaysSuccessfulSimulator):
 
 class ExplorationScaleTests(unittest.TestCase):
     def test_candidate_grid_starts_at_default_and_descends(self):
-        self.assertEqual(candidate_scales()[0], 0.4)
+        self.assertEqual(candidate_scales()[0], DEFAULT_START_SCALE)
         self.assertEqual(
             candidate_scales(0.5, 0.2, 0.1),
             (0.5, 0.4, 0.3, 0.2),

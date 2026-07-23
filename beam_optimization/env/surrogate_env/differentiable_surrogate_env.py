@@ -14,10 +14,14 @@ import numpy as np
 import torch
 
 from beam_optimization.config.adige import (
+    ERROR_SCORE,
+    LOW_TRANSMISSION_REWARD,
     MAX_STEPS,
     N_OUTPUT_STAGES,
     N_PARAMS,
+    REWARD_SCORE_SCALE,
     STAGE_PARAM_SIZES,
+    TEST_RESET_SCALE,
     TRAIN_RESET_SCALE,
     action_step_vec,
     clip_param_tensor_to_hw,
@@ -73,6 +77,8 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         device: Optional[str] = None,
         stage_weights: Optional[List[float]] = None,
         reset_scale: float = TRAIN_RESET_SCALE,
+        recovery_reset_probability: float = 0.0,
+        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
         super().__init__(
             model=model,
@@ -80,10 +86,17 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             max_steps=max_steps,
             device=device,
             reset_scale=reset_scale,
+            recovery_reset_probability=recovery_reset_probability,
+            recovery_reset_scale=recovery_reset_scale,
         )
         self.device = self.simulator.device
         self._reset_std_t = torch.tensor(
             reset_std_vec(reset_scale), dtype=torch.float32, device=self.device
+        )
+        self._recovery_reset_std_t = torch.tensor(
+            reset_std_vec(recovery_reset_scale),
+            dtype=torch.float32,
+            device=self.device,
         )
         self._action_step_t = torch.tensor(
             action_step_vec(), dtype=torch.float32, device=self.device
@@ -121,8 +134,16 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         self.simulator.set_active_model(model_index)
 
         beam0_t = self._prepare_beam0(beam0)
+        use_recovery_reset = (
+            self.recovery_reset_probability > 0.0
+            and float(torch.rand((), device=self.device))
+            < self.recovery_reset_probability
+        )
+        reset_std = (
+            self._recovery_reset_std_t if use_recovery_reset else self._reset_std_t
+        )
         params = clip_param_tensor_to_hw(
-            self._defaults_t + torch.randn(N_PARAMS, device=self.device) * self._reset_std_t
+            self._defaults_t + torch.randn(N_PARAMS, device=self.device) * reset_std
         ).detach()
         beam_states = self._forward(params, beam0_t)
         score = self._score_beam_states(beam_states).detach()
@@ -160,7 +181,11 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         params_next = clip_param_tensor_to_hw(state.params + action)
         beam_states = self._forward(params_next, state.beam0)
         score_next = self._score_beam_states(beam_states)
-        reward = score_next - state.score
+        reward = torch.where(
+            score_next == ERROR_SCORE,
+            score_next.new_full((), LOW_TRANSMISSION_REWARD),
+            score_next / REWARD_SCORE_SCALE,
+        )
         obs_next = self._build_obs(state.beam0, beam_states)
 
         next_state = DifferentiableBeamState(
@@ -205,7 +230,11 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             self._split_params_grad(params),
         )
 
-    def _build_obs(self, beam0: torch.Tensor, outputs: List[torch.Tensor]) -> torch.Tensor:
+    def _build_obs(
+        self,
+        beam0: torch.Tensor,
+        outputs: List[torch.Tensor],
+    ) -> torch.Tensor:
         return select_observation_stages_tensor([beam0] + outputs)
 
     def _score_beam_states(self, outputs: List[torch.Tensor]) -> torch.Tensor:

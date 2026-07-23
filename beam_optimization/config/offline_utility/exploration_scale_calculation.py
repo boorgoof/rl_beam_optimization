@@ -1,6 +1,6 @@
 """Calibrate one shared dataset/Bayesian exploration scale with TraceWin.
 
-Starting from 0.4, candidate scales are tested in descending order.  Every
+Starting from 0.5, candidate scales are tested in descending order.  Every
 candidate is evaluated with both parameter distributions used by the project:
 
 * dataset: independent Gaussian offsets with std = scale * sensitivity;
@@ -9,8 +9,8 @@ candidate is evaluated with both parameter distributions used by the project:
 The first (therefore largest) candidate for which both distributions reach the
 requested valid-run rate is selected.  A run is valid when TraceWin itself
 reports success (no crash/error); the target rate is the fraction of runs
-(out of the sampled total) that must succeed, e.g. 0.90 means at least 9 out
-of 10 samples must succeed. ``adige.py`` is never edited automatically.
+(out of the sampled total) that must succeed, e.g. 0.85 means at least 85 out
+of 100 samples must succeed. ``adige.py`` is never edited automatically.
 """
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ from beam_optimization.config.adige import (
 )
 
 
-DEFAULT_START_SCALE = 0.4
+DEFAULT_START_SCALE = 0.5
 DEFAULT_MIN_SCALE = 0.05
 DEFAULT_SCALE_STEP = 0.05
-DEFAULT_TARGET_SUCCESS_RATE = 0.90
+DEFAULT_TARGET_SUCCESS_RATE = 0.85
 DEFAULT_SAMPLES_PER_DISTRIBUTION = 32
 
 
@@ -315,7 +315,9 @@ def save_report(report: dict, output: str | Path, *, run_config: dict) -> Path:
 
 
 def main() -> None:
-    from beam_optimization.config.paths import PROJECT_ROOT, resolve_tracewin_project
+    from beam_optimization.config.paths import (
+        DEFAULT_EXPLORATION_SCALE_OUTPUT, resolve_tracewin_project,
+    )
     from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -325,7 +327,7 @@ def main() -> None:
     parser.add_argument("--calc-dir", default=None, metavar="PATH")
     parser.add_argument(
         "--output",
-        default=str(PROJECT_ROOT / "results/exploration_scale.json"),
+        default=str(DEFAULT_EXPLORATION_SCALE_OUTPUT),
         metavar="JSON",
     )
     parser.add_argument("--start-scale", type=float, default=DEFAULT_START_SCALE)

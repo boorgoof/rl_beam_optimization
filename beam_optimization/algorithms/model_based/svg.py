@@ -18,8 +18,10 @@ Key idea (SVG(∞): full-horizon backprop through the model, no value function):
 
     so the gradient of each step's reward flows back through all previous
     actions (backprop-through-time). No critic is needed: the surrogate *is*
-    the critic. With reward = score_t − score_{t−1} the sum telescopes, so the
-    objective is the final score reached from the initial state.
+    the critic. Valid states use reward = score_t / REWARD_SCORE_SCALE, while
+    low-transmission states use a bounded absolute reward. The objective
+    rewards reaching a good beam state early and maintaining it without
+    creating a positive recovery jump.
 
 Practical notes:
     - Uses reparameterization trick (rsample) for low-variance gradients.
@@ -37,7 +39,10 @@ import torch
 import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
-from beam_optimization.config.adige import TRAIN_RESET_SCALE
+from beam_optimization.config.adige import (
+    TRAIN_RECOVERY_RESET_PROBABILITY,
+    TRAIN_RESET_SCALE,
+)
 from beam_optimization.env.surrogate_env import DifferentiableSurrogateEnv
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
@@ -118,6 +123,7 @@ class SVGAgent:
             device=str(self.device),
             stage_weights=stage_weights,
             reset_scale=TRAIN_RESET_SCALE,
+            recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
         )
 
         self.obs_dim = int(obs_dim)

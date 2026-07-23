@@ -17,7 +17,7 @@ fi
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
   --dataset beam_optimization/env/dataset/004/dataset_all.pt \
-  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --sac beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --n-runs 3 \
   --eval-budget 200 \
   --svg-episodes 500 \
@@ -25,4 +25,4 @@ python -m beam_optimization benchmark \
   --max-ep-steps 20 \
   --tracewin beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2/CB_newMRMS_RFQ_Fields_1.ini \
   --tracewin-episodes 10 \
-  --output beam_optimization/results/benchmark_tracewin.json
+  --output beam_optimization/results/benchmark/benchmark_tracewin.json

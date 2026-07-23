@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 from pathlib import Path
+import time
 from typing import Sequence
 
 import torch
@@ -43,19 +45,52 @@ def _resolved(path: Path) -> Path:
     return path.expanduser().resolve(strict=False)
 
 
-def _check_builder_is_stable(path: Path) -> None:
+def _builder_is_running(path: Path) -> bool:
     state_path = path.parent / "builder_state.json"
     if not state_path.exists():
-        return
+        return False
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Cannot read builder state {state_path}: {exc}") from exc
-    if str(state.get("status", "")).lower() == "running":
-        raise ValueError(
-            f"Input dataset {path} belongs to a build that is still running "
-            f"({state_path}). Finish or stop it cleanly before merging."
-        )
+    return str(state.get("status", "")).lower() == "running"
+
+
+def _load_stable_snapshot(
+    path: Path,
+    *,
+    attempts: int = 20,
+    retry_sleep: float = 0.1,
+) -> dict:
+    """Read one internally consistent snapshot while a builder may replace it."""
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            before = path.stat()
+            payload = path.read_bytes()
+            after = path.stat()
+            unchanged = (
+                before.st_ino == after.st_ino
+                and before.st_size == after.st_size == len(payload)
+                and before.st_mtime_ns == after.st_mtime_ns
+            )
+            if not unchanged:
+                raise RuntimeError("dataset changed while snapshot was being read")
+            raw = torch.load(
+                io.BytesIO(payload),
+                map_location="cpu",
+                weights_only=False,
+            )
+            if not isinstance(raw, dict):
+                raise RuntimeError("snapshot does not contain a dataset dictionary")
+            return raw
+        except Exception as exc:
+            last_error = exc
+            time.sleep(retry_sleep)
+    raise ValueError(
+        f"Could not obtain a stable snapshot of running dataset {path} "
+        f"after {attempts} attempts: {last_error}"
+    )
 
 
 def _as_float_tensor(raw: dict, key: str, path: Path) -> torch.Tensor:
@@ -70,13 +105,28 @@ def _as_float_tensor(raw: dict, key: str, path: Path) -> torch.Tensor:
     return tensor
 
 
-def _validate_and_load(path: Path) -> BeamDataset:
+def _validate_and_load(
+    path: Path,
+    *,
+    allow_running: bool = False,
+) -> tuple[BeamDataset, bool]:
     if not path.is_file():
         raise ValueError(f"Input dataset does not exist or is not a file: {path}")
-    _check_builder_is_stable(path)
+    running = _builder_is_running(path)
+    if running and not allow_running:
+        state_path = path.parent / "builder_state.json"
+        raise ValueError(
+            f"Input dataset {path} belongs to a build that is still running "
+            f"({state_path}). Finish it before merging, or pass --allow-running "
+            "to merge a stable snapshot."
+        )
 
     try:
-        raw = torch.load(str(path), map_location="cpu", weights_only=False)
+        raw = (
+            _load_stable_snapshot(path)
+            if running
+            else torch.load(str(path), map_location="cpu", weights_only=False)
+        )
     except Exception as exc:
         raise ValueError(f"Cannot load dataset {path}: {exc}") from exc
     if not isinstance(raw, dict):
@@ -124,7 +174,7 @@ def _validate_and_load(path: Path) -> BeamDataset:
 
     dataset = BeamDataset()
     dataset.append_flat_samples(X, Y, recalculated_scores)
-    return dataset
+    return dataset, running
 
 
 def merge_dataset_files(
@@ -132,6 +182,7 @@ def merge_dataset_files(
     output_dir: str | Path,
     *,
     seed: int = 123,
+    allow_running: bool = False,
 ) -> dict:
     """Merge input datasets, then save all/train/val/test files.
 
@@ -164,10 +215,18 @@ def merge_dataset_files(
     merged = BeamDataset()
     input_counts: list[dict[str, object]] = []
     for path in inputs:
-        dataset = _validate_and_load(path)
+        dataset, snapshotted = _validate_and_load(
+            path,
+            allow_running=allow_running,
+        )
         merged = merged.merge(dataset)
-        input_counts.append({"path": str(path), "num_samples": len(dataset)})
-        print(f"Input: {path} -> {len(dataset):,} samples", flush=True)
+        input_counts.append({
+            "path": str(path),
+            "num_samples": len(dataset),
+            "running_snapshot": snapshotted,
+        })
+        suffix = " (stable running snapshot)" if snapshotted else ""
+        print(f"Input: {path} -> {len(dataset):,} samples{suffix}", flush=True)
 
     saved = save_dataset_splits(
         merged,
@@ -193,6 +252,7 @@ def merge_dataset_files(
         "inputs": input_counts,
         "output_dir": str(output_dir),
         "seed": int(seed),
+        "allow_running": bool(allow_running),
         "num_samples": len(merged),
         "split_counts": split_counts,
         "paths": {name: str(path) for name, path in saved.items()},
@@ -222,12 +282,25 @@ def main() -> None:
         default=123,
         help="Shuffle seed used for the 80/10/10 split (default: 123).",
     )
+    parser.add_argument(
+        "--allow-running",
+        action="store_true",
+        help=(
+            "Allow inputs whose builder_state.json is still running by reading "
+            "a stable point-in-time snapshot. Builders continue unchanged."
+        ),
+    )
     args = parser.parse_args()
 
     if len(args.inputs) < 2:
         parser.error("--inputs requires at least two dataset files")
     try:
-        summary = merge_dataset_files(args.inputs, args.output_dir, seed=args.seed)
+        summary = merge_dataset_files(
+            args.inputs,
+            args.output_dir,
+            seed=args.seed,
+            allow_running=args.allow_running,
+        )
     except ValueError as exc:
         parser.error(str(exc))
 

@@ -7837,8 +7837,10 @@ a.anchor-link {
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">beam_optimization.config.adige</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">ACTION_SCALE</span><span class="p">,</span> <span class="n">BAYESIAN_SCALE</span><span class="p">,</span> <span class="n">BEAM_STATE_DIM</span><span class="p">,</span> <span class="n">BEAM_STATE_FEATURES</span><span class="p">,</span>
-    <span class="n">DATASET_SCALE</span><span class="p">,</span> <span class="n">ERROR_SCORE</span><span class="p">,</span> <span class="n">EXPLORATION_SCALE</span><span class="p">,</span> <span class="n">FAILURE_PENALTY</span><span class="p">,</span>
-    <span class="n">MAX_STEPS</span><span class="p">,</span> <span class="n">OBSERVATION_STAGE_MASK</span><span class="p">,</span> <span class="n">PARAMETERS</span><span class="p">,</span> <span class="n">TEST_RESET_SCALE</span><span class="p">,</span>
+    <span class="n">DATASET_SCALE</span><span class="p">,</span> <span class="n">ERROR_SCORE</span><span class="p">,</span> <span class="n">EXPLORATION_SCALE</span><span class="p">,</span> <span class="n">LOW_TRANSMISSION_REWARD</span><span class="p">,</span>
+    <span class="n">MIN_NPART_RATIO</span><span class="p">,</span> <span class="n">MAX_STEPS</span><span class="p">,</span> <span class="n">OBSERVATION_STAGE_MASK</span><span class="p">,</span> <span class="n">PARAMETERS</span><span class="p">,</span>
+    <span class="n">REWARD_SCORE_SCALE</span><span class="p">,</span> <span class="n">TRAIN_RECOVERY_RESET_PROBABILITY</span><span class="p">,</span>
+    <span class="n">TEST_RESET_SCALE</span><span class="p">,</span>
     <span class="n">TRAIN_RESET_SCALE</span><span class="p">,</span>
     <span class="n">SCORE_REFERENCES</span><span class="p">,</span> <span class="n">SCORE_WEIGHTS</span><span class="p">,</span> <span class="n">STAGE_MARKERS</span><span class="p">,</span> <span class="n">action_bounds</span><span class="p">,</span>
     <span class="n">dataset_std_vec</span><span class="p">,</span> <span class="n">observation_dim</span><span class="p">,</span> <span class="n">observation_stage_indices</span><span class="p">,</span>
@@ -7877,14 +7879,15 @@ a.anchor-link {
 <li><code>action_space</code>: <strong>what the agent is allowed to do</strong>.</li>
 </ul>
 <p>A <code>Space</code> provides, among other operations, <code>contains(x)</code> to test whether a value belongs to the declared space and <code>sample()</code> to generate a valid sample. Gymnasium offers several space types; this environment uses continuous <code>Box</code> spaces because both beam features and machine corrections are real-valued vectors.</p>
-<h3 id="1.2-What-the-policy-observes">1.2 What the policy observes<a class="anchor-link" href="#1.2-What-the-policy-observes">¶</a></h3><p><code>TraceWinEnv</code> and <code>SurrogateEnv</code> expose the same observation: selected beam states produced by their respective simulator backends. Each selected longitudinal stage contributes the nine configured beam features. The controlled parameter values, previous action, reward, and score are <strong>not</strong> appended to the observation.</p>
-<h3 id="1.3-Observation-Box:-construction-and-dimension">1.3 Observation <code>Box</code>: construction and dimension<a class="anchor-link" href="#1.3-Observation-Box:-construction-and-dimension">¶</a></h3><p>If $s_1,\ldots,s_m$ are the stages enabled by <code>OBSERVATION_STAGE_MASK</code>, their beam-state rows are concatenated in beam-line order and flattened:</p>
-<p>$$o_t = \operatorname{flatten}\left(B_t[s_1],\ldots,B_t[s_m]\right), \qquad \dim(o_t)=m\times BEAM\_STATE\_DIM.$$</p>
+<h3 id="1.2-What-the-policy-observes">1.2 What the policy observes<a class="anchor-link" href="#1.2-What-the-policy-observes">¶</a></h3><p><code>TraceWinEnv</code> and <code>SurrogateEnv</code> expose the same observation: only the selected beam states produced by their respective simulator backends. Each visible longitudinal stage contributes the nine configured beam features. Machine parameters, previous action, reward, and score are not appended.</p>
+<h3 id="1.3-Observation-Box:-construction-and-dimension">1.3 Observation <code>Box</code>: construction and dimension<a class="anchor-link" href="#1.3-Observation-Box:-construction-and-dimension">¶</a></h3><p>If $b_1,\ldots,b_m$ are the stages enabled by <code>OBSERVATION_STAGE_MASK</code>, their beam-state rows are concatenated in beam-line order and flattened:</p>
+<p>$$o_t = \operatorname{flatten}\left(B_t[b_1],\ldots,B_t[b_m]\right),$$
+$$\dim(o_t)=m\times BEAM\_STATE\_DIM.$$</p>
 <p>The declared Gymnasium space is</p>
 <p>$$\mathcal{O}=\operatorname{Box}\left(low=-\infty,high=+\infty,shape=(m\times BEAM\_STATE\_DIM,),dtype=float32\right).$$</p>
 <p>The resulting fixed-length <code>float32</code> vector is the input to the policy. The dynamic tables below show the exact active stages, feature order, observation dimension, and action dimension from the current configuration.</p>
-<h3 id="1.4-Design-reasoning-and-consequences">1.4 Design reasoning and consequences<a class="anchor-link" href="#1.4-Design-reasoning-and-consequences">¶</a></h3><p>Using the same observation definition for both backends allows one policy interface to operate with either TraceWin or the surrogate. The input stage describes the incoming beam, intermediate visible stages provide longitudinal context, and the final stage describes the resulting beam quality. Selecting only configured stages limits the neural-network input size.</p>
-<p>Because score and machine parameters are excluded, the policy must choose corrections from the beam state itself. The score remains available separately as <code>info["score"]</code> for reporting, while reward supplies the learning signal. This is an important modeling choice rather than a clipping or safety mechanism.</p>
+<h3 id="1.4-Design-reasoning-and-consequences">1.4 Design reasoning and consequences<a class="anchor-link" href="#1.4-Design-reasoning-and-consequences">¶</a></h3><p>Using the same observation definition for both backends allows one policy interface to operate with either TraceWin or the surrogate. The input stage describes the incoming beam, the visible intermediate stage provides longitudinal context, and the final stage describes beam quality.</p>
+<p>The policy therefore chooses corrections from beam information alone. During particle loss it receives the available partial stages and zero-filled missing stages, but not the current machine settings. Score remains available separately as <code>info["score"]</code>, while reward supplies the learning signal.</p>
 </div>
 </div>
 </div>
@@ -7924,7 +7927,7 @@ a.anchor-link {
     <span class="n">table</span><span class="p">([</span><span class="s1">'Environment'</span><span class="p">,</span> <span class="s1">'Observation formula'</span><span class="p">,</span> <span class="s1">'Obs shape'</span><span class="p">,</span> <span class="s1">'Action shape'</span><span class="p">,</span> <span class="s1">'Score output'</span><span class="p">],</span> <span class="n">interface_rows</span><span class="p">),</span>
     <span class="s1">'### 1.5 Beam stages and visibility'</span><span class="p">,</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Stage index'</span><span class="p">,</span> <span class="s1">'TraceWin marker'</span><span class="p">,</span> <span class="s1">'Label'</span><span class="p">,</span> <span class="s1">'Visible to the agent'</span><span class="p">],</span> <span class="n">stage_rows</span><span class="p">),</span>
-    <span class="sa">f</span><span class="s1">'Current observation: **</span><span class="si">{</span><span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">visible_labels</span><span class="p">)</span><span class="si">}</span><span class="s1">**, therefore **</span><span class="si">{</span><span class="n">observation_dim</span><span class="p">()</span><span class="si">}</span><span class="s1"> float32 values**.'</span><span class="p">,</span>
+    <span class="sa">f</span><span class="s1">'Current observation: **</span><span class="si">{</span><span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">visible_labels</span><span class="p">)</span><span class="si">}</span><span class="s1">**, therefore **</span><span class="si">{</span><span class="n">observation_dim</span><span class="p">()</span><span class="si">}</span><span class="s1"> float32 beam-feature values**.'</span><span class="p">,</span>
     <span class="s1">'### 1.6 Features in each visible stage'</span><span class="p">,</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Index'</span><span class="p">,</span> <span class="s1">'Feature'</span><span class="p">,</span> <span class="s1">'Meaning'</span><span class="p">,</span> <span class="s1">'Used by score'</span><span class="p">],</span> <span class="n">feature_rows</span><span class="p">),</span>
 <span class="p">])))</span>
@@ -8057,7 +8060,7 @@ a.anchor-link {
 </tr>
 </tbody>
 </table>
-<p>Current observation: <strong>beam0, marker_162, final</strong>, therefore <strong>27 float32 values</strong>.</p>
+<p>Current observation: <strong>beam0, marker_162, final</strong>, therefore <strong>27 float32 beam-feature values</strong>.</p>
 <h3 id="1.6-Features-in-each-visible-stage">1.6 Features in each visible stage<a class="anchor-link" href="#1.6-Features-in-each-visible-stage">¶</a></h3><table>
 <thead>
 <tr>
@@ -8182,6 +8185,7 @@ $$trajectory_{max,p}=MAX\_STEPS\,a_{max,p}.$$</p>
     <span class="p">[</span><span class="s1">'Dataset Gaussian width'</span><span class="p">,</span> <span class="s1">'`DATASET_SCALE`'</span><span class="p">,</span> <span class="s1">'`DATASET_SCALE = EXPLORATION_SCALE`'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">DATASET_SCALE</span><span class="p">),</span> <span class="s1">'`dataset_std_p = DATASET_SCALE × sensitivity_p`'</span><span class="p">],</span>
     <span class="p">[</span><span class="s1">'Bayesian half-width'</span><span class="p">,</span> <span class="s1">'`BAYESIAN_SCALE`'</span><span class="p">,</span> <span class="s1">'`BAYESIAN_SCALE = EXPLORATION_SCALE`'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">BAYESIAN_SCALE</span><span class="p">),</span> <span class="s1">'default ± Bayesian interval'</span><span class="p">],</span>
     <span class="p">[</span><span class="s1">'Training reset Gaussian width'</span><span class="p">,</span> <span class="s1">'`TRAIN_RESET_SCALE`'</span><span class="p">,</span> <span class="s1">'`f_reset × k_sigma_dataset × DATASET_SCALE / k_sigma`'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">TRAIN_RESET_SCALE</span><span class="p">),</span> <span class="s1">'`train_reset_std_p = TRAIN_RESET_SCALE × sensitivity_p`'</span><span class="p">],</span>
+    <span class="p">[</span><span class="s1">'Recovery-training reset rate'</span><span class="p">,</span> <span class="s1">'`TRAIN_RECOVERY_RESET_PROBABILITY`'</span><span class="p">,</span> <span class="s1">'configured mixture probability'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">TRAIN_RECOVERY_RESET_PROBABILITY</span><span class="p">),</span> <span class="s1">'fraction of training episodes using TEST_RESET_SCALE'</span><span class="p">],</span>
     <span class="p">[</span><span class="s1">'Test reset Gaussian width'</span><span class="p">,</span> <span class="s1">'`TEST_RESET_SCALE`'</span><span class="p">,</span> <span class="s1">'`TEST_RESET_SCALE = DATASET_SCALE`'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">TEST_RESET_SCALE</span><span class="p">),</span> <span class="s1">'`test_reset_std_p = DATASET_SCALE × sensitivity_p`'</span><span class="p">],</span>
     <span class="p">[</span><span class="s1">'Per-step action half-width'</span><span class="p">,</span> <span class="s1">'`ACTION_SCALE`'</span><span class="p">,</span> <span class="s1">'`(1 − f_reset) × k_sigma_dataset × DATASET_SCALE / MAX_STEPS`'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">ACTION_SCALE</span><span class="p">),</span> <span class="s1">'`step_max_p = ACTION_SCALE × sensitivity_p`'</span><span class="p">],</span>
     <span class="p">[</span><span class="s1">'Episode horizon'</span><span class="p">,</span> <span class="s1">'`MAX_STEPS`'</span><span class="p">,</span> <span class="s1">'configured episode length'</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">MAX_STEPS</span><span class="p">),</span> <span class="s1">'maximum number of actions'</span><span class="p">],</span>
@@ -8319,6 +8323,13 @@ $$trajectory_{max,p}=MAX\_STEPS\,a_{max,p}.$$</p>
 <td><code>f_reset × k_sigma_dataset × DATASET_SCALE / k_sigma</code></td>
 <td>0.0875</td>
 <td><code>train_reset_std_p = TRAIN_RESET_SCALE × sensitivity_p</code></td>
+</tr>
+<tr>
+<td>Recovery-training reset rate</td>
+<td><code>TRAIN_RECOVERY_RESET_PROBABILITY</code></td>
+<td>configured mixture probability</td>
+<td>0.15</td>
+<td>fraction of training episodes using TEST_RESET_SCALE</td>
 </tr>
 <tr>
 <td>Test reset Gaussian width</td>
@@ -8700,15 +8711,15 @@ $$p_{t+1,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{t+1,p},p^{HW,min}
 <p>$$|p_{T,p}-p_{0,p}|\le T\,ACTION\_SCALE\,s_p\le MAX\_STEPS\,ACTION\_SCALE\,s_p.$$</p>
 <p>Including the calibrated worst-case <strong>training reset</strong> gives a separate theoretical allowance:</p>
 <p>$$|p_{T,p}-p^{default}_p|\lesssim(k_{reset}TRAIN\_RESET\_SCALE+MAX\_STEPS\,ACTION\_SCALE)s_p.$$</p>
-<p>This is a reachability bound, not a command imposed on the policy: actions may be smaller, reverse direction, or be zero. Hardware clipping can only reduce the displacement. A successful episode is truncated after <code>MAX_STEPS</code>; a failed simulation terminates it immediately.</p>
+<p>This is a reachability bound, not a command imposed on the policy: actions may be smaller, reverse direction, or be zero. Hardware clipping can only reduce the displacement. Physical beam loss does not terminate an episode: the policy keeps receiving available partial stages and may attempt recovery until truncation at <code>MAX_STEPS</code>. A technical simulator failure instead truncates the affected rollout without creating a physical transition.</p>
 <h2 id="3.-Episode-initialization-(reset)">3. Episode initialization (reset)<a class="anchor-link" href="#3.-Episode-initialization-(reset)">¶</a></h2><h3 id="3.1-Training-and-test-reset-distributions">3.1 Training and test reset distributions<a class="anchor-link" href="#3.1-Training-and-test-reset-distributions">¶</a></h3><p>At reset, every parameter starts from its default plus independent Gaussian noise. Training and evaluation deliberately use different standard deviations:</p>
 <p>$$\epsilon_p^{train}\sim\mathcal{N}\left(0,(TRAIN\_RESET\_SCALE\,s_p)^2\right),$$
 $$\epsilon_p^{test}\sim\mathcal{N}\left(0,(TEST\_RESET\_SCALE\,s_p)^2\right),\qquad TEST\_RESET\_SCALE=DATASET\_SCALE.$$</p>
 <p>The selected noise is added to the default and then clipped explicitly between the parameter's hardware bounds:</p>
 <p>$$p^{candidate}_{0,p}=p^{default}_p+\epsilon_p,$$
 $$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p^{HW,max}_p\right).$$</p>
-<p>Training episodes use <code>TRAIN_RESET_SCALE</code>; learning-curve evaluation, checkpoint selection, benchmark, and qualitative test episodes use <code>TEST_RESET_SCALE</code>. <code>reset(options={"randomize_params": False})</code> disables either perturbation. The simulator context is then reset: the surrogate samples an input beam and an ensemble member, while TraceWin prepares its real execution context.</p>
-<h3 id="3.2-Why-training-and-test-use-different-scales">3.2 Why training and test use different scales<a class="anchor-link" href="#3.2-Why-training-and-test-use-different-scales">¶</a></h3><p>Training reset randomization exposes the policy to different initial configurations while reserving 75% of the trust-region radius for corrective motion: its calibrated <code>3σ</code> excursion occupies 25% of that radius. Test reset instead has the same standard deviation as dataset generation, so its <code>3σ</code> edge equals the dataset trust-region edge. This intentionally tests recovery over the wider learned distribution. A test episode starting near that edge can move outside the surrogate trust region when actions are added; this is an extrapolation risk rather than a clipping rule. Hardware clipping remains the final validity constraint, and no additional <code>±3σ</code> clipping is applied.</p>
+<p>Most training episodes use <code>TRAIN_RESET_SCALE</code>. A fraction <code>TRAIN_RECOVERY_RESET_PROBABILITY</code> instead uses <code>TEST_RESET_SCALE</code>, deliberately exposing the policy to boundary and particle-loss recovery states. Learning-curve evaluation, checkpoint selection, benchmark, and qualitative test episodes always use <code>TEST_RESET_SCALE</code>. <code>reset(options={"randomize_params": False})</code> disables either perturbation.</p>
+<h3 id="3.2-Why-training-and-test-use-different-scales">3.2 Why training and test use different scales<a class="anchor-link" href="#3.2-Why-training-and-test-use-different-scales">¶</a></h3><p>The regular training reset reserves 75% of the trust-region radius for corrective motion: its calibrated <code>3σ</code> excursion occupies 25% of that radius. The recovery-training mixture uses the same wider distribution as evaluation for a configured minority of episodes. This prevents the policy from learning avoidance only: it must also observe transitions that begin near difficult regions. Test reset has the same standard deviation as dataset generation, so its <code>3σ</code> edge equals the dataset trust-region edge. Hardware clipping remains the final validity constraint.</p>
 </div>
 </div>
 </div>
@@ -8722,7 +8733,10 @@ $$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">w</span><span class="p">,</span> <span class="n">ref</span> <span class="o">=</span> <span class="n">SCORE_WEIGHTS</span><span class="p">,</span> <span class="n">SCORE_REFERENCES</span>
 <span class="n">score_formula</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""```text</span>
-<span class="s2">score = </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s1">'npart_ratio'</span><span class="p">])</span><span class="si">}</span><span class="s2"> * clip(npart_ratio, 0, 1)</span>
+<span class="s2">if npart_ratio &lt; </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">MIN_NPART_RATIO</span><span class="p">)</span><span class="si">}</span><span class="s2">:</span>
+<span class="s2">    score = </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ERROR_SCORE</span><span class="p">)</span><span class="si">}</span>
+<span class="s2">else:</span>
+<span class="s2">    score = </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s1">'npart_ratio'</span><span class="p">])</span><span class="si">}</span><span class="s2"> * clip(npart_ratio, 0, 1)</span>
 <span class="s2">        - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s1">'emittance'</span><span class="p">])</span><span class="si">}</span><span class="s2"> * ((ex - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s1">'ex'</span><span class="p">])</span><span class="si">}</span><span class="s2">) + (ey - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s1">'ey'</span><span class="p">])</span><span class="si">}</span><span class="s2">))</span>
 <span class="s2">        - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s1">'offset'</span><span class="p">])</span><span class="si">}</span><span class="s2"> * ((abs(x0) - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s1">'x0'</span><span class="p">])</span><span class="si">}</span><span class="s2">) + (abs(y0) - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s1">'y0'</span><span class="p">])</span><span class="si">}</span><span class="s2">))</span>
 <span class="s2">        - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s1">'angle'</span><span class="p">])</span><span class="si">}</span><span class="s2"> * ((abs(x'0) - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">"x'0"</span><span class="p">])</span><span class="si">}</span><span class="s2">) + (abs(y'0) - </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s2">"y'0"</span><span class="p">])</span><span class="si">}</span><span class="s2">))</span>
@@ -8736,15 +8750,16 @@ $$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p
     <span class="p">[</span><span class="s1">'RMS size'</span><span class="p">,</span> <span class="s1">'`SizeX`, `SizeY`'</span><span class="p">,</span> <span class="s1">'reference-relative'</span><span class="p">,</span> <span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s1">'size'</span><span class="p">]),</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s1">'SizeX'</span><span class="p">])</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ref</span><span class="p">[</span><span class="s1">'SizeY'</span><span class="p">])</span><span class="si">}</span><span class="s2">"</span><span class="p">],</span>
 <span class="p">]</span>
 <span class="n">reward_formula</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"""```text</span>
-<span class="s2">if simulation succeeds:</span>
-<span class="s2">    reward_t = score_t - score_(t-1)</span>
+<span class="s2">if score_t == ERROR_SCORE:</span>
+<span class="s2">    reward_t = </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">LOW_TRANSMISSION_REWARD</span><span class="p">)</span><span class="si">}</span>
+<span class="s2">elif physical simulation state is available:</span>
+<span class="s2">    reward_t = score_t / </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">REWARD_SCORE_SCALE</span><span class="p">)</span><span class="si">}</span>
 <span class="s2">    terminated = False</span>
 <span class="s2">    truncated = (step == </span><span class="si">{</span><span class="n">MAX_STEPS</span><span class="si">}</span><span class="s2">)</span>
-<span class="s2">else:</span>
-<span class="s2">    score_t = </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ERROR_SCORE</span><span class="p">)</span><span class="si">}</span><span class="s2">       # reporting sentinel</span>
-<span class="s2">    reward_t = -</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">FAILURE_PENALTY</span><span class="p">)</span><span class="si">}</span><span class="s2"> # bounded training penalty</span>
-<span class="s2">    terminated = True</span>
-<span class="s2">    truncated = False</span>
+<span class="s2">else:  # exhausted technical retries, no usable beam state</span>
+<span class="s2">    reward_t = 0</span>
+<span class="s2">    terminated = False</span>
+<span class="s2">    truncated = True</span>
 <span class="s2">```"""</span>
 <span class="n">display</span><span class="p">(</span><span class="n">Markdown</span><span class="p">(</span><span class="s1">'</span><span class="se">\n\n</span><span class="s1">'</span><span class="o">.</span><span class="n">join</span><span class="p">([</span>
     <span class="s1">'## 4. Score, reward, and termination'</span><span class="p">,</span>
@@ -8752,11 +8767,14 @@ $$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p
     <span class="n">score_formula</span><span class="p">,</span>
     <span class="n">table</span><span class="p">([</span><span class="s1">'Component'</span><span class="p">,</span> <span class="s1">'Features'</span><span class="p">,</span> <span class="s1">'Intent'</span><span class="p">,</span> <span class="s1">'Weight'</span><span class="p">,</span> <span class="s1">'Reference'</span><span class="p">],</span> <span class="n">score_rows</span><span class="p">),</span>
     <span class="p">(</span><span class="sa">f</span><span class="s1">'A beam at the references with full transmission scores **</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="s2">"npart_ratio"</span><span class="p">])</span><span class="si">}</span><span class="s1">**. '</span>
-     <span class="s1">'Values better than a reference can receive a linear bonus; the score is not capped above.'</span><span class="p">),</span>
+     <span class="s1">'Values better than a reference can receive a linear bonus; the score is not capped above. '</span>
+     <span class="sa">f</span><span class="s1">'Any final particle ratio strictly below **</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">MIN_NPART_RATIO</span><span class="p">)</span><span class="si">}</span><span class="s1">** receives `ERROR_SCORE=</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ERROR_SCORE</span><span class="p">)</span><span class="si">}</span><span class="s1">`.'</span><span class="p">),</span>
     <span class="s1">'### 4.1 Reward and episode ending'</span><span class="p">,</span>
     <span class="n">reward_formula</span><span class="p">,</span>
-    <span class="p">(</span><span class="sa">f</span><span class="s1">'`ERROR_SCORE=</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">ERROR_SCORE</span><span class="p">)</span><span class="si">}</span><span class="s1">` is a bookkeeping sentinel, not a physical score, and is not used in the reward difference. '</span>
-     <span class="sa">f</span><span class="s1">'Failures instead receive `-</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">FAILURE_PENALTY</span><span class="p">)</span><span class="si">}</span><span class="s1">` and terminate the episode. '</span>
+    <span class="p">(</span><span class="sa">f</span><span class="s1">'Valid absolute scores are divided by `REWARD_SCORE_SCALE=</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">REWARD_SCORE_SCALE</span><span class="p">)</span><span class="si">}</span><span class="s1">`. '</span>
+     <span class="sa">f</span><span class="s1">'Every low-transmission step receives the bounded `LOW_TRANSMISSION_REWARD=</span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="n">LOW_TRANSMISSION_REWARD</span><span class="p">)</span><span class="si">}</span><span class="s1">`. Recovery returns only to the ordinary normalized score, so cycling cannot create a positive delta bonus. '</span>
+     <span class="sa">f</span><span class="s1">'During training, </span><span class="si">{</span><span class="n">fmt</span><span class="p">(</span><span class="mi">100</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">TRAIN_RECOVERY_RESET_PROBABILITY</span><span class="p">)</span><span class="si">}</span><span class="s1">% of resets use the wider test distribution to supply recovery experience. '</span>
+     <span class="s1">'Physical failures preserve partial observations and remain recoverable until `MAX_STEPS`; technical failures truncate neutrally. '</span>
      <span class="s1">'`best_score` and `best_params` retain the highest score reached in the episode.'</span><span class="p">),</span>
 <span class="p">])))</span>
 </pre></div>
@@ -8772,7 +8790,10 @@ $$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-OutputArea-output" data-mime-type="text/markdown" tabindex="0">
 <h2 id="4.-Score,-reward,-and-termination">4. Score, reward, and termination<a class="anchor-link" href="#4.-Score,-reward,-and-termination">¶</a></h2><p>The score is computed from the <strong>final beam stage</strong> and higher is better. This formula is generated from the current configuration:</p>
-<div class="highlight"><pre><span></span>score = 100 * clip(npart_ratio, 0, 1)
+<div class="highlight"><pre><span></span>if npart_ratio &lt; 0.1:
+    score = -999
+else:
+    score = 100 * clip(npart_ratio, 0, 1)
         - 200 * ((ex - 0.05) + (ey - 0.05))
         - 1 * ((abs(x0) - 0) + (abs(y0) - 0))
         - 1 * ((abs(x'0) - 0) + (abs(y'0) - 0))
@@ -8826,18 +8847,19 @@ $$p_{0,p}=\operatorname{clip}_{hardware}\left(p^{candidate}_{0,p},p^{HW,min}_p,p
 </tr>
 </tbody>
 </table>
-<p>A beam at the references with full transmission scores <strong>100</strong>. Values better than a reference can receive a linear bonus; the score is not capped above.</p>
-<h3 id="4.1-Reward-and-episode-ending">4.1 Reward and episode ending<a class="anchor-link" href="#4.1-Reward-and-episode-ending">¶</a></h3><div class="highlight"><pre><span></span>if simulation succeeds:
-    reward_t = score_t - score_(t-1)
+<p>A beam at the references with full transmission scores <strong>100</strong>. Values better than a reference can receive a linear bonus; the score is not capped above. Any final particle ratio strictly below <strong>0.1</strong> receives <code>ERROR_SCORE=-999</code>.</p>
+<h3 id="4.1-Reward-and-episode-ending">4.1 Reward and episode ending<a class="anchor-link" href="#4.1-Reward-and-episode-ending">¶</a></h3><div class="highlight"><pre><span></span>if score_t == ERROR_SCORE:
+    reward_t = -1
+elif physical simulation state is available:
+    reward_t = score_t / 100
     terminated = False
     truncated = (step == 20)
-else:
-    score_t = -999       # reporting sentinel
-    reward_t = -10 # bounded training penalty
-    terminated = True
-    truncated = False
+else:  # exhausted technical retries, no usable beam state
+    reward_t = 0
+    terminated = False
+    truncated = True
 </pre></div>
-<p><code>ERROR_SCORE=-999</code> is a bookkeeping sentinel, not a physical score, and is not used in the reward difference. Failures instead receive <code>-10</code> and terminate the episode. <code>best_score</code> and <code>best_params</code> retain the highest score reached in the episode.</p>
+<p>Valid absolute scores are divided by <code>REWARD_SCORE_SCALE=100</code>. Every low-transmission step receives the bounded <code>LOW_TRANSMISSION_REWARD=-1</code>. Recovery returns only to the ordinary normalized score, so cycling cannot create a positive delta bonus. During training, 15% of resets use the wider test distribution to supply recovery experience. Physical failures preserve partial observations and remain recoverable until <code>MAX_STEPS</code>; technical failures truncate neutrally. <code>best_score</code> and <code>best_params</code> retain the highest score reached in the episode.</p>
 </div>
 </div>
 </div>
@@ -8870,8 +8892,8 @@ else:
 </tr>
 <tr>
 <td>Physical failures</td>
-<td>Detects TraceWin particle-loss errors</td>
-<td>Does not currently classify particle-loss regions</td>
+<td>Detects TraceWin particle-loss errors and preserves partial stages</td>
+<td>Regresses beam stages directly; final <code>npart_ratio &lt; MIN_NPART_RATIO</code> receives <code>ERROR_SCORE</code></td>
 </tr>
 <tr>
 <td>Reset context</td>
@@ -8885,7 +8907,7 @@ else:
 </tr>
 </tbody>
 </table>
-<p>The surrogate predicts continuous beam states and normally reports <code>success=True</code> whenever inference succeeds. Failed TraceWin simulations are not beam-state training targets, so parameters that lose all particles in TraceWin may still receive a plausible surrogate prediction. This limitation is not an action-space safety guarantee.</p>
+<p>The surrogate remains a pure regressor: datasets may include physical failures as the stages that TraceWin reached followed by zero-filled missing stages. No separate failure classifier is used. At runtime the same final-transmission threshold converts a predicted final <code>npart_ratio</code> below <code>MIN_NPART_RATIO</code> into <code>ERROR_SCORE</code>; because regression is approximate, this does not constitute an action-space safety guarantee.</p>
 <h3 id="5.1-Render-only-diagnostics">5.1 Render-only diagnostics<a class="anchor-link" href="#5.1-Render-only-diagnostics">¶</a></h3><p><code>render()</code> shows parameter trajectories, observed beam features, score/reward, and parameter KNN distance from the reference dataset. KNN distance is a coverage diagnostic: it is <strong>not</strong> part of the observation, score, reward, termination rule, or action clipping. Rendering is lazy and does not affect training steps.</p>
 </div>
 </div>

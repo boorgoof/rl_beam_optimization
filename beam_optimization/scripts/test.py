@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import warnings
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
-    DEFAULT_OUTPUT_DIR,
+    DEFAULT_TEST_OUTPUT,
+    DEFAULT_TEST_RENDER_DIR,
     DEFAULT_TRACEWIN_INI,
     configure_matplotlib_cache,
     default_dataset_path,
@@ -95,11 +97,31 @@ def make_agent(algo: str, policy_path: str, obs_dim: int, hidden: list[int], env
 
 
 def algorithm_render_dir(args) -> Path:
-    """Return the per-algorithm render directory under the requested base dir."""
+    """Return the per-(algorithm, environment) render directory under the
+    requested base dir, e.g. <render-dir>/sac/surrogate or
+    <render-dir>/sac/tracewin -- so runs of the same algorithm on the
+    surrogate and on real TraceWin never share a folder.
+    """
     base_dir = Path(args.render_dir)
-    if base_dir.name == args.algo:
+    if base_dir.name == args.env and base_dir.parent.name == args.algo:
         return base_dir
-    return base_dir / args.algo
+    if base_dir.name == args.algo:
+        return base_dir / args.env
+    return base_dir / args.algo / args.env
+
+
+def reset_render_dir(args) -> Path:
+    """Wipe and recreate this run's render directory before writing to it.
+
+    Without this, re-running with a shorter --max-ep-steps (or switching
+    --render/--episode-video on and off) leaves stale files from a previous
+    run mixed in with the new ones, since individual saves only ever
+    overwrite same-named files.
+    """
+    render_dir = algorithm_render_dir(args)
+    shutil.rmtree(render_dir, ignore_errors=True)
+    render_dir.mkdir(parents=True, exist_ok=True)
+    return render_dir
 
 
 def save_render(env, args, episode_idx: int, step_idx: int) -> None:
@@ -222,7 +244,7 @@ def run_episode(env, agent, args, episode_idx: int) -> dict:
         else:
             print(
                 f"  ep={episode_idx} step={step_idx:02d} "
-                f"reward={info.get('score', 0.0) - info.get('prev_score', 0.0):.4g} "
+                f"reward={info.get('reward', 0.0):.4g} "
                 f"score={info.get('score', float('nan')):.4g}"
             )
         if args.render and (step_idx == 0 or step_idx % args.render_every == 0 or done):
@@ -273,9 +295,9 @@ def main():
     parser.add_argument("--calc-dir", default=None)
     parser.add_argument("--tracewin-timeout", type=float, default=120.0)
 
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT_DIR / "test.json"))
+    parser.add_argument("--output", default=str(DEFAULT_TEST_OUTPUT))
     parser.add_argument("--render", action="store_true", help="Save render PNG files during the test episode.")
-    parser.add_argument("--render-dir", default=str(DEFAULT_OUTPUT_DIR / "renders"))
+    parser.add_argument("--render-dir", default=str(DEFAULT_TEST_RENDER_DIR))
     parser.add_argument("--render-every", type=int, default=1)
     parser.add_argument("--dpi", type=int, default=130)
     parser.add_argument("--episode-video", action=argparse.BooleanOptionalAction, default=True,
@@ -304,7 +326,8 @@ def main():
     else:
         print(f"Reset scale: {args.reset_scale} ({env.reset_scale:.4g})")
     if args.render or args.episode_video:
-        print(f"Render dir:  {algorithm_render_dir(args)}")
+        render_dir = reset_render_dir(args)
+        print(f"Render dir:  {render_dir} (cleared)")
 
     print("\nTest episode")
     result = run_episode(env, agent, args, 0)

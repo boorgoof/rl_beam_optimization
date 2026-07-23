@@ -14,18 +14,24 @@ import torch
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM,
     BEAM_STATE_FEATURES,
+    ERROR_SCORE,
+    MIN_NPART_RATIO,
     N_OUTPUT_STAGES,
     N_PARAMS,
+    N_STAGES,
     PARAMETERS,
     STAGE_MARKERS,
     STAGE_PARAM_KEYS,
     STAGE_PARAM_SIZES,
     default_params,
+    observation_dim,
     params_to_stage_tensors,
     score,
     score_from_matrix,
     score_from_vec,
     score_tensor,
+    select_observation_stages,
+    select_observation_stages_tensor,
 )
 
 
@@ -68,6 +74,24 @@ class StageLayoutTests(unittest.TestCase):
         for output in outputs:
             self.assertEqual(tuple(output.shape), (1, BEAM_STATE_DIM))
 
+    def test_observation_contains_only_selected_beam_stages(self):
+        stages = np.zeros((N_STAGES, BEAM_STATE_DIM), dtype=np.float32)
+        obs = select_observation_stages(stages)
+
+        self.assertEqual(obs.shape, (observation_dim(),))
+        self.assertEqual(observation_dim(), 27)
+
+        tensor_obs = select_observation_stages_tensor(
+            [torch.tensor(stage[None, :]) for stage in stages]
+        )
+        self.assertEqual(tuple(tensor_obs.shape), (1, observation_dim()))
+        np.testing.assert_allclose(
+            tensor_obs.detach().numpy()[0],
+            obs,
+            rtol=2e-5,
+            atol=2e-5,
+        )
+
 
 class ScoreConsistencyTests(unittest.TestCase):
     def _random_beams(self, n=32, seed=0) -> np.ndarray:
@@ -94,6 +118,44 @@ class ScoreConsistencyTests(unittest.TestCase):
         tensor_scores = score_tensor(torch.tensor(beams, dtype=torch.float64))
         np.testing.assert_allclose(
             tensor_scores.numpy(), matrix_scores, rtol=1e-10
+        )
+
+    def test_exactly_zero_beam_is_the_physics_failure_sentinel(self):
+        zero = np.zeros(BEAM_STATE_DIM, dtype=np.float32)
+        zero_dict = {
+            feature: 0.0
+            for feature in BEAM_STATE_FEATURES
+        }
+
+        self.assertEqual(score(zero_dict), ERROR_SCORE)
+        self.assertEqual(score_from_vec(zero), ERROR_SCORE)
+        self.assertEqual(score_from_matrix(zero[None, :])[0], ERROR_SCORE)
+        self.assertEqual(
+            score_tensor(torch.tensor(zero[None, :])).item(),
+            ERROR_SCORE,
+        )
+
+    def test_particle_ratio_threshold_is_strictly_ten_percent(self):
+        below = np.zeros(BEAM_STATE_DIM, dtype=np.float32)
+        below[0] = np.nextafter(
+            np.float32(MIN_NPART_RATIO),
+            np.float32(0.0),
+        )
+        boundary = below.copy()
+        boundary[0] = MIN_NPART_RATIO
+
+        self.assertEqual(score_from_vec(below), ERROR_SCORE)
+        self.assertEqual(score_from_matrix(below[None, :])[0], ERROR_SCORE)
+        self.assertEqual(
+            score_tensor(torch.tensor(below[None, :])).item(),
+            ERROR_SCORE,
+        )
+
+        self.assertNotEqual(score_from_vec(boundary), ERROR_SCORE)
+        self.assertNotEqual(score_from_matrix(boundary[None, :])[0], ERROR_SCORE)
+        self.assertNotEqual(
+            score_tensor(torch.tensor(boundary[None, :])).item(),
+            ERROR_SCORE,
         )
 
 

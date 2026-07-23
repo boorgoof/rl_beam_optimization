@@ -281,7 +281,9 @@ def save_report(report: dict, output: str | Path, *, run_config: dict) -> Path:
 
 
 def main() -> None:
-    from beam_optimization.config.paths import PROJECT_ROOT, resolve_tracewin_project
+    from beam_optimization.config.paths import (
+        DEFAULT_FAIL_SCALE_OUTPUT, PROJECT_ROOT, resolve_tracewin_project,
+    )
     from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -290,7 +292,7 @@ def main() -> None:
     source.add_argument("--tracewin", default=None, metavar="INI")
     parser.add_argument("--calc-dir", default=None, metavar="PATH")
     parser.add_argument(
-        "--output", default=str(PROJECT_ROOT / "results/fail_scale.json"), metavar="JSON"
+        "--output", default=str(DEFAULT_FAIL_SCALE_OUTPUT), metavar="JSON"
     )
     parser.add_argument("--start-scale", type=float, default=TEST_RESET_SCALE)
     parser.add_argument("--max-scale", type=float, default=DEFAULT_MAX_SCALE)

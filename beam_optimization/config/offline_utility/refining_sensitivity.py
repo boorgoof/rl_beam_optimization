@@ -434,7 +434,9 @@ def save_report(
 
 
 def main() -> None:
-    from beam_optimization.config.paths import PROJECT_ROOT, resolve_tracewin_project
+    from beam_optimization.config.paths import (
+        DEFAULT_REFINING_SENSITIVITY_OUTPUT, resolve_tracewin_project,
+    )
     from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -444,7 +446,7 @@ def main() -> None:
     parser.add_argument("--calc-dir", default=None, metavar="PATH")
     parser.add_argument(
         "--output",
-        default=str(PROJECT_ROOT / "results/refining_sensitivity.json"),
+        default=str(DEFAULT_REFINING_SENSITIVITY_OUTPUT),
         metavar="JSON",
     )
     parser.add_argument(

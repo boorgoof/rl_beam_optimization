@@ -133,6 +133,20 @@ class ScaleCalculationTests(unittest.TestCase):
         self.assertNotIn("Configured", source)
         self.assertNotIn("1.05 × sensitivity", source)
         self.assertNotIn("`RESET_SCALE`", source)
+        self.assertIn("MIN_NPART_RATIO", source)
+        self.assertIn("REWARD_SCORE_SCALE", source)
+        self.assertIn("LOW_TRANSMISSION_REWARD", source)
+        self.assertIn("TRAIN_RECOVERY_RESET_PROBABILITY", source)
+        self.assertIn("only the selected beam states", source)
+        self.assertIn(
+            "{observation_dim()} float32 beam-feature values",
+            source,
+        )
+        self.assertNotIn("+ {N_PARAMS}", source)
+        self.assertIn("= {observation_dim()}'", source)
+        self.assertIn("Physical beam loss does not terminate an episode", source)
+        self.assertIn("technical failures truncate neutrally", source)
+        self.assertNotIn("FAILURE_PENALTY", source)
 
 if __name__ == "__main__":
     unittest.main()

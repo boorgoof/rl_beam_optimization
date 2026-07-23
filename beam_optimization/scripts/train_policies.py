@@ -13,15 +13,15 @@ Full run:
         --dataset   env/dataset/001/dataset_all.pt \\
         --single-surrogate env/surrogate_env/surrogate/trained_models/base/surrogate_001_0.pt \\
         --base-ensemble env/surrogate_env/surrogate/trained_models/base \\
-        --output    runs/all \\
+        --output    results/train/rl/all \\
         --rl-steps  300000 \\
         --svg-episodes 2000
 
 Checkpoints are saved as:
-    runs/all/<algo>/<algo>_agent.pt          (model-free)
-    runs/all/sb3_sac/sb3_sac_agent.zip
-    runs/all/svg_finale/svg_agent.pt, runs/all/svg_uniform/svg_agent.pt
-    runs/all/dyna/dyna_agent.pt              (MBPO inner SAC)
+    results/train/rl/all/<algo>/<algo>_agent.pt          (model-free)
+    results/train/rl/all/sb3_sac/sb3_sac_agent.zip
+    results/train/rl/all/svg_finale/svg_agent.pt, results/train/rl/all/svg_uniform/svg_agent.pt
+    results/train/rl/all/dyna/dyna_agent.pt              (MBPO inner SAC)
 """
 from __future__ import annotations
 
@@ -55,6 +55,7 @@ from beam_optimization.config.adige import (
     N_PARAMS,
     PARAM_KEYS,
     TEST_RESET_SCALE,
+    TRAIN_RECOVERY_RESET_PROBABILITY,
     TRAIN_RESET_SCALE,
     action_bounds,
     default_params,
@@ -415,6 +416,7 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     env = SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
+        recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
     )
     obs_dim = env.observation_space.shape[0]
 
@@ -563,6 +565,7 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
     env = SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
+        recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
     )
 
     logger = _make_logger(out_dir, "sb3_sac", enable_tensorboard)
@@ -778,6 +781,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             project_file=tracewin_project,
             max_steps=max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
+            recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
         )
         label = "MBPOWithModelUpdate" if use_model_update else "MBPO"
         print(f"  Real env: TraceWin  ({tracewin_project})  [{label}]")
@@ -785,6 +789,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         env = SurrogateEnv(
             model=surrogate, dataset=dataset, max_steps=max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
+            recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
         )
         print("  Real env: surrogate (SurrogateEnv)  [MBPO]")
 

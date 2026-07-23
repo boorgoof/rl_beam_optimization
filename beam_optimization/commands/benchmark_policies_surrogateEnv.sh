@@ -15,10 +15,10 @@ fi
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
   --dataset beam_optimization/env/dataset/004/dataset_all.pt \
-  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --sac beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --n-runs 3 \
   --eval-budget 200 \
   --svg-episodes 500 \
   --policy-episodes 50 \
   --max-ep-steps 20 \
-  --output beam_optimization/results/benchmark_surrogate.json
+  --output beam_optimization/results/benchmark/benchmark_surrogate.json

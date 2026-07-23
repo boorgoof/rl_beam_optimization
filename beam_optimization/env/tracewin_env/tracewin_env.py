@@ -5,24 +5,25 @@ Shares its reset/step scaffolding with SurrogateEnv via BaseBeamEnv (env/base_be
 
 State / Observation:
     Beam states selected by OBSERVATION_STAGE_MASK in adige.py and flattened
-    into a 1-D vector.
+    into a 1-D vector. Machine parameters are not appended.
     Stage 0 is fixed by the .ini project file, not sampled.
 
 Action:
     Delta on all configured parameters, bounded by per-parameter action_step_vec().
 
 Reward:
-    score(t+1) - score(t) 
+    LOW_TRANSMISSION_REWARD for particle loss; otherwise
+    score(t+1) / REWARD_SCORE_SCALE
 
 Episode design (consistent with the rest of the project):
     RESET:
         1. Sample params randomly: param_i ~ N(default_i, reset_std_i)
         2. Run TraceWin(params) → beam_states at all 12 stages
-        3. obs = selected/flattened beam_states ← initial RL state
+        3. obs = selected/flattened beam states
     STEP:
         params_{t+1} = params_t + action
         TraceWin(params_{t+1}) → obs_{t+1}
-        reward = score(t+1) - score(t)
+        reward = bounded failure reward or score(t+1) / REWARD_SCORE_SCALE
     
         Truncated after max_steps steps. Never terminated early.
 
@@ -32,7 +33,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from beam_optimization.config.adige import MAX_STEPS, TRAIN_RESET_SCALE
+from beam_optimization.config.adige import (
+    MAX_STEPS,
+    TEST_RESET_SCALE,
+    TRAIN_RESET_SCALE,
+)
 from beam_optimization.config.paths import new_tracewin_env_calc_dir
 from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
@@ -60,6 +65,8 @@ class TraceWinEnv(BaseBeamEnv):
         timeout: float = 45.0,
         retries: int = 2,
         reset_scale: float = TRAIN_RESET_SCALE,
+        recovery_reset_probability: float = 0.0,
+        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
 
         if calc_dir is None:
@@ -78,6 +85,8 @@ class TraceWinEnv(BaseBeamEnv):
         super().__init__(
             max_steps=max_steps,
             reset_scale=reset_scale,
+            recovery_reset_probability=recovery_reset_probability,
+            recovery_reset_scale=recovery_reset_scale,
         )
 
     def _build_simulator(self) -> TraceWinSimulator:
@@ -154,8 +163,9 @@ class TraceWinEnv(BaseBeamEnv):
         result = self._current_result
         if result is None or not result.success or result.final_beam is None:
             print(
-                "TraceWin final beam distribution render skipped: no successful "
-                "simulation result yet (call reset()/step() first)."
+                "TraceWin final beam distribution render skipped for this step: "
+                "no valid final particle distribution is available. "
+                "The episode is unchanged and the next env.step() may attempt recovery."
             )
             return None
 

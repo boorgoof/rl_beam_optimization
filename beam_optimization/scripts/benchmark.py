@@ -22,9 +22,9 @@ Usage:
 
 With trained agents:
     python -m beam_optimization benchmark \\
-        --sac runs/all/sac/sac_agent.pt \\
-        --td3 runs/all/td3/td3_agent.pt \\
-        --ppo runs/all/ppo/ppo_agent.pt
+        --sac results/train/rl/all/sac/sac_agent.pt \\
+        --td3 results/train/rl/all/td3/td3_agent.pt \\
+        --ppo results/train/rl/all/ppo/ppo_agent.pt
 
 Quick smoke test:
     python -m beam_optimization benchmark --quick
@@ -280,7 +280,7 @@ POLICY_PANELS = [
     ("final_score", "Final score", "score (higher is better)"),
     ("final_emittance", "Final emittance", "(ex + ey) / 2 (lower is better)"),
     ("final_npart_ratio", "Final particle ratio", "npart ratio (higher is better)"),
-    ("total_reward", "Score improvement", "Σ reward = final − initial score"),
+    ("total_reward", "Cumulative RL reward", "Σ bounded absolute reward"),
 ]
 
 

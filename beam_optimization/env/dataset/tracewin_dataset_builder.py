@@ -14,6 +14,7 @@ from typing import Dict, Optional, Sequence
 import numpy as np
 
 from beam_optimization.config.adige import (
+    BEAM_STATE_FEATURES,
     PARAM_KEYS,
     PARAMETERS,
     clip_params_to_hw,
@@ -185,7 +186,7 @@ class TraceWinDatasetBuilder:
         return int(np.random.default_rng().integers(0, 2**31 - 1))
 
     def build(self) -> dict:
-        """Run simulations until target_samples valid TraceWin samples exist."""
+        """Run simulations until target_samples dataset-eligible samples exist."""
         state = self._load_or_create_state()
         dataset = self._load_dataset_from_state(state)
 
@@ -209,9 +210,17 @@ class TraceWinDatasetBuilder:
 
             result = self.simulator.simulate(params)
             valid = _is_valid_tracewin_result(result)
+            outcome = (
+                "successful"
+                if result.success
+                else "physics_failure"
+                if valid
+                else "technical_failure"
+            )
             print(
                 f"  [attempt {attempt_index + 1}] "
-                f"{'accepted' if valid else 'rejected'} score={result.score_val:.6g} "
+                f"{'accepted' if valid else 'rejected'} {outcome} "
+                f"score={result.score_val:.6g} "
                 f"-> {len(dataset) + (1 if valid else 0)}/{self.target_samples} accepted"
                 + ("" if valid else f" ({result.error})"),
                 flush=True,
@@ -339,12 +348,18 @@ class TraceWinDatasetBuilder:
         dataset: BeamDataset,
         saved_paths: dict[str, Path],
     ) -> dict:
+        physics_failures = _count_encoded_physics_failures(dataset)
+        successful = len(dataset) - physics_failures
+        technical_failures = int(state["attempt_index"]) - len(dataset)
         return {
             "output_dir": str(self.output_dir),
             "target_samples": self.target_samples,
-            "n_success": len(dataset),
+            "n_accepted": len(dataset),
+            "n_success": successful,
+            "n_physics_failures": physics_failures,
+            "n_technical_failures": technical_failures,
             "n_attempted": int(state["attempt_index"]),
-            "n_failed": int(state["attempt_index"]) - len(dataset),
+            "n_failed": physics_failures + technical_failures,
             "state_path": str(self.state_path),
             "paths": {name: str(path) for name, path in saved_paths.items()},
         }
@@ -361,8 +376,20 @@ def _sample_one_gaussian(rng: np.random.Generator) -> Dict[str, float]:
 
 
 def _is_valid_tracewin_result(result: BeamSimulationResult) -> bool:
+    encoded_physics_failure = (
+        bool(result.metadata.get("physics_failure"))
+        and bool(result.metadata.get("failure_beam_encoded"))
+    )
     return (
         result.source == "tracewin"
-        and bool(result.success)
         and result.beam_states is not None
+        and (bool(result.success) or encoded_physics_failure)
     )
+
+
+def _count_encoded_physics_failures(dataset: BeamDataset) -> int:
+    """Count rows whose final stage is the zero failure sentinel."""
+    if len(dataset) == 0:
+        return 0
+    final_stage = dataset.Y[:, -len(BEAM_STATE_FEATURES):].numpy()
+    return int(np.all(final_stage == 0.0, axis=1).sum())

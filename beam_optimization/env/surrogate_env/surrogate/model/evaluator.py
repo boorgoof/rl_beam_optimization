@@ -18,6 +18,7 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.config.paths import (
     DEFAULT_DATASET_ROOT,
+    DEFAULT_SURROGATE_EVAL_OUTPUT,
     configure_matplotlib_cache,
     default_dataset_path,
 )
@@ -400,7 +401,10 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--device", default=None)
-    parser.add_argument("--output", default=None, help="Optional JSON output path.")
+    parser.add_argument(
+        "--output", default=str(DEFAULT_SURROGATE_EVAL_OUTPUT),
+        help="JSON output path (default: %(default)s).",
+    )
     parser.add_argument(
         "--plots-dir",
         default=None,

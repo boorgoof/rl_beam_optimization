@@ -15,6 +15,7 @@ from beam_optimization.config.adige import (
     PARAMETERS,
     TEST_RESET_SCALE,
     default_params,
+    observation_dim,
     sensitivity_vec,
 )
 from beam_optimization.env.dataset import BeamDataset
@@ -82,7 +83,10 @@ class _Env:
             )
         else:
             result = _result(self._current_params, True, 10.0)
-        return np.zeros(27, dtype=np.float32), {"sim_result": result, "score": result.score_val}
+        return np.zeros(observation_dim(), dtype=np.float32), {
+            "sim_result": result,
+            "score": result.score_val,
+        }
 
     def step(self, action):
         defaults = default_params()
@@ -91,7 +95,7 @@ class _Env:
             for key in PARAM_KEYS
         }
         result = _result(self._current_params, True, 20.0)
-        return np.zeros(27, dtype=np.float32), 10.0, False, True, {
+        return np.zeros(observation_dim(), dtype=np.float32), 10.0, False, True, {
             "sim_result": result, "score": 20.0, "step": 1,
         }
 

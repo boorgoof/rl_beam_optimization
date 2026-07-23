@@ -1,5 +1,6 @@
 #!/bin/bash
-# Merge completed dataset_all.pt files and create fresh 80/10/10 splits.
+# Merge dataset_all.pt files and create fresh 80/10/10 splits.
+# Pass --allow-running to take stable snapshots of builds still in progress.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

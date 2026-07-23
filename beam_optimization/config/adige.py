@@ -17,6 +17,8 @@ Note: import this as the single source of truth; do not hardcode any of these va
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -100,7 +102,7 @@ N_STAGES: int = len(STAGE_MARKERS)             # 13 total stages, including inpu
 
 # Stage visibility for RL observations, in STAGE_MARKERS order.
 # True means the stage is included in the flattened Gym observation.
-# Default: beam0 + final stage.
+# Default observation: beam0 + marker 162 + final stage.
 OBSERVATION_STAGE_MASK: Tuple[bool, ...] = (
     True,   # stage 0: beam0
     False,  # marker 2
@@ -123,7 +125,7 @@ INITIAL_NPART: int = 10_000
 # Episode horizon: env steps before truncation (used by all beam envs).
 MAX_STEPS: int = 20
 
-EXPLORATION_SCALE: float = 0.35               # shared dataset/Bayesian exploration scale, calibrated via `exploration_scale_calculation` (see results/exploration_scale.json)
+EXPLORATION_SCALE: float = 0.35               # shared dataset/Bayesian exploration scale, calibrated via `exploration_scale_calculation` (see results/offline_utility/exploration_scale.json)
 DATASET_SCALE: float = EXPLORATION_SCALE      # dataset gaussian bell width, dataset_std_p = DATASET_SCALE * sensitivity_p
 BAYESIAN_SCALE: float = EXPLORATION_SCALE     # Default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity,default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max.
 
@@ -142,18 +144,29 @@ ACTION_SCALE: float =  3.937500000000000e-02  # max per-step RL action, step_max
 # until `fail_scale_calculation` measures it on the current configuration.
 ALL_PARTICLE_LOST_SCALE = None
 
-# Score assigned when a simulation fails (TraceWin error, invalid output).
+# Score assigned when the final particle fraction is operationally unusable.
 ERROR_SCORE: float = -999.0
 
-# Bounded per-step penalty used as the RL reward when a simulation fails
-# (the episode then terminates). Kept in the same order of magnitude as real
-# per-step score deltas so failures are discouraged without dominating batches.
-FAILURE_PENALTY: float = 10.0
+# The boundary itself (exactly 10%) remains valid.
+MIN_NPART_RATIO: float = 0.10
+
+# RL uses the absolute physical score on valid steps, normalized to a stable
+# numerical range.
+REWARD_SCORE_SCALE: float = 100.0
+
+# Low transmission keeps ERROR_SCORE as its physical score, but receives a
+# bounded RL reward. This preserves avoidance without making one exploratory
+# failure dominate a complete episode.
+LOW_TRANSMISSION_REWARD: float = -1.0
+
+# Fraction of training resets drawn from the wider TEST_RESET_SCALE
+# distribution to expose policies deliberately to boundary/recovery states.
+TRAIN_RECOVERY_RESET_PROBABILITY: float = 0.15
 
 # Beam-quality score weights, shared by score(), score_from_vec() and score_tensor(). 
 SCORE_WEIGHTS: Dict[str, float] = {
     "npart_ratio": 100.0,  # reward for keeping particles
-    "emittance":   200.0,  # primary objective: ex/ey variation from the input reference
+    "emittance":    15.0,  # primary objective: ex/ey variation from the input reference
     "offset":        1.0,  # |centroid| deviation from the 0 mm reference
     "angle":         1.0,  # |angular centroid| deviation from the 0 mrad reference
     "size":          1.0,  # RMS-size variation from the input reference
@@ -170,6 +183,30 @@ SCORE_REFERENCES: Dict[str, float] = {
     "SizeX":  5,         # mm
     "SizeY":  5,         # mm
 }
+
+SCORE_FUNCTION_NAME: str = "adige_linear_beam_quality"
+SCORE_FUNCTION_VERSION: int = 1
+
+
+def score_function_metadata() -> Dict[str, object]:
+    """Return the serializable score identity stored with each dataset."""
+    metadata: Dict[str, object] = {
+        "name": SCORE_FUNCTION_NAME,
+        "version": SCORE_FUNCTION_VERSION,
+        "formula": (
+            "ERROR_SCORE if npart_ratio < MIN_NPART_RATIO; otherwise linear "
+            "transmission reward minus emittance, offset, angle, and size penalties"
+        ),
+        "beam_state_features": list(BEAM_STATE_FEATURES),
+        "min_npart_ratio": float(MIN_NPART_RATIO),
+        "error_score": float(ERROR_SCORE),
+        "weights": {key: float(value) for key, value in SCORE_WEIGHTS.items()},
+        "references": {key: float(value) for key, value in SCORE_REFERENCES.items()},
+    }
+    canonical = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+    metadata["sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return metadata
+
 
 # IMPORTANT: ParameterSpec.sensitivity values were calibrated with the former
 # score shaping. Re-run the sensitivity/action-scale calibration before using
@@ -249,7 +286,7 @@ def observation_stage_labels() -> Tuple[str, ...]:
 
 
 def observation_dim() -> int:
-    """Return flattened RL observation dimension from OBSERVATION_STAGE_MASK."""
+    """Return flattened beam-feature dimension from OBSERVATION_STAGE_MASK."""
     return len(observation_stage_indices()) * BEAM_STATE_DIM
 
 
@@ -437,11 +474,14 @@ def params_to_stage_tensors(params: Dict[str, float], device=None) -> List[torch
 def score(beam_state: Dict[str, float]) -> float:
     """Compute a scalar beam quality score (at a specific stage) from a beam-state dict. Higher is better.
 
+    Beams below ``MIN_NPART_RATIO`` receive ``ERROR_SCORE``.
     A beam exactly at ``SCORE_REFERENCES`` with full transmission scores 100.
     Values better than a reference receive a linear bonus; worse values
-    receive a linear penalty. Failed simulations get ``ERROR_SCORE`` instead
-    of calling this function.
+    receive a linear penalty.
     """
+    if float(beam_state["npart_ratio"]) < MIN_NPART_RATIO:
+        return ERROR_SCORE
+
     w = SCORE_WEIGHTS
     ref = SCORE_REFERENCES
     transmission = float(np.clip(float(beam_state["npart_ratio"]), 0.0, 1.0))
@@ -465,31 +505,41 @@ def score_from_vec(beam_vec: np.ndarray) -> float:
 def score_from_matrix(beam_vecs: np.ndarray) -> np.ndarray:
     """Vectorized score for an ``(N, 9)`` array in ``BEAM_STATE_FEATURES`` order.
 
-    Row-wise identical to score()/score_from_vec(); used where scoring one row
-    at a time would be a hot loop (e.g. recomputing a whole dataset's scores).
+    Row-wise identical to score()/score_from_vec(), including the minimum
+    particle-ratio threshold; used where scoring one row at a time would be a
+    hot loop (e.g. recomputing a whole dataset's scores).
     """
     arr = np.asarray(beam_vecs, dtype=np.float64)
     w = SCORE_WEIGHTS
     ref = SCORE_REFERENCES
     col = lambda name: arr[:, _BS_IDX[name]]
+    below_minimum_ratio = col("npart_ratio") < MIN_NPART_RATIO
     transmission = np.clip(col("npart_ratio"), 0.0, 1.0)
-    return (w["npart_ratio"] * transmission
-            - w["emittance"] * ((col("ex") - ref["ex"]) + (col("ey") - ref["ey"]))
-            - w["offset"]    * ((np.abs(col("x0")) - ref["x0"]) + (np.abs(col("y0")) - ref["y0"]))
-            - w["angle"]     * ((np.abs(col("x'0")) - ref["x'0"]) + (np.abs(col("y'0")) - ref["y'0"]))
-            - w["size"]      * ((col("SizeX") - ref["SizeX"]) + (col("SizeY") - ref["SizeY"])))
+    regular_score = (w["npart_ratio"] * transmission
+                     - w["emittance"] * ((col("ex") - ref["ex"]) + (col("ey") - ref["ey"]))
+                     - w["offset"]    * ((np.abs(col("x0")) - ref["x0"]) + (np.abs(col("y0")) - ref["y0"]))
+                     - w["angle"]     * ((np.abs(col("x'0")) - ref["x'0"]) + (np.abs(col("y'0")) - ref["y'0"]))
+                     - w["size"]      * ((col("SizeX") - ref["SizeX"]) + (col("SizeY") - ref["SizeY"])))
+    return np.where(below_minimum_ratio, ERROR_SCORE, regular_score)
 
 
 def score_tensor(beam_state: torch.Tensor) -> torch.Tensor:
     """Differentiable score from a (batch, 9) tensor.
-    Used by DifferentiableSurrogateEnv (SVG). Same weights as score().
+    Used by DifferentiableSurrogateEnv (SVG). Same weights and minimum
+    particle-ratio threshold as score().
     """
     w = SCORE_WEIGHTS
     ref = SCORE_REFERENCES
     col = lambda name: beam_state[:, _BS_IDX[name]]
+    below_minimum_ratio = col("npart_ratio") < MIN_NPART_RATIO
     transmission = torch.clamp(col("npart_ratio"), min=0.0, max=1.0)
-    return (w["npart_ratio"] * transmission
-            - w["emittance"] * ((col("ex") - ref["ex"])+ (col("ey") - ref["ey"]))
-            - w["offset"]    * ((torch.abs(col("x0")) - ref["x0"]) + (torch.abs(col("y0")) - ref["y0"]))
-            - w["angle"]     * ((torch.abs(col("x'0")) - ref["x'0"]) + (torch.abs(col("y'0")) - ref["y'0"]))
-            - w["size"]      * ((col("SizeX") - ref["SizeX"]) + (col("SizeY") - ref["SizeY"])))
+    regular_score = (w["npart_ratio"] * transmission
+                     - w["emittance"] * ((col("ex") - ref["ex"])+ (col("ey") - ref["ey"]))
+                     - w["offset"]    * ((torch.abs(col("x0")) - ref["x0"]) + (torch.abs(col("y0")) - ref["y0"]))
+                     - w["angle"]     * ((torch.abs(col("x'0")) - ref["x'0"]) + (torch.abs(col("y'0")) - ref["y'0"]))
+                     - w["size"]      * ((col("SizeX") - ref["SizeX"]) + (col("SizeY") - ref["SizeY"])))
+    return torch.where(
+        below_minimum_ratio,
+        regular_score.new_full((), ERROR_SCORE),
+        regular_score,
+    )

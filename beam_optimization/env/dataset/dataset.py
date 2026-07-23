@@ -13,6 +13,8 @@ On disk and in memory the native format is:
             N_OUTPUT_STAGES output stages flattened as N_OUTPUT_STAGES * 9 beam-state features
     scores: Tensor (N,)
             scalar score of the final beam state
+    score_function: mapping
+            versioned identity and configured constants of the score function
 
 ModularMLP expects stage-wise tensors. That conversion happens only in
 get_training_batch(), right before training/evaluation needs it.
@@ -35,6 +37,7 @@ from beam_optimization.config.adige import (
     PARAMETERS,
     STAGE_MARKERS,
     STAGE_PARAM_SIZES,
+    score_function_metadata,
     score_from_matrix,
 )
 from beam_optimization.config.paths import default_dataset_path
@@ -218,6 +221,7 @@ class BeamDataset(TorchDataset):
                 "y_cols": _Y_COLS,
                 "markers": list(STAGE_MARKERS),
                 "num_samples": len(self),
+                "score_function": score_function_metadata(),
             },
             str(path),
         )

@@ -27,7 +27,7 @@ from beam_optimization.config.offline_utility.fail_scale_calculation import (
     physical_failure_message,
 )
 from beam_optimization.config.paths import (
-    PROJECT_ROOT,
+    DEFAULT_FAIL_SCALE_BENCHMARK_OUTPUT,
     configure_matplotlib_cache,
     default_dataset_path,
     resolve_tracewin_project,
@@ -396,7 +396,7 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument(
         "--output",
-        default=str(PROJECT_ROOT / "results/fail_scale_benchmark.json"),
+        default=str(DEFAULT_FAIL_SCALE_BENCHMARK_OUTPUT),
         metavar="JSON",
     )
     parser.add_argument("--plots-dir", default=None, metavar="PATH")

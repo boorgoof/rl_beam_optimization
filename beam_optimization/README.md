@@ -365,7 +365,7 @@ python -m beam_optimization parameter_bounds_calculation
 ```
 
 Same `--workspace`/`--tracewin` convention as `sensitivity`. The complete
-scan is saved to `beam_optimization/results/parameter_bounds.json`.
+scan is saved to `beam_optimization/results/offline_utility/parameter_bounds.json`.
 
 ### 3.3 `scales_calculation` — global RL/dataset scales
 
@@ -453,7 +453,7 @@ fail_scale_calculation find the reset scale with at least 90% definitive TraceWi
 bayesian_opt        find new default parameters with real TraceWin evaluations
 bayesian_opt_cold_start find defaults without loading an existing dataset
 build_dataset       generate a new TraceWin dataset
-merge_datasets      merge completed BeamDataset files and regenerate train/val/test splits
+merge_datasets      merge BeamDataset files and regenerate train/val/test splits
 train_surrogate     train new base surrogate checkpoints from an existing dataset
 evaluate_surrogate  evaluate beam-feature and final-score accuracy on a test BeamDataset
 check               procedural onboarding check, including real TraceWin reset+step
@@ -498,10 +498,10 @@ python -m beam_optimization refining_sensitivity \
 All accept `--workspace PATH` or `--tracewin INI` (mutually exclusive;
 default: `DEFAULT_TRACEWIN_INI`); `--calc-dir` defaults to a
 dedicated calculation folder inside the resolved workspace.
-`sensitivity` saves to `beam_optimization/results/sensitivity.json`.
+`sensitivity` saves to `beam_optimization/results/offline_utility/sensitivity.json`.
 `refining_sensitivity` starts from the currently declared values, uses a
 different common-random seed for every parameter, and saves the report to
-`beam_optimization/results/refining_sensitivity.json`. Its default tolerance
+`beam_optimization/results/offline_utility/refining_sensitivity.json`. Its default tolerance
 is 10%; use `--seed N` to reproduce the sequence of per-parameter seeds.
 
 ### `parameter_bounds_calculation`
@@ -514,7 +514,7 @@ workspace.
 python -m beam_optimization parameter_bounds_calculation
 ```
 
-Saves the complete scan to `beam_optimization/results/parameter_bounds.json`.
+Saves the complete scan to `beam_optimization/results/offline_utility/parameter_bounds.json`.
 
 ### `scales_calculation`
 
@@ -547,7 +547,7 @@ python -m beam_optimization fail_scale_calculation \
 
 The default uses 32 common Gaussian samples at every candidate scale, expands
 from `TEST_RESET_SCALE` by a factor of 1.5, then performs five bisection steps.
-The report is saved to `beam_optimization/results/fail_scale.json`.
+The report is saved to `beam_optimization/results/offline_utility/fail_scale.json`.
 `--update-config` is explicit: only when supplied does the command atomically
 replace `ALL_PARTICLE_LOST_SCALE` in `adige.py`. Without it, the command prints
 the declaration to copy manually. If no scale reaches the target, the config
@@ -636,10 +636,10 @@ Important options:
 The default outputs are:
 
 ```text
-beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start.json
-beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start_samples.pt
-beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start_convergence.png
-beam_optimization/results/bayesian_optimization/bayesian_opt_cold_start_delta.png
+beam_optimization/results/bayesian_opt/bayesian_opt_cold_start.json
+beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_samples.pt
+beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_convergence.png
+beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_delta.png
 ```
 
 Failed evaluations are passed to the GP with `ERROR_SCORE` but are not stored
@@ -699,8 +699,8 @@ exactly where it left off — nothing already accepted is redone.
 
 ### `merge_datasets`
 
-Use `merge_datasets` to concatenate two or more completed `dataset_all.pt`
-files and create a fresh shuffled 80/10/10 split:
+Use `merge_datasets` to concatenate two or more `dataset_all.pt` files and
+create a fresh shuffled 80/10/10 split:
 
 ```bash
 python -m beam_optimization merge_datasets \
@@ -717,9 +717,27 @@ The command writes `dataset_all.pt`, `dataset_train.pt`, `dataset_val.pt` and
 and sample order; the three splits are shuffled reproducibly with `--seed 123`
 by default. Exact duplicate samples are retained. Input schemas and finite
 values are validated, scores are recalculated with the current official score
-function, and existing outputs are never overwritten. A dataset whose adjacent
-`builder_state.json` is still marked `running` is rejected to avoid reading it
-while `build_dataset` is rewriting it.
+function, and existing outputs are never overwritten.
+
+Every newly saved dataset also contains a `score_function` metadata mapping
+with the score name, formula version, feature order, particle-ratio threshold,
+error score, weights, references, and a deterministic SHA-256 signature.
+Existing unmarked datasets remain loadable because scores are derived from
+`Y` and recalculated with the current function when loaded.
+
+By default, a dataset whose adjacent `builder_state.json` is still marked
+`running` is rejected. To merge incomplete datasets while their builders keep
+running, explicitly pass:
+
+```bash
+--allow-running
+```
+
+For each running input, the command waits until it can load an internally
+consistent point-in-time snapshot. The source builder and its files are not
+modified or stopped. The merged output contains only the samples present in
+each snapshot and does not receive samples generated later; rerun the merge
+into a new empty output directory to include later progress.
 
 Equivalent launcher (configured for datasets `001` through `004`):
 
@@ -770,7 +788,7 @@ beam_optimization/env/surrogate_env/surrogate/trained_models/base/
 Surrogate logs are written by default under:
 
 ```text
-beam_optimization/runs/surrogate/
+beam_optimization/results/train/surrogate/
 ```
 
 ### `evaluate_surrogate`
@@ -788,7 +806,7 @@ and reports:
 python -m beam_optimization evaluate_surrogate \
   --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --dataset beam_optimization/env/dataset/001/dataset_test.pt \
-  --output beam_optimization/results/surrogate_eval.json
+  --output beam_optimization/results/benchmark/surrogate_eval.json
 ```
 
 When `--output` is supplied, plots are saved by default beside the JSON in
@@ -858,7 +876,7 @@ python -m beam_optimization train_policies \
   --dataset beam_optimization/env/dataset/001/dataset_all.pt \
   --single-surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_0.pt \
   --base-ensemble beam_optimization/env/surrogate_env/surrogate/trained_models/base \
-  --output beam_optimization/runs/all \
+  --output beam_optimization/results/train/rl/all \
   --rl-steps 200000 \
   --svg-episodes 1000 \
   --seed 42 \
@@ -866,8 +884,8 @@ python -m beam_optimization train_policies \
 ```
 
 With `--n-seeds N` each algorithm is trained N times (seeds `seed..seed+N-1`)
-under `runs/all/<algo>/seed_<s>/`; the aggregated mean±std learning curve and
-the best seed's checkpoint are promoted to `runs/all/<algo>/`, so the
+under `results/train/rl/all/<algo>/seed_<s>/`; the aggregated mean±std learning curve and
+the best seed's checkpoint are promoted to `results/train/rl/all/<algo>/`, so the
 checkpoint paths used by `benchmark` and `test` do not change.
 
 During training, the current policy is periodically evaluated without updating
@@ -906,7 +924,7 @@ to run only custom SAC and Stable-Baselines3 SAC:
 ```bash
 python -m beam_optimization train_policies \
   --skip td3 ppo ddpg a2c reinforce trpo dyna svg_finale svg_uniform \
-  --output beam_optimization/runs/sac_compare
+  --output beam_optimization/results/train/sac_compare
 ```
 
 Useful `--skip` names:
@@ -970,7 +988,7 @@ the file passed with `--dataset`. To keep the base dataset unchanged, pass:
 python -m beam_optimization train_policies \
   --tracewin \
   --online-finetune \
-  --update-dataset beam_optimization/runs/all/updated_dataset.pt
+  --update-dataset beam_optimization/results/train/rl/all/updated_dataset.pt
 ```
 
 RL training writes TensorBoard events and `metrics.csv` under `--output` by
@@ -1035,13 +1053,13 @@ BO/SVG plus the final custom-SAC policy benchmark:
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
   --dataset beam_optimization/env/dataset/004/dataset_all.pt \
-  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --sac beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --n-runs 3 \
   --eval-budget 200 \
   --svg-episodes 500 \
   --policy-episodes 50 \
   --max-ep-steps 20 \
-  --output beam_optimization/results/benchmark_surrogate.json
+  --output beam_optimization/results/benchmark/benchmark_surrogate.json
 ```
 
 Real-physics validation of the custom SAC (identical to
@@ -1053,7 +1071,7 @@ additional TraceWin episodes:
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
   --dataset beam_optimization/env/dataset/004/dataset_all.pt \
-  --sac beam_optimization/runs/all/sac/sac_agent.pt \
+  --sac beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --n-runs 3 \
   --eval-budget 200 \
   --svg-episodes 500 \
@@ -1061,13 +1079,20 @@ python -m beam_optimization benchmark \
   --max-ep-steps 20 \
   --tracewin beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2/CB_newMRMS_RFQ_Fields_1.ini \
   --tracewin-episodes 10 \
-  --output beam_optimization/results/benchmark_tracewin.json
+  --output beam_optimization/results/benchmark/benchmark_tracewin.json
 ```
 
 When checkpoint paths are provided, `benchmark` also runs a final policy
-stability benchmark on independent `SurrogateEnv` episodes. It records total
-reward, final score, final emittance `(ex + ey) / 2`, and final particle ratio
-for each episode, then writes mean/std summaries plus bar and box plots:
+stability benchmark on independent `SurrogateEnv` episodes. It records
+cumulative RL reward, final
+score, final emittance `(ex + ey) / 2`, and final particle ratio for each
+episode, then writes mean/std summaries plus bar and box plots. A final
+particle ratio below `MIN_NPART_RATIO=0.10` maps to `ERROR_SCORE=-999`, hence
+to the bounded `LOW_TRANSMISSION_REWARD=-1` on every affected step; recovery
+does not receive a delta-score bonus. The policy observation contains only
+the selected beam stages (`beam0`, marker 162 and final): 27 beam-feature
+values, without machine parameters. During training, 15% of resets use the
+wider `TEST_RESET_SCALE` distribution to provide boundary/recovery experience.
 
 ```text
 benchmark_policy_episodes.csv
@@ -1131,7 +1156,7 @@ only when TraceWin provides a valid initial beam observation.
 python -m beam_optimization fail_scale_benchmark \
   --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
   --algo sac \
-  --policy beam_optimization/runs/sac_001/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/sac_001/sac/sac_agent.pt \
   --dataset beam_optimization/env/dataset/005/dataset_all.pt \
   --episodes 3 \
   --max-reset-attempts 96
@@ -1145,8 +1170,8 @@ parameters, score, KNN distance and distance from the optimized defaults.
 Defaults:
 
 ```text
-output:             beam_optimization/results/fail_scale_benchmark.json
-plots:              beam_optimization/results/fail_scale_benchmark_plots/
+output:             beam_optimization/results/benchmark/fail_scale_benchmark.json
+plots:              beam_optimization/results/benchmark/fail_scale_benchmark_plots/
 valid episodes:     3
 maximum reset tries: 96
 episode horizon:    20
@@ -1157,7 +1182,7 @@ Equivalent launcher (pass the same CLI arguments):
 ```bash
 beam_optimization/commands/fail_scale_benchmark_tracewin.sh \
   --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
-  --policy beam_optimization/runs/sac_001/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/sac_001/sac/sac_agent.pt \
   --dataset beam_optimization/env/dataset/005/dataset_all.pt
 ```
 
@@ -1172,7 +1197,7 @@ Test on the surrogate without rendering:
 ```bash
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --env surrogate \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --dataset beam_optimization/env/dataset/001/dataset_all.pt
@@ -1183,7 +1208,7 @@ Test on the surrogate with render images:
 ```bash
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --env surrogate \
   --render
 ```
@@ -1193,7 +1218,7 @@ Test on real TraceWin with rendering:
 ```bash
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --env tracewin \
   --render \
   --episode-video
@@ -1225,9 +1250,9 @@ All options:
                         (default: alongside the project file, in a "calc" folder)
 --tracewin-timeout FLOAT TraceWin timeout per simulation, seconds (default: 120.0)
 --output PATH            JSON summary output path
-                        (default: DEFAULT_OUTPUT_DIR/test.json)
+                        (default: DEFAULT_TEST_OUTPUT)
 --render                 save render PNG files during the test episode
---render-dir PATH        directory for render PNGs (default: DEFAULT_OUTPUT_DIR/renders)
+--render-dir PATH        directory for render PNGs (default: DEFAULT_TEST_RENDER_DIR)
 --render-every N         render every N steps, plus the last step (default: 1)
 --dpi N                  render image resolution (default: 130)
 --no-tracewin-phase-space  skip saving true final phase-space images from .dst files
@@ -1243,7 +1268,7 @@ All options:
 With `--render`, figures are saved under:
 
 ```text
-beam_optimization/runs/all/renders/
+beam_optimization/results/test_RL/renders/
 ```
 
 For TraceWin, rendering can also save final particle phase-space images from the
@@ -1278,8 +1303,12 @@ beam_optimization/
 │   ├── dataset/
 │   ├── surrogate_env/
 │   └── tracewin_env/
-├── runs/                # training outputs (checkpoints, learning curves, logs)
-├── results/             # benchmark and TraceWin calibration JSON reports
+├── results/             # every command's output, one subfolder per stage
+│   ├── offline_utility/ # sensitivity/parameter-bounds/exploration-scale/fail-scale JSON reports
+│   ├── train/           # RL checkpoints, learning curves, logs (train_policies, train_surrogate)
+│   ├── benchmark/       # benchmark.json, fail_scale_benchmark, surrogate_eval reports
+│   ├── test_RL/         # test.json and qualitative episode renders
+│   └── bayesian_opt/    # bayesian_opt / bayesian_opt_cold_start reports, samples, plots
 └── scripts/
     ├── common.py        # shared episode runner / evaluation helpers
     ├── bayesian_opt.py

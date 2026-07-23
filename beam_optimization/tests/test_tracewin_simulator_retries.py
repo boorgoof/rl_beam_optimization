@@ -7,7 +7,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from beam_optimization.config.adige import ERROR_SCORE, PARAMETERS
+import numpy as np
+import pandas as pd
+
+from beam_optimization.config.adige import (
+    BEAM_STATE_DIM,
+    BEAM_STATE_FEATURES,
+    ERROR_SCORE,
+    N_STAGES,
+    PARAMETERS,
+)
 from beam_optimization.env.simulation import BeamSimulationResult
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import (
     TraceWinSimulator,
@@ -70,6 +79,8 @@ class TraceWinRetryTests(unittest.TestCase):
         self.assertIsNone(result.final_beam)
         self.assertEqual(result.params[PARAMETERS[0].key], 0.123)
         self.assertEqual(result.error, original)
+        self.assertTrue(result.metadata["physics_failure"])
+        self.assertFalse(result.metadata["failure_beam_encoded"])
         self.assertEqual(calls, 1)
         self.assertNotIn("retrying", output)
 
@@ -110,6 +121,89 @@ class TraceWinRetryTests(unittest.TestCase):
         self.assertEqual(calls, 3)
         self.assertEqual(output.count("retrying"), 2)
         self.assertIn("Qt platform plugin xcb failed", result.error)
+
+    def test_physics_failure_uses_cached_real_beam0(self):
+        with tempfile.TemporaryDirectory() as directory:
+            simulator = self._simulator(directory)
+            beam0 = np.arange(1, BEAM_STATE_DIM + 1, dtype=np.float32)
+            simulator._cached_input_beam = beam0.copy()
+
+            result = simulator._physics_failure_result(
+                {PARAMETERS[0].key: 0.123},
+                "Error: All particles are lost",
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.score_val, ERROR_SCORE)
+        self.assertEqual(result.beam_states.shape, (N_STAGES, BEAM_STATE_DIM))
+        np.testing.assert_array_equal(result.beam_states[0], beam0)
+        np.testing.assert_array_equal(result.beam_states[1:], 0.0)
+        self.assertEqual(
+            result.final_beam,
+            {feature: 0.0 for feature in BEAM_STATE_FEATURES},
+        )
+        self.assertTrue(result.metadata["failure_beam_encoded"])
+        self.assertEqual(result.metadata["beam0_source"], "cached")
+
+    def test_physics_failure_prefers_part_rfq_over_cached_beam0(self):
+        with tempfile.TemporaryDirectory() as directory:
+            simulator = self._simulator(directory)
+            input_dst = Path(simulator.calc_dir) / "part_rfq.dst"
+            input_dst.write_bytes(b"synthetic")
+            from_dst = np.linspace(0.1, 0.9, BEAM_STATE_DIM, dtype=np.float32)
+            simulator._cached_input_beam = np.full(BEAM_STATE_DIM, 99.0, dtype=np.float32)
+
+            with mock.patch(
+                "beam_optimization.env.tracewin_env.tracewin.tracewin_simulator._beam0_from_dst",
+                return_value=from_dst,
+            ) as reader:
+                result = simulator._physics_failure_result(
+                    {PARAMETERS[0].key: 0.123},
+                    "Error: All particles are lost",
+                )
+
+        reader.assert_called_once_with(input_dst, simulator.initial_npart)
+        np.testing.assert_array_equal(result.beam_states[0], from_dst)
+        np.testing.assert_array_equal(simulator._cached_input_beam, from_dst)
+        self.assertEqual(result.metadata["beam0_source"], "part_rfq.dst")
+
+    def test_physics_failure_preserves_available_partran_stages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            simulator = self._simulator(directory)
+            rows = []
+            for marker, npart, fill in (
+                (0, 10_000, 1.0),
+                (2, 9_000, 2.0),
+                (195, 5_000, 3.0),
+                (197, 500, 0.0),
+            ):
+                row = {"##": marker, "npart": npart}
+                row.update({
+                    feature: fill
+                    for feature in BEAM_STATE_FEATURES
+                    if feature != "npart_ratio"
+                })
+                rows.append(row)
+            partial_df = pd.DataFrame(rows)
+            tracewin = mock.Mock()
+            tracewin.results.return_value = partial_df
+
+            result = simulator._physics_failure_result(
+                {PARAMETERS[0].key: 0.123},
+                "Error: All particles are lost",
+                tracewin,
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.score_val, ERROR_SCORE)
+        self.assertEqual(result.metadata["beam0_source"], "partran1.out")
+        self.assertEqual(result.metadata["available_stage_markers"], [0, 2, 195, 197])
+        self.assertEqual(result.metadata["last_available_marker"], 197)
+        self.assertEqual(result.metadata["n_available_output_stages"], 3)
+        self.assertTrue(np.any(result.beam_states[1] != 0.0))
+        self.assertTrue(np.any(result.beam_states[6] != 0.0))
+        self.assertEqual(result.beam_states[7, 0], 0.05)
+        np.testing.assert_array_equal(result.beam_states[8:], 0.0)
 
 
 if __name__ == "__main__":

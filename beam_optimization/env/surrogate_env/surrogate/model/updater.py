@@ -102,8 +102,16 @@ class SurrogateDatasetUpdater:
     # ── TraceWin ingestion ────────────────────────────────────────────────────
 
     def add_tracewin_result(self, result: BeamSimulationResult) -> bool:
-        """Add one successful TraceWin result to the online dataset."""
-        if result.source != "tracewin" or not result.success or result.beam_states is None:
+        """Add one successful or encoded physics-failure TraceWin result."""
+        encoded_physics_failure = (
+            bool(result.metadata.get("physics_failure"))
+            and bool(result.metadata.get("failure_beam_encoded"))
+        )
+        if (
+            result.source != "tracewin"
+            or result.beam_states is None
+            or (not result.success and not encoded_physics_failure)
+        ):
             return False
 
         x, y, score = tracewin_result_to_flat_sample(result)

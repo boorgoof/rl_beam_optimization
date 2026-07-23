@@ -8,7 +8,12 @@ from pathlib import Path
 import torch
 
 from beam_optimization.main import COMMAND_MODULES
-from beam_optimization.config.adige import BEAM_STATE_DIM, N_OUTPUT_STAGES, N_PARAMS
+from beam_optimization.config.adige import (
+    BEAM_STATE_DIM,
+    N_OUTPUT_STAGES,
+    N_PARAMS,
+    score_function_metadata,
+)
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.dataset.merge_datasets import merge_dataset_files
 
@@ -47,6 +52,25 @@ class MergeDatasetsTests(unittest.TestCase):
             self.assertTrue(torch.equal(merged.X[:7], original_first.X))
             self.assertTrue(torch.equal(merged.X[7:], original_second.X))
             self.assertFalse(torch.all(merged.scores == -123.0))
+            merged_raw = torch.load(
+                root / "merged" / "dataset_all.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertEqual(merged_raw["score_function"], score_function_metadata())
+
+    def test_legacy_dataset_without_score_marker_remains_loadable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.pt"
+            self._dataset(path, 0, 2)
+            raw = torch.load(path, map_location="cpu", weights_only=False)
+            raw.pop("score_function")
+            torch.save(raw, path)
+
+            dataset = BeamDataset.load(path)
+
+            self.assertEqual(len(dataset), 2)
+            self.assertTrue(torch.isfinite(dataset.scores).all())
 
     def test_split_is_reproducible(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -130,6 +154,31 @@ class MergeDatasetsTests(unittest.TestCase):
             (existing_dir / "dataset_all.pt").touch()
             with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
                 merge_dataset_files([first, second], existing_dir)
+
+    def test_can_merge_stable_snapshot_of_running_builder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_dir = root / "001"
+            first_dir.mkdir()
+            first = first_dir / "dataset_all.pt"
+            second = root / "second.pt"
+            self._dataset(first, 0, 3)
+            self._dataset(second, 1000, 2)
+            (first_dir / "builder_state.json").write_text(
+                json.dumps({"status": "running"}), encoding="utf-8"
+            )
+
+            summary = merge_dataset_files(
+                [first, second],
+                root / "merged",
+                allow_running=True,
+            )
+            merged = BeamDataset.load(root / "merged" / "dataset_all.pt")
+
+            self.assertEqual(len(merged), 5)
+            self.assertTrue(summary["allow_running"])
+            self.assertTrue(summary["inputs"][0]["running_snapshot"])
+            self.assertFalse(summary["inputs"][1]["running_snapshot"])
 
     def test_requires_two_unique_inputs_and_rejects_output_collision(self):
         with tempfile.TemporaryDirectory() as directory:

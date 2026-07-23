@@ -12,7 +12,7 @@ fi
 
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/runs/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --env surrogate \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --seed 42 \

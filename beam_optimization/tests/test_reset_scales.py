@@ -11,6 +11,7 @@ from beam_optimization.config.adige import (
     N_STAGES,
     PARAMETERS,
     TEST_RESET_SCALE,
+    TRAIN_RECOVERY_RESET_PROBABILITY,
     TRAIN_RESET_SCALE,
     default_params,
 )
@@ -88,12 +89,33 @@ class ResetScaleTests(unittest.TestCase):
             if spec.hw_max is not None:
                 self.assertLessEqual(value, spec.hw_max)
 
+    def test_recovery_reset_uses_wider_scale_when_probability_is_one(self):
+        env = _Env(
+            reset_scale=TRAIN_RESET_SCALE,
+            recovery_reset_probability=1.0,
+            recovery_reset_scale=TEST_RESET_SCALE,
+        )
+        _, info = env.reset(seed=3)
+        self.assertTrue(info["recovery_reset"])
+        self.assertEqual(info["reset_source"], "recovery_gaussian")
+        self.assertAlmostEqual(info["reset_scale"], TEST_RESET_SCALE)
+
+    def test_training_recovery_probability_is_valid(self):
+        self.assertGreater(TRAIN_RECOVERY_RESET_PROBABILITY, 0.0)
+        self.assertLess(TRAIN_RECOVERY_RESET_PROBABILITY, 1.0)
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            _Env(recovery_reset_probability=1.1)
+
     def test_workflows_route_training_and_evaluation_scales_explicitly(self):
         root = Path(__file__).resolve().parents[1]
         train_source = (root / "scripts" / "train_policies.py").read_text()
         benchmark_source = (root / "scripts" / "benchmark.py").read_text()
 
         self.assertIn("reset_scale=TRAIN_RESET_SCALE", train_source)
+        self.assertIn(
+            "recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY",
+            train_source,
+        )
         self.assertIn("reset_scale=TEST_RESET_SCALE", train_source)
         self.assertIn("reset_scale=TEST_RESET_SCALE", benchmark_source)
 

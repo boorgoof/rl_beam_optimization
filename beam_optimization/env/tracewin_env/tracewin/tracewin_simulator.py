@@ -16,10 +16,11 @@ from typing import Dict, Optional
 import numpy as np
 
 from .pyTraceWin_wrapper import TraceWin
+from .pyTraceWin_wrapper.files import Dst
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 
 from beam_optimization.config.adige import (
-    BEAM_STATE_FEATURES, ERROR_SCORE, STAGE_MARKERS, INITIAL_NPART,
+    BEAM_STATE_DIM, BEAM_STATE_FEATURES, ERROR_SCORE, N_STAGES, STAGE_MARKERS, INITIAL_NPART,
     default_params, score,
 )
 
@@ -98,6 +99,7 @@ class TraceWinSimulator(BeamSimulator):
         self._source_project_dir = str(project_path.parent)
         self._project_filename = project_path.name
         self._sim_count = 0
+        self._cached_input_beam: Optional[np.ndarray] = None
 
         if not Path(self.project_file).exists():
             raise FileNotFoundError(
@@ -189,7 +191,7 @@ class TraceWinSimulator(BeamSimulator):
                     tw.last_stderr,
                 )
                 if physics_failure is not None:
-                    return self._failed_result(params, physics_failure)
+                    return self._physics_failure_result(params, physics_failure, tw)
                 raise RuntimeError(
                     f"TraceWin failed.\n"
                     f"  stdout: {tw.last_stdout[:300]}\n"
@@ -198,6 +200,7 @@ class TraceWinSimulator(BeamSimulator):
 
             df = tw.results()
             beam_states, final_beam = self._extract_beam_states(df)
+            self._cache_input_beam(beam_states[0])
             score_val = score(final_beam)
 
             return BeamSimulationResult(
@@ -250,6 +253,104 @@ class TraceWinSimulator(BeamSimulator):
 
         return beam_states, final_beam
 
+    def _physics_failure_result(
+        self,
+        params: Dict[str, float],
+        error: str,
+        tracewin: Optional[TraceWin] = None,
+    ) -> BeamSimulationResult:
+        """Preserve available stages and zero only those not reached."""
+        beam0_source = "unavailable"
+        beam0_error: Optional[str] = None
+        partial_results_error: Optional[str] = None
+        beam0: Optional[np.ndarray] = None
+        beam_states: Optional[np.ndarray] = None
+        available_markers: list[int | float] = []
+        input_dst = Path(self.calc_dir) / "part_rfq.dst"
+
+        if tracewin is not None:
+            try:
+                partial_df = tracewin.results()
+                beam_states, _ = self._extract_beam_states(partial_df)
+                available_markers = _available_stage_markers(partial_df)
+                if STAGE_MARKERS[0] in available_markers:
+                    beam0 = beam_states[0].copy()
+                    self._cache_input_beam(beam0)
+                    beam0_source = "partran1.out"
+            except Exception as exc:
+                partial_results_error = str(exc)
+                beam_states = None
+
+        if beam0 is None and input_dst.exists():
+            try:
+                beam0 = _beam0_from_dst(input_dst, self.initial_npart)
+                self._cache_input_beam(beam0)
+                beam0_source = "part_rfq.dst"
+            except Exception as exc:
+                beam0_error = str(exc)
+                beam0 = None
+
+        if beam0 is None and self._cached_input_beam is not None:
+            beam0 = self._cached_input_beam.copy()
+            beam0_source = "cached"
+
+        metadata = {
+            "project_file": self.project_file,
+            "calc_dir": self.calc_dir,
+            "sim_count": self._sim_count,
+            "initial_npart": self.initial_npart,
+            "physics_failure": True,
+            "failure_beam_encoded": beam0 is not None,
+            "beam0_source": beam0_source,
+            "available_stage_markers": list(available_markers),
+            "last_available_marker": (
+                available_markers[-1] if available_markers else None
+            ),
+            "n_available_output_stages": sum(
+                marker != STAGE_MARKERS[0] for marker in available_markers
+            ),
+        }
+        if beam0_error is not None:
+            metadata["beam0_error"] = beam0_error
+        if partial_results_error is not None:
+            metadata["partial_results_error"] = partial_results_error
+        if beam0 is None:
+            return BeamSimulationResult(
+                params=params.copy(),
+                beam_states=None,
+                final_beam=None,
+                score_val=ERROR_SCORE,
+                success=False,
+                error=error,
+                source="tracewin",
+                metadata=metadata,
+            )
+
+        if beam_states is None:
+            beam_states = np.zeros((N_STAGES, BEAM_STATE_DIM), dtype=np.float32)
+        beam_states[0] = beam0
+        beam_states[-1] = 0.0
+        final_beam = {feature: 0.0 for feature in BEAM_STATE_FEATURES}
+        return BeamSimulationResult(
+            params=params.copy(),
+            beam_states=beam_states,
+            final_beam=final_beam,
+            score_val=score(final_beam),
+            success=False,
+            error=error,
+            source="tracewin",
+            metadata=metadata,
+        )
+
+    def _cache_input_beam(self, beam0: np.ndarray) -> None:
+        beam0 = np.asarray(beam0, dtype=np.float32)
+        if (
+            beam0.shape == (BEAM_STATE_DIM,)
+            and np.all(np.isfinite(beam0))
+            and np.any(beam0 != 0.0)
+        ):
+            self._cached_input_beam = beam0.copy()
+
     def _failed_result(self, params: Dict[str, float], error: str) -> BeamSimulationResult:
         """Return a BeamSimulationResult for a failed TraceWin call."""
         return BeamSimulationResult(
@@ -276,6 +377,65 @@ def _normalize_tracewin_marker(value) -> int | float:
         return int(number) if number.is_integer() else number
     except (TypeError, ValueError):
         return value
+
+
+def _available_stage_markers(df) -> list[int | float]:
+    """Return configured markers for which TraceWin emitted at least one row."""
+    available: list[int | float] = []
+    for marker in STAGE_MARKERS:
+        normalized = _normalize_tracewin_marker(marker)
+        hits = df[df["##"] == normalized]
+        if hits.empty:
+            hits = df[(df["##"] - marker).abs() < 0.5]
+        if not hits.empty:
+            available.append(marker)
+    return available
+
+
+def _beam0_from_dst(
+    dst_path: str | Path,
+    initial_npart: int = INITIAL_NPART,
+) -> np.ndarray:
+    """Calculate the stage-0 feature vector from a complete TraceWin .dst file."""
+    dst = Dst(str(dst_path))
+    if int(dst.Np) <= 0:
+        raise ValueError(f"TraceWin input distribution is empty: {dst_path}")
+
+    x = np.asarray(dst["x"], dtype=np.float64) * 1e3
+    xp = np.asarray(dst["xp"], dtype=np.float64) * 1e3
+    y = np.asarray(dst["y"], dtype=np.float64) * 1e3
+    yp = np.asarray(dst["yp"], dtype=np.float64) * 1e3
+    energy = np.asarray(dst["E"], dtype=np.float64)
+    arrays = (x, xp, y, yp, energy)
+    if any(not np.all(np.isfinite(values)) for values in arrays):
+        raise ValueError(f"TraceWin input distribution contains non-finite values: {dst_path}")
+
+    mass = float(dst.mass)
+    gamma = (mass + float(np.mean(energy))) / mass if mass > 0.0 else 1.0
+    beta_gamma = np.sqrt(max(gamma * gamma - 1.0, 0.0))
+
+    def normalized_emittance(position: np.ndarray, angle: np.ndarray) -> float:
+        centered_position = position - np.mean(position)
+        centered_angle = angle - np.mean(angle)
+        determinant = (
+            np.mean(centered_position * centered_position)
+            * np.mean(centered_angle * centered_angle)
+            - np.mean(centered_position * centered_angle) ** 2
+        )
+        return float(np.sqrt(max(float(determinant), 0.0)) * beta_gamma)
+
+    values = {
+        "npart_ratio": float(dst.Np) / initial_npart if initial_npart > 0 else 0.0,
+        "x0": float(np.mean(x)),
+        "y0": float(np.mean(y)),
+        "SizeX": float(np.std(x)),
+        "SizeY": float(np.std(y)),
+        "ex": normalized_emittance(x, xp),
+        "ey": normalized_emittance(y, yp),
+        "x'0": float(np.mean(xp)),
+        "y'0": float(np.mean(yp)),
+    }
+    return np.asarray([values[feature] for feature in BEAM_STATE_FEATURES], dtype=np.float32)
 
 
 def _read_beam_feature_from_tracewin_row(
