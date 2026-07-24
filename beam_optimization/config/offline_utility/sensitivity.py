@@ -39,7 +39,7 @@ from typing import Callable, Dict, Optional
 
 import numpy as np
 
-from beam_optimization.config.adige import PARAMETERS, default_params
+from beam_optimization.config.adige import PARAMETERS, default_params, score_function_metadata
 
 
 TARGET_SCORE_CHANGE: float = 1.0
@@ -477,6 +477,7 @@ def save_sensitivity_json(
             name: record["sensitivity"] for name, record in records.items()
         },
         "parameters": parameters,
+        "score_function": score_function_metadata(),
     }
     output_path = Path(output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)

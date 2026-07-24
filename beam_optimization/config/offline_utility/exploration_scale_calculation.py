@@ -8,9 +8,11 @@ candidate is evaluated with both parameter distributions used by the project:
 
 The first (therefore largest) candidate for which both distributions reach the
 requested valid-run rate is selected.  A run is valid when TraceWin itself
-reports success (no crash/error); the target rate is the fraction of runs
-(out of the sampled total) that must succeed, e.g. 0.85 means at least 85 out
-of 100 samples must succeed. ``adige.py`` is never edited automatically.
+reports success (no crash/error) AND the resulting score is not ``ERROR_SCORE``
+(i.e. the beam was not silently lost -- all particles gone -- without an
+explicit TraceWin error message); the target rate is the fraction of runs
+(out of the sampled total) that must be valid, e.g. 0.85 means at least 85 out
+of 100 samples must be valid. ``adige.py`` is never edited automatically.
 """
 from __future__ import annotations
 
@@ -26,10 +28,12 @@ from scipy.stats import qmc
 
 from beam_optimization.algorithms.baselines.bayesian_opt import hardware_aware_bounds
 from beam_optimization.config.adige import (
+    ERROR_SCORE,
     PARAM_KEYS,
     PARAMETERS,
     clip_params_to_hw,
     default_params,
+    score_function_metadata,
     sensitivity_vec,
 )
 
@@ -37,7 +41,7 @@ from beam_optimization.config.adige import (
 DEFAULT_START_SCALE = 0.5
 DEFAULT_MIN_SCALE = 0.05
 DEFAULT_SCALE_STEP = 0.05
-DEFAULT_TARGET_SUCCESS_RATE = 0.85
+DEFAULT_TARGET_SUCCESS_RATE = 0.9
 DEFAULT_SAMPLES_PER_DISTRIBUTION = 32
 
 
@@ -141,9 +145,13 @@ def parameter_sets_for_scale(
 
 
 def classify_result(result) -> tuple[bool, str]:
-    """Classify TraceWin completion; valid means TraceWin itself succeeded."""
+    """Classify TraceWin completion; valid means TraceWin succeeded AND the
+    beam was not silently lost (score below ERROR_SCORE cutoff without an
+    explicit TraceWin error message)."""
     if not bool(getattr(result, "success", False)):
         return False, "tracewin_failed"
+    if float(getattr(result, "score_val", 0.0)) == ERROR_SCORE:
+        return False, "no_transmission"
     return True, "valid"
 
 
@@ -307,6 +315,7 @@ def save_report(report: dict, output: str | Path, *, run_config: dict) -> Path:
         "algorithm": "descending_shared_dataset_bayesian_success_calibration",
         "run_config": run_config,
         **report,
+        "score_function": score_function_metadata(),
     }
     output_path = Path(output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)

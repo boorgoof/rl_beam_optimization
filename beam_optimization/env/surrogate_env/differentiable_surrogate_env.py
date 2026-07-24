@@ -14,14 +14,17 @@ import numpy as np
 import torch
 
 from beam_optimization.config.adige import (
+    BEAM_STATE_FEATURES,
     ERROR_SCORE,
-    LOW_TRANSMISSION_REWARD,
+    MAX_TERMINAL_RESET_ATTEMPTS,
     MAX_STEPS,
+    RL_MIN_NPART_RATIO,
     N_OUTPUT_STAGES,
     N_PARAMS,
     REWARD_SCORE_SCALE,
     STAGE_PARAM_SIZES,
     TEST_RESET_SCALE,
+    TERMINAL_FAILURE_REWARD,
     TRAIN_RESET_SCALE,
     action_step_vec,
     clip_param_tensor_to_hw,
@@ -142,10 +145,19 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         reset_std = (
             self._recovery_reset_std_t if use_recovery_reset else self._reset_std_t
         )
-        params = clip_param_tensor_to_hw(
-            self._defaults_t + torch.randn(N_PARAMS, device=self.device) * reset_std
-        ).detach()
-        beam_states = self._forward(params, beam0_t)
+        for _ in range(MAX_TERMINAL_RESET_ATTEMPTS):
+            params = clip_param_tensor_to_hw(
+                self._defaults_t
+                + torch.randn(N_PARAMS, device=self.device) * reset_std
+            ).detach()
+            beam_states = self._forward(params, beam0_t)
+            if not bool(self._terminal_failure_mask(beam_states).item()):
+                break
+        else:
+            raise RuntimeError(
+                "Could not sample a non-terminal differentiable initial state "
+                f"after {MAX_TERMINAL_RESET_ATTEMPTS} attempts."
+            )
         score = self._score_beam_states(beam_states).detach()
         obs = self._build_obs(beam0_t, beam_states).detach()
 
@@ -163,8 +175,8 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         self,
         state: DifferentiableBeamState,
         action: torch.Tensor,
-    ) -> tuple[DifferentiableBeamState, torch.Tensor]:
-        """Apply one differentiable action and return (next_state, reward)."""
+    ) -> tuple[DifferentiableBeamState, torch.Tensor, bool]:
+        """Apply one action and return (next_state, reward, terminated)."""
         self.simulator.set_active_model(state.model_index)
 
         action = action.to(device=self.device, dtype=torch.float32)
@@ -180,10 +192,16 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         action = torch.clamp(action, -self._action_step_t, self._action_step_t)
         params_next = clip_param_tensor_to_hw(state.params + action)
         beam_states = self._forward(params_next, state.beam0)
-        score_next = self._score_beam_states(beam_states)
+        terminal_mask = self._terminal_failure_mask(beam_states)
+        regular_score = self._score_beam_states(beam_states)
+        score_next = torch.where(
+            terminal_mask,
+            regular_score.new_full((), ERROR_SCORE),
+            regular_score,
+        )
         reward = torch.where(
-            score_next == ERROR_SCORE,
-            score_next.new_full((), LOW_TRANSMISSION_REWARD),
+            terminal_mask,
+            score_next.new_full((), TERMINAL_FAILURE_REWARD),
             score_next / REWARD_SCORE_SCALE,
         )
         obs_next = self._build_obs(state.beam0, beam_states)
@@ -197,7 +215,8 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             step_count=state.step_count + 1,
             model_index=state.model_index,
         )
-        return next_state, reward
+        terminated = bool(terminal_mask.detach().item())
+        return next_state, reward, terminated
 
     def _prepare_beam0(
         self,
@@ -242,6 +261,11 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             return score_tensor(outputs[-1])
         scores = torch.stack([score_tensor(stage) for stage in outputs], dim=0)
         return (scores * self._stage_weights_t.view(-1, 1)).sum(dim=0)
+
+    @staticmethod
+    def _terminal_failure_mask(outputs: List[torch.Tensor]) -> torch.Tensor:
+        npart_index = BEAM_STATE_FEATURES.index("npart_ratio")
+        return outputs[-1][:, npart_index] < RL_MIN_NPART_RATIO
 
     def _build_stage_weights(self, stage_weights: Optional[List[float]]) -> Optional[torch.Tensor]:
         if stage_weights is None:

@@ -20,6 +20,7 @@ from beam_optimization.config.adige import (
     N_OUTPUT_STAGES,
     PARAMETERS,
     PARAM_KEYS,
+    score_function_metadata,
 )
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.scripts import bayesian_opt_cold_start
@@ -109,6 +110,7 @@ class SobolOptimizerTests(unittest.TestCase):
     def test_random_tracewin_seed_does_not_reuse_completed_seed(self):
         report = {
             "runs": [{"evaluations": [{"tracewin_seed": 77}]}],
+            "score_function": score_function_metadata(),
         }
         with mock.patch(
             "beam_optimization.scripts.bayesian_opt.secrets.randbelow",
@@ -183,6 +185,7 @@ class ColdStartLoopTests(unittest.TestCase):
             "warm_start": [],
             "runs": [],
             "best_result": None,
+            "score_function": score_function_metadata(),
         }
         outcomes = {
             200: (False, ERROR_SCORE),

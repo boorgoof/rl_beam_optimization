@@ -20,7 +20,7 @@ from typing import Dict, Iterable, Optional
 
 import numpy as np
 
-from beam_optimization.config.adige import PARAMETERS, default_params
+from beam_optimization.config.adige import PARAMETERS, default_params, score_function_metadata
 from beam_optimization.config.offline_utility.sensitivity import (
     _direction_limit,
     _format_delta,
@@ -426,6 +426,7 @@ def save_report(
             }
             for name, record in records.items()
         },
+        "score_function": score_function_metadata(),
     }
     output_path = Path(output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)

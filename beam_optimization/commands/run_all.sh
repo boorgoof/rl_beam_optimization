@@ -5,8 +5,12 @@
 #   3. benchmark_policies_surrogateEnv.sh — BO/SVG + custom-SAC policy benchmark (~1 hour)
 #   4. test_policy_surrogateEnv.sh        — one qualitative rendered episode with the trained SAC
 #
-# Prerequisites (run manually, in order, editing adige.py between steps 1-2):
-#   optional/sensitivity.sh -> (paste sensitivity= values into adige.py)
+# Prerequisites (run manually, in order, editing adige.py after each step —
+# see README.md section 3 "Calibrating ADIGE For A New Beam Line"):
+#   offline_utility/sensitivity.sh -> (paste sensitivity= values into adige.py)
+#   offline_utility/parameter_bounds_calculation.sh -> (paste hw_min=/hw_max= into adige.py)
+#   offline_utility/exploration_scale_calculation.sh --target-success-rate 0.90 -> (paste TRAIN_RESET_SCALE= into adige.py)
+#   offline_utility/exploration_scale_calculation.sh --target-success-rate 0.80 -> (paste DATASET_SCALE= into adige.py; TEST_RESET_SCALE/BAYESIAN_SCALE/ACTION_SCALE follow automatically)
 #   bayesian_opt.sh -> (paste default= values into adige.py)
 #   build_dataset.sh
 #   train_surrogate.sh
@@ -24,5 +28,5 @@ fi
 
 python -m beam_optimization check
 bash "$SCRIPT_DIR/train_policies.sh"
-bash "$SCRIPT_DIR/benchmark_policies_surrogateEnv.sh"
-bash "$SCRIPT_DIR/test_policy_surrogateEnv.sh"
+bash "$SCRIPT_DIR/benchmark_policies_tracewinEnv.sh"
+bash "$SCRIPT_DIR/test_policy_tracewinEnv.sh"

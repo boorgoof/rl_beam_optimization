@@ -65,7 +65,9 @@ After the Python environment is ready, follow the project onboarding flow:
 2. Calibrate adige.py for this beam line (section 3), in order:
    a. sensitivity                  -> paste into ParameterSpec.sensitivity
    b. parameter_bounds_calculation -> paste into ParameterSpec.hw_min/hw_max
-   c. scales_calculation            -> paste into DATASET_SCALE/TRAIN_RESET_SCALE/TEST_RESET_SCALE/ACTION_SCALE
+   c. exploration_scale_calculation --target-success-rate 0.90 -> paste into TRAIN_RESET_SCALE
+      exploration_scale_calculation --target-success-rate 0.80 -> paste into DATASET_SCALE
+      (TEST_RESET_SCALE/BAYESIAN_SCALE/ACTION_SCALE are derived automatically in adige.py)
 3. Run bayesian_opt (or bayesian_opt_cold_start), then paste the printed
    values into adige.py (default=).
 4. Run build_dataset and train_surrogate if the base dataset/surrogates are
@@ -305,18 +307,19 @@ from the TraceWin workspace configured in section 2. **If you point the
 project at a different lattice/workspace, these numbers no longer describe
 it and must be remeasured.**
 
-Three offline commands do this, always in this order, because each one's
+These offline commands do this, always in this order, because each one's
 output is consumed by the next:
 
 ```text
 1. sensitivity                  -> ParameterSpec.sensitivity  (physical scale per parameter)
 2. parameter_bounds_calculation -> ParameterSpec.hw_min/hw_max (operational transport limits)
-3. scales_calculation            -> DATASET_SCALE/TRAIN_RESET_SCALE/TEST_RESET_SCALE/ACTION_SCALE
+3. exploration_scale_calculation --target-success-rate 0.90 -> TRAIN_RESET_SCALE
+   exploration_scale_calculation --target-success-rate 0.80 -> DATASET_SCALE
 ```
 
 None of them edit `adige.py` automatically — each prints a copy-paste block
 that you paste in by hand, so a bad calibration run can never silently
-corrupt the physics config. Once all three are pasted in, the next
+corrupt the physics config. Once all of these are pasted in, the next
 beam-line-dependent step is `bayesian_opt`/`bayesian_opt_cold_start` (section
 4), which searches for good `default=` values using exactly the `hw_min`/
 `hw_max` bounds and `sensitivity` values calibrated here.
@@ -367,55 +370,54 @@ python -m beam_optimization parameter_bounds_calculation
 Same `--workspace`/`--tracewin` convention as `sensitivity`. The complete
 scan is saved to `beam_optimization/results/offline_utility/parameter_bounds.json`.
 
-### 3.3 `scales_calculation` — global RL/dataset scales
+### 3.3 `exploration_scale_calculation` — global RL/dataset scales
 
-`DATASET_SCALE`, `TRAIN_RESET_SCALE`, `TEST_RESET_SCALE` and `ACTION_SCALE` are
-the four scalars
-(shared by every parameter) that turn a per-parameter `sensitivity` into a
-concrete physical width:
+`DATASET_SCALE`, `TRAIN_RESET_SCALE`, `TEST_RESET_SCALE`, `BAYESIAN_SCALE` and
+`ACTION_SCALE` are the scalars (shared by every parameter) that turn a
+per-parameter `sensitivity` into a concrete physical width:
 
 - `DATASET_SCALE`: dataset gaussian bell width, `dataset_std_p = DATASET_SCALE * sensitivity_p`;
 - `TRAIN_RESET_SCALE`: training-reset Gaussian width,
   `train_reset_std_p = TRAIN_RESET_SCALE * sensitivity_p`;
-- `TEST_RESET_SCALE`: evaluation-reset Gaussian width,
-  `test_reset_std_p = TEST_RESET_SCALE * sensitivity_p`; it is set equal to
-  `DATASET_SCALE`, so tests start from the same parameter distribution used
-  for dataset generation;
+- `TEST_RESET_SCALE` / `BAYESIAN_SCALE`: set equal to `DATASET_SCALE`, so
+  evaluation resets and the default Bayesian search width start from the same
+  parameter distribution used for dataset generation;
 - `ACTION_SCALE`: max per-step RL action, `step_max_p = ACTION_SCALE * sensitivity_p`.
 
-They are derived from one another — `dataset_scale` is chosen freely,
-`train_reset_scale` and `action_scale` follow so that a training reset plus a
-full episode uses the dataset's trust-region radius. `test_reset_scale` is
-instead exactly `dataset_scale`. This step must run **after**
-`sensitivity` (it calls `sensitivity_vec()` for its diagnostics) and benefits
-from `parameter_bounds_calculation` already being in place (it warns when
-`hw_min`/`hw_max` would clip the dataset bell). Hardware bounds never enter
-the scale formulas themselves — they are only a clip applied later, when a
-concrete value is generated (dataset sampling, reset, action step).
+`DATASET_SCALE` and `TRAIN_RESET_SCALE` are **independently calibrated** — no
+formula relates them. Each is the largest Gaussian scale for which `exploration_scale_calculation`
+finds that a chosen `--target-success-rate` of samples are valid (TraceWin
+succeeds and the beam isn't silently lost below the score function's failure
+cliff), for both the dataset-Gaussian and the Bayesian-Sobol sampling
+distributions. Run it twice, with a different target rate for each constant:
 
-`f_reset` reserves its fraction of the trust-region radius for the reset; the
-full episode trajectory always receives the complete remaining fraction. In
-other words, the calculator enforces the equality
+- `TRAIN_RESET_SCALE` at **90%** — training resets should mostly land in
+  good, recoverable states.
+- `DATASET_SCALE` at **80%** — deliberately looser, so ~20% of the dataset
+  used to train the surrogate also covers failure/near-boundary behavior.
 
-```text
-k_sigma * TRAIN_RESET_SCALE + MAX_STEPS * ACTION_SCALE
-    = k_sigma_dataset * DATASET_SCALE
-```
-
-`ACTION_SCALE` is the complete per-step trajectory budget divided by
-`MAX_STEPS`. The 25%/75% allocation applies only to training. Evaluation,
-checkpoint selection, benchmark and qualitative test episodes use
-`TEST_RESET_SCALE = DATASET_SCALE`; hardware clipping remains active and no
-additional `3σ` clipping is imposed.
+`ACTION_SCALE = TRAIN_RESET_SCALE / 10` is the only quantity still derived
+from another: with `MAX_STEPS = 20`, a full directed trajectory of
+maximum-magnitude actions covers `±2 * TRAIN_RESET_SCALE`, i.e. a policy that
+wants to can move from one side of the training-reset gaussian to the other.
+This step must run **after** `sensitivity` (it uses `sensitivity_vec()` for
+its diagnostics). Hardware bounds never enter the scale calibration itself —
+they are only a clip applied later, when a concrete value is generated
+(dataset sampling, reset, action step).
 
 ```bash
-python -m beam_optimization scales_calculation --dataset-scale 0.35
+python -m beam_optimization exploration_scale_calculation --target-success-rate 0.90 \
+  --sample-seed 0 --output beam_optimization/results/offline_utility/train_reset_scale.json
+python -m beam_optimization exploration_scale_calculation --target-success-rate 0.80 \
+  --sample-seed 0 --output beam_optimization/results/offline_utility/dataset_scale.json
 ```
 
-Equivalent launcher:
+Passing the same `--sample-seed` to both runs means only the target rate
+differs between them. Equivalent launcher:
 
 ```bash
-beam_optimization/commands/offline_utility/scales_calculation.sh --dataset-scale 0.35
+beam_optimization/commands/offline_utility/exploration_scale_calculation.sh --target-success-rate 0.90
+beam_optimization/commands/offline_utility/exploration_scale_calculation.sh --target-success-rate 0.80
 ```
 
 ### 3.4 Observation Configuration
@@ -448,8 +450,7 @@ Available commands:
 sensitivity         compute ADIGE parameter sensitivity from TraceWin finite differences, with one-sided fallback at hardware bounds
 refining_sensitivity refine current ParameterSpec.sensitivity values toward a one-point score change
 parameter_bounds_calculation calculate TraceWin parameter bounds and save JSON
-scales_calculation  compute DATASET_SCALE, TRAIN_RESET_SCALE, TEST_RESET_SCALE and ACTION_SCALE
-fail_scale_calculation find the reset scale with at least 90% definitive TraceWin physics failures
+exploration_scale_calculation calibrate DATASET_SCALE/TRAIN_RESET_SCALE (run twice, one --target-success-rate per constant)
 bayesian_opt        find new default parameters with real TraceWin evaluations
 bayesian_opt_cold_start find defaults without loading an existing dataset
 build_dataset       generate a new TraceWin dataset
@@ -459,7 +460,6 @@ evaluate_surrogate  evaluate beam-feature and final-score accuracy on a test Bea
 check               procedural onboarding check, including real TraceWin reset+step
 train_policies      train RL agents on SurrogateEnv, optionally with TraceWin MBPO
 benchmark           compare Bayesian optimization, SVG, and optional RL checkpoints
-fail_scale_benchmark stress-test a trained policy with TraceWin outside the dataset trust region
 test                run one trained policy for one qualitative episode
 ```
 
@@ -478,7 +478,8 @@ printed values, and paste them into `adige.py` yourself before continuing
 ```text
 sensitivity -> (update adige.py sensitivity=) ->
 parameter_bounds_calculation -> (update adige.py hw_min=/hw_max=) ->
-scales_calculation -> (update adige.py DATASET_SCALE=/TRAIN_RESET_SCALE=/TEST_RESET_SCALE=/ACTION_SCALE=) ->
+exploration_scale_calculation --target-success-rate 0.90 -> (update adige.py TRAIN_RESET_SCALE=) ->
+exploration_scale_calculation --target-success-rate 0.80 -> (update adige.py DATASET_SCALE=) ->
 bayesian_opt -> (update adige.py default=) ->
 build_dataset -> train_surrogate -> check -> train_policies -> benchmark -> test
 ```
@@ -516,49 +517,26 @@ python -m beam_optimization parameter_bounds_calculation
 
 Saves the complete scan to `beam_optimization/results/offline_utility/parameter_bounds.json`.
 
-### `scales_calculation`
+### `exploration_scale_calculation`
 
 See section 3.3. Prints a copy-paste block for `adige.py`; run it after
-`sensitivity` (it uses `sensitivity_vec()` for its diagnostics).
+`sensitivity` (it uses `sensitivity_vec()` for its diagnostics). Run it
+**twice**, once per target rate, to calibrate `TRAIN_RESET_SCALE` and
+`DATASET_SCALE` independently — pass the same `--sample-seed` to both so only
+the target rate differs between the two runs.
 
 ```bash
-python -m beam_optimization scales_calculation --dataset-scale 0.35
+python -m beam_optimization exploration_scale_calculation --target-success-rate 0.90 \
+  --sample-seed 0 --output beam_optimization/results/offline_utility/train_reset_scale.json
+python -m beam_optimization exploration_scale_calculation --target-success-rate 0.80 \
+  --sample-seed 0 --output beam_optimization/results/offline_utility/dataset_scale.json
 ```
 
 Equivalent launcher:
 
 ```bash
-beam_optimization/commands/offline_utility/scales_calculation.sh --dataset-scale 0.35
-```
-
-### `fail_scale_calculation`
-
-This real-TraceWin calibration finds the smallest Gaussian reset scale for
-which at least 90% of the probes produce one of the three definitive physical
-failures: all particles lost, synchronous particle not reaching the end of a
-field map, or part of the beam distribution not reaching it. Technical
-failures abort the measurement and are never counted as beam loss.
-
-```bash
-python -m beam_optimization fail_scale_calculation \
-  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
-  --update-config
-```
-
-The default uses 32 common Gaussian samples at every candidate scale, expands
-from `TEST_RESET_SCALE` by a factor of 1.5, then performs five bisection steps.
-The report is saved to `beam_optimization/results/offline_utility/fail_scale.json`.
-`--update-config` is explicit: only when supplied does the command atomically
-replace `ALL_PARTICLE_LOST_SCALE` in `adige.py`. Without it, the command prints
-the declaration to copy manually. If no scale reaches the target, the config
-is not changed.
-
-Equivalent launcher:
-
-```bash
-beam_optimization/commands/offline_utility/fail_scale_calculation.sh \
-  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
-  --update-config
+beam_optimization/commands/offline_utility/exploration_scale_calculation.sh --target-success-rate 0.90
+beam_optimization/commands/offline_utility/exploration_scale_calculation.sh --target-success-rate 0.80
 ```
 
 ### `bayesian_opt`
@@ -602,7 +580,8 @@ Important options:
 ```
 
 The source dataset is never modified. If a compatible output checkpoint
-already exists, the command resumes from its completed evaluations.
+already exists, the command resumes from its completed evaluations. Resume
+also requires an exact match with the saved `score_function` metadata.
 
 ### `bayesian_opt_cold_start`
 
@@ -644,7 +623,19 @@ beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_delta.png
 
 Failed evaluations are passed to the GP with `ERROR_SCORE` but are not stored
 in the `.pt` dataset. A compatible checkpoint resumes with the exact next
-Sobol point or GP proposal.
+Sobol point or GP proposal. A checkpoint created with a different score—or
+without score metadata—must use a new output path and cannot be resumed.
+
+### Score provenance in JSON reports
+
+Every command that persists a JSON report adds a top-level `score_function`
+mapping. It records the score name/version, formula description, feature
+order, particle threshold, error score, weights, references, a normalized-AST
+implementation hash for all four official score APIs, and one aggregate
+SHA-256 identity. Bayesian warm/cold checkpoints and `builder_state.json`
+compare the complete mapping before resume. Missing or different metadata is
+rejected before another simulation or checkpoint write; legacy JSON files are
+never silently adopted.
 
 ### `build_dataset`
 
@@ -695,7 +686,9 @@ beam_optimization/env/dataset/
 Progress prints to the terminal after every TraceWin call (accepted/rejected,
 running count, score). If the process is interrupted, rerun the same command
 with `--dataset-dir` pointing at the unfinished numbered directory to resume
-exactly where it left off — nothing already accepted is redone.
+exactly where it left off — nothing already accepted is redone. The saved
+`builder_state.json` must contain score metadata exactly matching the current
+implementation; legacy or mismatched states require a new dataset directory.
 
 ### `merge_datasets`
 
@@ -721,7 +714,8 @@ function, and existing outputs are never overwritten.
 
 Every newly saved dataset also contains a `score_function` metadata mapping
 with the score name, formula version, feature order, particle-ratio threshold,
-error score, weights, references, and a deterministic SHA-256 signature.
+error score, weights, references, implementation hash, and deterministic
+aggregate SHA-256 signature.
 Existing unmarked datasets remain loadable because scores are derived from
 `Y` and recalculated with the current function when loaded.
 
@@ -1087,12 +1081,14 @@ stability benchmark on independent `SurrogateEnv` episodes. It records
 cumulative RL reward, final
 score, final emittance `(ex + ey) / 2`, and final particle ratio for each
 episode, then writes mean/std summaries plus bar and box plots. A final
-particle ratio below `MIN_NPART_RATIO=0.10` maps to `ERROR_SCORE=-999`, hence
-to the bounded `LOW_TRANSMISSION_REWARD=-1` on every affected step; recovery
-does not receive a delta-score bonus. The policy observation contains only
-the selected beam stages (`beam0`, marker 162 and final): 27 beam-feature
+particle ratio below `MIN_NPART_RATIO=0.01` maps to `ERROR_SCORE=-999` and
+the terminal RL reward `TERMINAL_FAILURE_REWARD=-10`. The transition returns
+`terminated=True, truncated=False`; no recovery step is executed. The policy
+observation contains only
+the selected beam stages (`beam0`, marker 108 and marker 332): 27 beam-feature
 values, without machine parameters. During training, 15% of resets use the
-wider `TEST_RESET_SCALE` distribution to provide boundary/recovery experience.
+wider `TEST_RESET_SCALE` distribution to provide difficult but valid initial
+states. Terminal Gaussian reset samples are resampled up to 32 times.
 
 ```text
 benchmark_policy_episodes.csv
@@ -1143,49 +1139,6 @@ All options:
 --svg-finale CKPT    optional trained SVG final-stage checkpoint
 --svg-uniform CKPT   optional trained SVG uniform-stage checkpoint
 ```
-
-### `fail_scale_benchmark`
-
-Use this dedicated real-TraceWin benchmark after calibrating
-`ALL_PARTICLE_LOST_SCALE`. It draws reset configurations only from the shell
-outside the dataset's `3σ` trust region and inside the calibrated failure-scale
-edge. Failed reset probes are recorded and resampled; the policy is evaluated
-only when TraceWin provides a valid initial beam observation.
-
-```bash
-python -m beam_optimization fail_scale_benchmark \
-  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
-  --algo sac \
-  --policy beam_optimization/results/train/rl/sac_001/sac/sac_agent.pt \
-  --dataset beam_optimization/env/dataset/005/dataset_all.pt \
-  --episodes 3 \
-  --max-reset-attempts 96
-```
-
-This benchmark never uses the surrogate for transitions. For every valid
-trajectory it saves an adjacent KNN-distance/TraceWin-score plot plus the
-RMS sensitivity-normalized distance from `default_params()`. JSON and CSV
-outputs retain every reset attempt and step, including physical failure text,
-parameters, score, KNN distance and distance from the optimized defaults.
-Defaults:
-
-```text
-output:             beam_optimization/results/benchmark/fail_scale_benchmark.json
-plots:              beam_optimization/results/benchmark/fail_scale_benchmark_plots/
-valid episodes:     3
-maximum reset tries: 96
-episode horizon:    20
-```
-
-Equivalent launcher (pass the same CLI arguments):
-
-```bash
-beam_optimization/commands/fail_scale_benchmark_tracewin.sh \
-  --workspace beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2 \
-  --policy beam_optimization/results/train/rl/sac_001/sac/sac_agent.pt \
-  --dataset beam_optimization/env/dataset/005/dataset_all.pt
-```
-
 
 ### `test`
 
@@ -1306,7 +1259,7 @@ beam_optimization/
 ├── results/             # every command's output, one subfolder per stage
 │   ├── offline_utility/ # sensitivity/parameter-bounds/exploration-scale/fail-scale JSON reports
 │   ├── train/           # RL checkpoints, learning curves, logs (train_policies, train_surrogate)
-│   ├── benchmark/       # benchmark.json, fail_scale_benchmark, surrogate_eval reports
+│   ├── benchmark/       # benchmark.json, surrogate_eval reports
 │   ├── test_RL/         # test.json and qualitative episode renders
 │   └── bayesian_opt/    # bayesian_opt / bayesian_opt_cold_start reports, samples, plots
 └── scripts/
@@ -1322,7 +1275,7 @@ beam_optimization/
     └── check.py
 ```
 
-The `sensitivity`, `refining_sensitivity`, `scales_calculation` and
+The `sensitivity`, `refining_sensitivity`, `exploration_scale_calculation` and
 `parameter_bounds_calculation` commands run the modules in
 `config/offline_utility/` directly (no wrapper in `scripts/`).
 

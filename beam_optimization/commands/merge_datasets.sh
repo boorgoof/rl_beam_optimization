@@ -17,4 +17,6 @@ python -m beam_optimization merge_datasets \
     beam_optimization/env/dataset/003/dataset_all.pt \
     beam_optimization/env/dataset/004/dataset_all.pt \
   --output-dir beam_optimization/env/dataset/005 \
+  --seed 123 \
   "$@"
+  # --allow-running is off by default (see header comment)

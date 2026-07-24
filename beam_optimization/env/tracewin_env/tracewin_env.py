@@ -12,7 +12,7 @@ Action:
     Delta on all configured parameters, bounded by per-parameter action_step_vec().
 
 Reward:
-    LOW_TRANSMISSION_REWARD for particle loss; otherwise
+    TERMINAL_FAILURE_REWARD for particle loss; otherwise
     score(t+1) / REWARD_SCORE_SCALE
 
 Episode design (consistent with the rest of the project):
@@ -134,7 +134,7 @@ class TraceWinEnv(BaseBeamEnv):
         xy_range_mm: float = 20.0,
         angle_range_mrad: float = 40.0,
     ):
-        """Render the final TraceWin particle distribution from the latest calc/*.dst.
+        """Render the completed TraceWin distribution from ``part_dtl1.dst``.
 
         Uses the same default zoom (position +/-20 mm, angle +/-40 mrad),
         figure size, beam-state table and score as ``visualize_distributions.ipynb`` and
@@ -165,7 +165,7 @@ class TraceWinEnv(BaseBeamEnv):
             print(
                 "TraceWin final beam distribution render skipped for this step: "
                 "no valid final particle distribution is available. "
-                "The episode is unchanged and the next env.step() may attempt recovery."
+                "A physical beam-loss result is terminal; no recovery step follows."
             )
             return None
 

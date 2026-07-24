@@ -34,7 +34,13 @@ def format_beam_state_value(feature: str, value: float) -> str:
 
 
 def find_final_tracewin_dst_path(calc_dir: str | Path) -> Path | None:
-    """Return the final distribution file in a TraceWin calc dir."""
+    """Return a genuine final distribution file from a TraceWin calc dir.
+
+    ``part_rfq.dst`` is the input distribution, while named or numbered
+    ``PLOT_DST`` files are intermediate snapshots. The TraceWin wrapper used
+    by this project writes the completed output exclusively as
+    ``part_dtl1.dst``.
+    """
     
     # try to find the default output file first.
     calc_dir = Path(calc_dir)
@@ -42,19 +48,9 @@ def find_final_tracewin_dst_path(calc_dir: str | Path) -> Path | None:
     if preferred.exists():
         return preferred
 
-    # otherwise, look for the latest numbered .dst file.
-    numbered = []
-    for path in calc_dir.glob("*.dst"):
-        try:
-            numbered.append((int(path.stem), path))
-        except ValueError:
-            continue
-    if numbered:
-        return max(numbered, key=lambda item: item[0])[1]
-
-    # if no numbered files, just return the last .dst file in sorted order.
-    fallback = sorted(calc_dir.glob("*.dst"))
-    return fallback[-1] if fallback else None
+    # No completed output is available. In particular, do not misclassify
+    # part_rfq.dst or any PLOT_DST snapshot as the final distribution.
+    return None
 
 
 def tracewin_distribution_from_dst(

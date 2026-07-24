@@ -66,6 +66,7 @@ from beam_optimization.config.adige import (
     params_to_stage_tensors,
     BEAM_STATE_FEATURES,
     score,
+    score_function_metadata,
 )
 
 OBS_DIM = observation_dim()
@@ -700,6 +701,7 @@ def main():
         "optimization_results": results,
         "policy_evaluation": policy_evaluation,
         "policy_evaluation_tracewin": policy_evaluation_tracewin,
+        "score_function": score_function_metadata(),
     }
 
     with open(args.output, "w") as f:

@@ -16,9 +16,12 @@ Note: import this as the single source of truth; do not hardcode any of these va
 """
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 import hashlib
+import inspect
 import json
+import textwrap
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -58,35 +61,35 @@ class ParameterSpec:
 # List of all tunable parameters in the ADIGE beam line, in order of appearance in the lattice.
 PARAMETERS: Tuple[ParameterSpec, ...] = (
     #stage 0
-    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.43091585, sensitivity=0.005549377602611649, hw_min=0.3475366924, hw_max=0.4519413622),
+    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.4311317906379778, sensitivity=0.0008203680437760797, hw_min=None, hw_max=None),
     #stage 1
-    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.1182765, sensitivity=0.0059363552477487555, hw_min=-0.2972244775, hw_max=0.3285595703),
+    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.10111150232736774, sensitivity=0.002867122710046139, hw_min=None, hw_max=None),
     #stage 2
-    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=-0.00012662607285091371, sensitivity=2.0955975021403468e-05, hw_min=-293.6584907, hw_max=82.58899437),
-    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=-3.095834967129621e-05, sensitivity=2.3068855434515107e-05, hw_min=-0.0005051671516, hw_max=1e-3),
+    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=4.0706947529191115e-06, sensitivity= 0.00014599749270943364, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=-7.202734159404677e-06, sensitivity=2.504541673796964e-05, hw_min=None, hw_max=None),
     #stage 3
-    ParameterSpec("AD.1EQ.01", "ele[151][2]", marker=151, default=132.58669997411448, sensitivity=40.33872428359653, hw_min=-2901813814, hw_max=2901829649),
+    ParameterSpec("AD.1EQ.01", "ele[151][2]", marker=151, default=192.30821624378285, sensitivity=23.63581267893679, hw_min=None, hw_max=None),
     #stage 4
-    ParameterSpec("AD.MS.04.X", "ele[162][1]", marker=162, default=-4.985770555661989e-07, sensitivity=2.734295051197709e-05, hw_min=-0.7835099654, hw_max=0.001219838731),
-    ParameterSpec("AD.MS.04.Y", "ele[162][2]", marker=162, default=3.927801310496309e-05, sensitivity=2.7853710396400267e-05, hw_min=-4.513392325, hw_max=0.005521526321),
+    ParameterSpec("AD.MS.04.X", "ele[162][1]", marker=162, default=-6.903900893156021e-06, sensitivity=0.0004512130719117839, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.04.Y", "ele[162][2]", marker=162, default=1.4283076382417385e-06, sensitivity=0.00015896338985085687, hw_min=None, hw_max=None),
     #stage 5
-    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=-8.331752297202513, sensitivity=53.17887338560897, hw_min=-207782.4005, hw_max=23348945.5),
+    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=-7.93265212152327, sensitivity=13.912223170558082, hw_min=None, hw_max=None),
     #stage 6
-    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.0462106962484192, sensitivity=6.716011927162356e-05, hw_min=-0.2146480211, hw_max=-0.0004267941387),
+    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.04620384302215141, sensitivity=0.00022533311374819292, hw_min=None, hw_max=None),
     #stage 7
-    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=160.75890180110406, sensitivity=199.51183090829747, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=0.156565228083753, sensitivity=1403.5598763495286, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=0.006109266178659367, sensitivity= 17527.363203900797, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=24.3, sensitivity=76410.23346373696, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=-234.60214174611588, sensitivity=10319.947006686732, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=-1794.14758261054, sensitivity=1050.4430712108588, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=-595.8945980045671, sensitivity= 597.8835414717153, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=-1.5967833748777753, sensitivity=1418.9897625338751, hw_min=None, hw_max=None),
     #stage 8
-    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.046211343775075256, sensitivity=1.3492910067832189e-05, hw_min=-0.2146480211, hw_max=0.1273470113),
+    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.04620542012403646, sensitivity=1.7508343652815022e-05, hw_min=None, hw_max=None),
     #stage 9
-    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=14.410101650089715, sensitivity=26.231936464031754, hw_min=-321944193.8, hw_max=275961434.5),
+    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=5.56477802375267, sensitivity=12.689121497919485, hw_min=None, hw_max=None),
     #stage 10
-    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=0.0001043767114014796, sensitivity=0.00011467726055375513, hw_min=-1e-3, hw_max=1e-3),
-    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=-7.68117197562703e-05, sensitivity= 2.331049618977306e-05, hw_min=-1e-3, hw_max=1e-3),
+    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=-2.146875364017188e-05, sensitivity= 0.0004565309126443308, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=2.669825715770255e-06, sensitivity= 0.00041901724439086273, hw_min=None, hw_max=None),
     #stage 11
-    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-165.18741827497422, sensitivity=36.62833965354004, hw_min=-365899839.5, hw_max=365915562.2),
+    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-193.180081121261, sensitivity=55.49152576140488, hw_min=None, hw_max=None),
     #stage 12
     
 )
@@ -96,27 +99,29 @@ N_PARAMS: int = len(PARAMETERS)
 
 # Lattice markers where the beam state is recorded.
 # Stage 0 is the input beam; stages 1..12 are surrogate/TraceWin output stages.
-STAGE_MARKERS: Tuple[int, ...] = (0, 2, 29, 38, 151, 162, 195, 197, 203, 205, 225, 261, 280)
+STAGE_MARKERS: Tuple[int, ...] = (
+    0, 2, 29, 108, 151, 162, 195, 197, 203, 205, 225, 261, 332,
+)  # Markers 108 and 332 replace 38 and 280 (SLIT.04 and AD.BI.05).
 N_OUTPUT_STAGES: int = len(STAGE_MARKERS) - 1  # 12 output stages, excluding input stage 0
 N_STAGES: int = len(STAGE_MARKERS)             # 13 total stages, including input stage 0
 
 # Stage visibility for RL observations, in STAGE_MARKERS order.
 # True means the stage is included in the flattened Gym observation.
-# Default observation: beam0 + marker 162 + final stage.
+# Default observation: beam0 + marker 108 + final marker 332.
 OBSERVATION_STAGE_MASK: Tuple[bool, ...] = (
     True,   # stage 0: beam0
     False,  # marker 2
     False,  # marker 29
-    False,  # marker 38
+    True,   # marker 108: slit:04
     False,  # marker 151
-    True,   # marker 162
+    False,  # marker 162
     False,  # marker 195
     False,  # marker 197
     False,  # marker 203
     False,  # marker 205
     False,  # marker 225
     False,  # marker 261
-    True,   # marker 280: final
+    True,   # marker 332: AD.BI.05
 )
 
 # number of particles in the initial beam state (used to compute npart_ratio)
@@ -125,48 +130,70 @@ INITIAL_NPART: int = 10_000
 # Episode horizon: env steps before truncation (used by all beam envs).
 MAX_STEPS: int = 20
 
-EXPLORATION_SCALE: float = 0.35               # shared dataset/Bayesian exploration scale, calibrated via `exploration_scale_calculation` (see results/offline_utility/exploration_scale.json)
-DATASET_SCALE: float = EXPLORATION_SCALE      # dataset gaussian bell width, dataset_std_p = DATASET_SCALE * sensitivity_p
-BAYESIAN_SCALE: float = EXPLORATION_SCALE     # Default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity,default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max.
+# DATASET_SCALE and TRAIN_RESET_SCALE are independently calibrated via
+# `exploration_scale_calculation` (offline_utility): each run finds the
+# largest Gaussian scale for which BOTH the dataset and Bayesian-Sobol
+# distributions reach the given --target-success-rate (TraceWin succeeds AND
+# score != ERROR_SCORE). adige.py is never edited automatically -- run the
+# calibration and paste the printed value here yourself.
+#   DATASET_SCALE:     --target-success-rate 0.80 -- deliberately looser, so
+#                       ~20% of the dataset used to train the surrogate also
+#                       covers failure/near-boundary behavior.
+#   TRAIN_RESET_SCALE: --target-success-rate 0.90 -- training resets should
+#                       mostly land in valid, recoverable states.
+# TODO: re-run both calibrations for the current PARAMETERS/sensitivity and
+# replace these placeholders (still the old shared-EXPLORATION_SCALE value
+# and the old formula-derived value, respectively -- neither is an actual
+# 80%/90% measurement yet).
+DATASET_SCALE: float = 0.6
+TRAIN_RESET_SCALE: float = 0.45
+TEST_RESET_SCALE: float = DATASET_SCALE       # evaluation resets deliberately use the same gaussian width as dataset generation
+BAYESIAN_SCALE: float = DATASET_SCALE         # default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity, default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max
 
-# TRAIN_RESET_SCALE and ACTION_SCALE are derived from DATASET_SCALE by
-# offline_utility/scales_calculation.py (defaults k_sigma_dataset=3, f_reset=0.25, k_sigma=3, max_steps=20):
-#   TRAIN_RESET_SCALE = f_reset * k_sigma_dataset * DATASET_SCALE / k_sigma = 0.0875
-#   ACTION_SCALE = (1-f_reset) * k_sigma_dataset * DATASET_SCALE / max_steps = 0.039375
-# Test/evaluation resets deliberately use the same gaussian width as dataset generation.
-# Note: Re-run `scales_calculation` after changing DATASET_SCALE and paste the values here.
-TRAIN_RESET_SCALE: float = 8.749999999999998e-02
-TEST_RESET_SCALE: float = DATASET_SCALE
-ACTION_SCALE: float =  3.937500000000000e-02  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
-
-# Gaussian reset scale at which at least 90% of TraceWin probes produce one
-# of the definitive physical beam-loss failures. It is intentionally unset
-# until `fail_scale_calculation` measures it on the current configuration.
-ALL_PARTICLE_LOST_SCALE = None
+# ACTION_SCALE is a fixed fraction of TRAIN_RESET_SCALE, not separately
+# calibrated: with MAX_STEPS=20, a full directed trajectory covers
+# +-2*TRAIN_RESET_SCALE, i.e. a policy that wants to can move from one side
+# of the reset gaussian to the other.
+ACTION_SCALE: float = TRAIN_RESET_SCALE / 10  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
 
 # Score assigned when the final particle fraction is operationally unusable.
 ERROR_SCORE: float = -999.0
 
+# npart_ratio at/below this on the final stage means all particles are
+# physically lost. Used by score() (and its variants) as the ERROR_SCORE
+# cliff -- shared by TraceWin, the surrogate, Bayesian optimization and the
+# dataset builder.
+ALL_PARTICLES_LOST_NPART_RATIO: float = 0.0
+
+# RL-only episode-termination threshold on the final stage's npart_ratio,
+# stricter than ALL_PARTICLES_LOST_NPART_RATIO. score()/ERROR_SCORE (used by
+# the Bayesian optimizer and the dataset builder) are unaffected -- a state
+# between ALL_PARTICLES_LOST_NPART_RATIO and RL_MIN_NPART_RATIO still gets a
+# real, valid physical score, but a training/eval episode still ends there.
 # The boundary itself (exactly 10%) remains valid.
-MIN_NPART_RATIO: float = 0.10
+RL_MIN_NPART_RATIO: float = 0.10
 
 # RL uses the absolute physical score on valid steps, normalized to a stable
 # numerical range.
 REWARD_SCORE_SCALE: float = 100.0
 
-# Low transmission keeps ERROR_SCORE as its physical score, but receives a
-# bounded RL reward. This preserves avoidance without making one exploratory
-# failure dominate a complete episode.
-LOW_TRANSMISSION_REWARD: float = -1.0
+# A physical beam-loss transition ends the episode and receives this RL reward.
+# ERROR_SCORE remains the separate physical score stored in simulation results.
+TERMINAL_FAILURE_REWARD: float = -10.0
+
+# Random Gaussian resets that land directly in a terminal physical state are
+# resampled from the same distribution up to this limit.
+MAX_TERMINAL_RESET_ATTEMPTS: int = 32
 
 # Fraction of training resets drawn from the wider TEST_RESET_SCALE
-# distribution to expose policies deliberately to boundary/recovery states.
+# distribution to expose policies deliberately to difficult but valid states.
+# Samples that are already terminal are rejected and resampled.
 TRAIN_RECOVERY_RESET_PROBABILITY: float = 0.15
 
 # Beam-quality score weights, shared by score(), score_from_vec() and score_tensor(). 
 SCORE_WEIGHTS: Dict[str, float] = {
-    "npart_ratio": 100.0,  # reward for keeping particles
-    "emittance":    15.0,  # primary objective: ex/ey variation from the input reference
+    "npart_ratio": 100.0,  # primary objective: preserve transmitted particles
+    "emittance":    10.0,  # secondary objective: reduce final ex/ey
     "offset":        1.0,  # |centroid| deviation from the 0 mm reference
     "angle":         1.0,  # |angular centroid| deviation from the 0 mrad reference
     "size":          1.0,  # RMS-size variation from the input reference
@@ -186,22 +213,65 @@ SCORE_REFERENCES: Dict[str, float] = {
 
 SCORE_FUNCTION_NAME: str = "adige_linear_beam_quality"
 SCORE_FUNCTION_VERSION: int = 1
+_SCORE_IMPLEMENTATION_FUNCTIONS: Tuple[str, ...] = (
+    "score",
+    "score_from_vec",
+    "score_from_matrix",
+    "score_tensor",
+)
+
+
+def _normalized_function_ast(source: str) -> str:
+    """Return a formatting/comment-independent AST representation."""
+    module = ast.parse(textwrap.dedent(source))
+    function = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ),
+        None,
+    )
+    if function is None:
+        raise ValueError("Source does not contain a function definition")
+    if (
+        function.body
+        and isinstance(function.body[0], ast.Expr)
+        and isinstance(function.body[0].value, ast.Constant)
+        and isinstance(function.body[0].value.value, str)
+    ):
+        function.body = function.body[1:]
+    return ast.dump(function, annotate_fields=True, include_attributes=False)
+
+
+def score_implementation_sha256() -> str:
+    """Fingerprint the normalized implementations of every official score API."""
+    normalized = []
+    for name in _SCORE_IMPLEMENTATION_FUNCTIONS:
+        function = globals().get(name)
+        if function is None:
+            raise RuntimeError(f"Score implementation {name!r} is not defined")
+        normalized.append(_normalized_function_ast(inspect.getsource(function)))
+    canonical = "\n".join(normalized)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def score_function_metadata() -> Dict[str, object]:
-    """Return the serializable score identity stored with each dataset."""
+    """Return the complete serializable identity of the active score."""
     metadata: Dict[str, object] = {
         "name": SCORE_FUNCTION_NAME,
         "version": SCORE_FUNCTION_VERSION,
         "formula": (
-            "ERROR_SCORE if npart_ratio < MIN_NPART_RATIO; otherwise linear "
-            "transmission reward minus emittance, offset, angle, and size penalties"
+            "ERROR_SCORE if npart_ratio <= ALL_PARTICLES_LOST_NPART_RATIO; "
+            "otherwise linear transmission reward minus emittance, offset, "
+            "angle, and size penalties"
         ),
         "beam_state_features": list(BEAM_STATE_FEATURES),
-        "min_npart_ratio": float(MIN_NPART_RATIO),
+        "all_particles_lost_npart_ratio": float(ALL_PARTICLES_LOST_NPART_RATIO),
         "error_score": float(ERROR_SCORE),
         "weights": {key: float(value) for key, value in SCORE_WEIGHTS.items()},
         "references": {key: float(value) for key, value in SCORE_REFERENCES.items()},
+        "implementation_sha256": score_implementation_sha256(),
     }
     canonical = json.dumps(metadata, sort_keys=True, separators=(",", ":"))
     metadata["sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -471,15 +541,37 @@ def params_to_stage_tensors(params: Dict[str, float], device=None) -> List[torch
 
 
 # Score function
+def is_all_particles_lost(value: object) -> bool:
+    """Return whether a scalar npart_ratio means all particles are lost.
+
+    The threshold is represented in the value's NumPy dtype before comparison,
+    so the boundary (``0.0``) remains valid when stored as ``float32``.
+    """
+    ratio = np.asarray(value)
+    threshold = np.asarray(ALL_PARTICLES_LOST_NPART_RATIO, dtype=ratio.dtype)
+    return bool(ratio <= threshold)
+
+
+def below_rl_min_npart_ratio(value: object) -> bool:
+    """Return whether a scalar ratio is strictly below the RL-only episode-
+    termination threshold (RL_MIN_NPART_RATIO), independent of score()'s own
+    ALL_PARTICLES_LOST_NPART_RATIO cliff.
+    """
+    ratio = np.asarray(value)
+    threshold = np.asarray(RL_MIN_NPART_RATIO, dtype=ratio.dtype)
+    return bool(ratio < threshold)
+
+
 def score(beam_state: Dict[str, float]) -> float:
     """Compute a scalar beam quality score (at a specific stage) from a beam-state dict. Higher is better.
 
-    Beams below ``MIN_NPART_RATIO`` receive ``ERROR_SCORE``.
+    Beams with all particles lost (``npart_ratio <= ALL_PARTICLES_LOST_NPART_RATIO``)
+    receive ``ERROR_SCORE``.
     A beam exactly at ``SCORE_REFERENCES`` with full transmission scores 100.
     Values better than a reference receive a linear bonus; worse values
     receive a linear penalty.
     """
-    if float(beam_state["npart_ratio"]) < MIN_NPART_RATIO:
+    if is_all_particles_lost(beam_state["npart_ratio"]):
         return ERROR_SCORE
 
     w = SCORE_WEIGHTS
@@ -499,39 +591,41 @@ def score_from_vec(beam_vec: np.ndarray) -> float:
 
         A vector exactly at SCORE_REFERENCES with npart_ratio=1 scores 100.
     """
-    return score({v: float(beam_vec[i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
+    return score({v: beam_vec[i] for i, v in enumerate(BEAM_STATE_FEATURES)})
 
 
 def score_from_matrix(beam_vecs: np.ndarray) -> np.ndarray:
     """Vectorized score for an ``(N, 9)`` array in ``BEAM_STATE_FEATURES`` order.
 
-    Row-wise identical to score()/score_from_vec(), including the minimum
-    particle-ratio threshold; used where scoring one row at a time would be a
-    hot loop (e.g. recomputing a whole dataset's scores).
+    Row-wise identical to score()/score_from_vec(), including the
+    all-particles-lost threshold; used where scoring one row at a time would
+    be a hot loop (e.g. recomputing a whole dataset's scores).
     """
-    arr = np.asarray(beam_vecs, dtype=np.float64)
+    source = np.asarray(beam_vecs)
+    threshold = np.asarray(ALL_PARTICLES_LOST_NPART_RATIO, dtype=source.dtype).item()
+    arr = source.astype(np.float64, copy=False)
     w = SCORE_WEIGHTS
     ref = SCORE_REFERENCES
     col = lambda name: arr[:, _BS_IDX[name]]
-    below_minimum_ratio = col("npart_ratio") < MIN_NPART_RATIO
+    all_particles_lost = col("npart_ratio") <= threshold
     transmission = np.clip(col("npart_ratio"), 0.0, 1.0)
     regular_score = (w["npart_ratio"] * transmission
                      - w["emittance"] * ((col("ex") - ref["ex"]) + (col("ey") - ref["ey"]))
                      - w["offset"]    * ((np.abs(col("x0")) - ref["x0"]) + (np.abs(col("y0")) - ref["y0"]))
                      - w["angle"]     * ((np.abs(col("x'0")) - ref["x'0"]) + (np.abs(col("y'0")) - ref["y'0"]))
                      - w["size"]      * ((col("SizeX") - ref["SizeX"]) + (col("SizeY") - ref["SizeY"])))
-    return np.where(below_minimum_ratio, ERROR_SCORE, regular_score)
+    return np.where(all_particles_lost, ERROR_SCORE, regular_score)
 
 
 def score_tensor(beam_state: torch.Tensor) -> torch.Tensor:
     """Differentiable score from a (batch, 9) tensor.
-    Used by DifferentiableSurrogateEnv (SVG). Same weights and minimum
-    particle-ratio threshold as score().
+    Used by DifferentiableSurrogateEnv (SVG). Same weights and
+    all-particles-lost threshold as score().
     """
     w = SCORE_WEIGHTS
     ref = SCORE_REFERENCES
     col = lambda name: beam_state[:, _BS_IDX[name]]
-    below_minimum_ratio = col("npart_ratio") < MIN_NPART_RATIO
+    all_particles_lost = col("npart_ratio") <= ALL_PARTICLES_LOST_NPART_RATIO
     transmission = torch.clamp(col("npart_ratio"), min=0.0, max=1.0)
     regular_score = (w["npart_ratio"] * transmission
                      - w["emittance"] * ((col("ex") - ref["ex"])+ (col("ey") - ref["ey"]))
@@ -539,7 +633,7 @@ def score_tensor(beam_state: torch.Tensor) -> torch.Tensor:
                      - w["angle"]     * ((torch.abs(col("x'0")) - ref["x'0"]) + (torch.abs(col("y'0")) - ref["y'0"]))
                      - w["size"]      * ((col("SizeX") - ref["SizeX"]) + (col("SizeY") - ref["SizeY"])))
     return torch.where(
-        below_minimum_ratio,
+        all_particles_lost,
         regular_score.new_full((), ERROR_SCORE),
         regular_score,
     )

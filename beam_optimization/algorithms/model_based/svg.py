@@ -19,9 +19,9 @@ Key idea (SVG(∞): full-horizon backprop through the model, no value function):
     so the gradient of each step's reward flows back through all previous
     actions (backprop-through-time). No critic is needed: the surrogate *is*
     the critic. Valid states use reward = score_t / REWARD_SCORE_SCALE, while
-    low-transmission states use a bounded absolute reward. The objective
-    rewards reaching a good beam state early and maintaining it without
-    creating a positive recovery jump.
+    terminal low-transmission states use TERMINAL_FAILURE_REWARD and stop the
+    differentiable unroll immediately. The objective rewards reaching a good
+    beam state early and maintaining it while avoiding the terminal boundary.
 
 Practical notes:
     - Uses reparameterization trick (rsample) for low-variance gradients.
@@ -189,7 +189,7 @@ class SVGAgent:
 
                 # Differentiable env step. The returned reward keeps the path:
                 # reward -> score -> surrogate -> params -> action -> policy.
-                next_state, reward = self.env.step_torch(state, action)
+                next_state, reward, terminated = self.env.step_torch(state, action)
 
                 # Maximize reward with an entropy bonus:
                 #   objective = reward - alpha * log_prob
@@ -200,6 +200,8 @@ class SVGAgent:
                 # SVG(∞): keep the graph alive across steps so each reward is
                 # backpropagated through the whole action sequence (BPTT).
                 state = next_state
+                if terminated:
+                    break
 
             total_loss.backward()
             # Clip gradients to avoid exploding gradients due to long unrolls through the surrogate.
@@ -238,8 +240,10 @@ class SVGAgent:
                 for _ in range(self.n_step):
                     action  = self.policy.select_greedy_action(state.obs.cpu().numpy())
                     action_t = torch.tensor(action, dtype=torch.float32, device=self.device)
-                    state, _ = self.env.step_torch(state, action_t)
+                    state, _, terminated = self.env.step_torch(state, action_t)
                     state = state.detach_for_next_step()
+                    if terminated:
+                        break
 
                 scores.append(float(state.score))
         self.policy.train()

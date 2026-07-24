@@ -12,8 +12,8 @@ osservazione del fascio
       -> azione = delta sui parametri
           -> ambiente
               -> nuovo BeamSimulationResult
-                  -> reward assoluto limitato nei particle loss,
-                     altrimenti score_nuovo / REWARD_SCORE_SCALE
+                  -> particle loss: reward terminale -10 e fine episodio
+                  -> stato valido: score_nuovo / REWARD_SCORE_SCALE
 ```
 
 Gli algoritmi non devono sapere se sotto l'ambiente c'e TraceWin reale oppure

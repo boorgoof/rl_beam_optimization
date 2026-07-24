@@ -60,6 +60,7 @@ from beam_optimization.config.adige import (
     action_bounds,
     default_params,
     observation_dim,
+    score_function_metadata,
 )
 
 ACT_DIM = N_PARAMS
@@ -1194,7 +1195,7 @@ def main():
     summary_path = out_root / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w") as f:
-        json.dump(scores, f, indent=2)
+        json.dump({**scores, "score_function": score_function_metadata()}, f, indent=2)
     print(f"\nSummary saved → {summary_path}")
 
 

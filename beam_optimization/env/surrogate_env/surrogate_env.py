@@ -14,7 +14,7 @@ Action:
     Delta on all configured parameters, bounded by per-parameter action_step_vec().
 
 Reward:
-    LOW_TRANSMISSION_REWARD for particle loss; otherwise
+    TERMINAL_FAILURE_REWARD for particle loss; otherwise
     score(t+1) / REWARD_SCORE_SCALE
 
 Episode design:
@@ -25,10 +25,10 @@ Episode design:
     STEP:
         params_{t+1} = params_t + action
         surrogate(params_{t+1}) -> obs_{t+1}
-        reward = bounded failure reward or score(t+1) / REWARD_SCORE_SCALE
+        reward = terminal failure reward or score(t+1) / REWARD_SCORE_SCALE
 
-    Physical beam losses remain recoverable and the episode is truncated only
-    after max_steps. Technical simulator failures truncate the affected rollout.
+    Physical beam losses terminate the episode immediately. Technical simulator
+    failures truncate the affected rollout; valid episodes truncate at max_steps.
 """
 from __future__ import annotations
 

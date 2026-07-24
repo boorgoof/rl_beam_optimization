@@ -26,6 +26,7 @@ from beam_optimization.config.adige import (
     PARAMETERS,
     PARAM_KEYS,
     default_params,
+    score_function_metadata,
     sensitivity_vec,
 )
 from beam_optimization.config.paths import (
@@ -187,6 +188,7 @@ def _new_report(
         "warm_start": warm_start,
         "runs": [],
         "best_result": None,
+        "score_function": score_function_metadata(),
     }
 
 
@@ -572,6 +574,15 @@ def _print_best_params(best_result: dict, default_result: dict | None = None) ->
     separator = "-" * len(header)
     print(separator)
     print(header)
+    print(separator)
+    if default_result is not None:
+        score_delta = best_result["score"] - default_result["score"]
+        print(
+            f"{'score':<14} {best_result['score']:>14.6g} "
+            f"{default_result['score']:>14.6g} {score_delta:>18.6g}"
+        )
+    else:
+        print(f"{'score':<14} {best_result['score']:>14.6g} {'n/a':>14} {'':>18}")
     print(separator)
     sensitivities = sensitivity_vec()
     for index, parameter in enumerate(PARAMETERS):

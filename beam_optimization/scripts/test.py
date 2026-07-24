@@ -15,6 +15,7 @@ from pathlib import Path
 from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, load_agent
 from beam_optimization.config.adige import (
     MAX_STEPS, N_PARAMS, TEST_RESET_SCALE, TRAIN_RESET_SCALE, action_bounds,
+    score_function_metadata,
 )
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
@@ -343,6 +344,7 @@ def main():
         "episode": result,
         "final_score": float(result["final_score"]),
         "total_reward": float(result["total_reward"]),
+        "score_function": score_function_metadata(),
     }
 
     output = Path(args.output)

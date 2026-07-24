@@ -20,6 +20,7 @@ from beam_optimization.config.adige import (
     clip_params_to_hw,
     dataset_std_vec,
     default_params,
+    score_function_metadata,
 )
 from beam_optimization.config.paths import DEFAULT_DATASET_ROOT
 from beam_optimization.env.dataset.dataset import BeamDataset
@@ -263,6 +264,7 @@ class TraceWinDatasetBuilder:
             "attempt_index": 0,
             "accepted_count": 0,
             "config": expected,
+            "score_function": score_function_metadata(),
         }
         self._write_state(state, status="new", accepted_count=0)
         return state

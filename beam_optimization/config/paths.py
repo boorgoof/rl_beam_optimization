@@ -107,11 +107,10 @@ DEFAULT_OUTPUT_DIR = DEFAULT_RESULTS_ROOT / "train/rl/all"
 DEFAULT_SURROGATE_LOG_DIR = DEFAULT_RESULTS_ROOT / "train/surrogate"
 
 # JSON file written by the benchmark command, and its siblings (surrogate
-# accuracy, fail-scale policy benchmark) -- all "did this already-trained
-# thing perform well" reports live together under benchmark/.
+# accuracy) -- all "did this already-trained thing perform well" reports
+# live together under benchmark/.
 DEFAULT_BENCHMARK_OUTPUT = DEFAULT_RESULTS_ROOT / "benchmark/benchmark.json"
 DEFAULT_SURROGATE_EVAL_OUTPUT = DEFAULT_RESULTS_ROOT / "benchmark/surrogate_eval.json"
-DEFAULT_FAIL_SCALE_BENCHMARK_OUTPUT = DEFAULT_RESULTS_ROOT / "benchmark/fail_scale_benchmark.json"
 
 # Dedicated folder for Bayesian Optimization checkpoints, samples and plots.
 DEFAULT_BAYESIAN_RESULTS_DIR = DEFAULT_RESULTS_ROOT / "bayesian_opt"
@@ -122,7 +121,6 @@ DEFAULT_SENSITIVITY_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/sensitivity
 DEFAULT_PARAMETER_BOUNDS_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/parameter_bounds.json"
 DEFAULT_REFINING_SENSITIVITY_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/refining_sensitivity.json"
 DEFAULT_EXPLORATION_SCALE_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/exploration_scale.json"
-DEFAULT_FAIL_SCALE_OUTPUT = DEFAULT_RESULTS_ROOT / "offline_utility/fail_scale.json"
 
 # Output written by scripts/test.py -- deliberately its own stage, separate
 # from train/ (it evaluates an already-trained checkpoint for one episode).

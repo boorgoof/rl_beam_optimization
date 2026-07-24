@@ -17,7 +17,12 @@ import numpy as np
 
 from .pyTraceWin_wrapper import TraceWin
 from .pyTraceWin_wrapper.files import Dst
-from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
+from beam_optimization.env.simulation import (
+    PHYSICS_FAILURE_PATTERNS,
+    BeamSimulationResult,
+    BeamSimulator,
+    canonical_physics_failure_reason,
+)
 
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM, BEAM_STATE_FEATURES, ERROR_SCORE, N_STAGES, STAGE_MARKERS, INITIAL_NPART,
@@ -29,10 +34,8 @@ from beam_optimization.config.adige import (
 # current machine configuration. Re-running the same configuration cannot
 # repair these outcomes, so they return a failed BeamSimulationResult directly
 # instead of entering the technical-error retry loop.
-NON_RETRYABLE_PHYSICS_FAILURES = (
-    "all particles are lost",
-    "synchronous particle never reaches the end of the field map",
-    "part of the beam distribution never reaches the end of the field map",
+NON_RETRYABLE_PHYSICS_FAILURES = tuple(
+    pattern for pattern, _ in PHYSICS_FAILURE_PATTERNS
 )
 
 
@@ -300,6 +303,9 @@ class TraceWinSimulator(BeamSimulator):
             "sim_count": self._sim_count,
             "initial_npart": self.initial_npart,
             "physics_failure": True,
+            "physics_failure_reason": (
+                canonical_physics_failure_reason(error) or "low_transmission"
+            ),
             "failure_beam_encoded": beam0 is not None,
             "beam0_source": beam0_source,
             "available_stage_markers": list(available_markers),

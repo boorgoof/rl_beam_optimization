@@ -14,6 +14,7 @@ from beam_optimization.config.adige import (
     BEAM_STATE_FEATURES,
     N_OUTPUT_STAGES,
     STAGE_MARKERS,
+    score_function_metadata,
     score_tensor,
 )
 from beam_optimization.config.paths import (
@@ -368,6 +369,7 @@ def evaluate_surrogate_folder(
         "batch_size": int(batch_size),
         "device": str(device_t),
         "models": {},
+        "score_function": score_function_metadata(),
     }
 
     for model_path in model_paths:

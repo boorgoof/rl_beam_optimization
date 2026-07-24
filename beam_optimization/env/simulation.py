@@ -15,6 +15,28 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 
+PHYSICS_FAILURE_PATTERNS = (
+    ("all particles are lost", "all_particles_lost"),
+    (
+        "synchronous particle never reaches the end of the field map",
+        "synchronous_particle_never_reaches_end",
+    ),
+    (
+        "part of the beam distribution never reaches the end of the field map",
+        "partial_beam_never_reaches_end",
+    ),
+)
+
+
+def canonical_physics_failure_reason(message: Optional[str]) -> Optional[str]:
+    """Map a known TraceWin physics-failure message to a stable reason code."""
+    normalized = (message or "").casefold()
+    for pattern, reason in PHYSICS_FAILURE_PATTERNS:
+        if pattern in normalized:
+            return reason
+    return None
+
+
 @dataclass
 class BeamSimulationResult:
     """"One simulation run's output.

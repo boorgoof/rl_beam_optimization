@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from beam_optimization.config.adige import PARAMETERS
+from beam_optimization.config.adige import ERROR_SCORE, PARAMETERS
 from beam_optimization.config.offline_utility.exploration_scale_calculation import (
     DEFAULT_START_SCALE,
     calibrate_exploration_scale,
@@ -74,24 +74,36 @@ class ExplorationScaleTests(unittest.TestCase):
             {parameter.key for parameter in PARAMETERS},
         )
 
-    def test_success_alone_determines_validity(self):
-        low_ratio_but_successful = SimpleNamespace(
+    def test_success_and_score_together_determine_validity(self):
+        normal_transmission = SimpleNamespace(
             success=True,
-            final_beam={"npart_ratio": 0.1},
+            score_val=12.0,
+            final_beam={"npart_ratio": 0.95},
             beam_states=None,
         )
-        valid, reason = classify_result(low_ratio_but_successful)
+        valid, reason = classify_result(normal_transmission)
         self.assertTrue(valid)
         self.assertEqual(reason, "valid")
 
         failed = SimpleNamespace(
             success=False,
+            score_val=ERROR_SCORE,
             final_beam={"npart_ratio": 0.95},
             beam_states=None,
         )
         valid, reason = classify_result(failed)
         self.assertFalse(valid)
         self.assertEqual(reason, "tracewin_failed")
+
+        silently_lost = SimpleNamespace(
+            success=True,
+            score_val=ERROR_SCORE,
+            final_beam={"npart_ratio": 0.001},
+            beam_states=None,
+        )
+        valid, reason = classify_result(silently_lost)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "no_transmission")
 
     def test_report_contains_only_aggregate_success_information(self):
         simulator = _AlwaysSuccessfulSimulator()

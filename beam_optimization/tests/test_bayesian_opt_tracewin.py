@@ -20,6 +20,8 @@ from beam_optimization.config.adige import (
     N_OUTPUT_STAGES,
     PARAMETERS,
     PARAM_KEYS,
+    ParameterSpec,
+    score_function_metadata,
 )
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.scripts.bayesian_opt import (
@@ -79,18 +81,31 @@ def _one_row_dataset() -> BeamDataset:
 
 class WarmStartTests(unittest.TestCase):
     def test_bounds_respect_hardware_limits(self):
-        bounds = hardware_aware_bounds(PARAMETERS, 10.0)
-        by_name = {
-            parameter.name: bound for parameter, bound in zip(PARAMETERS, bounds)
-        }
-        eq02 = next(
-            parameter for parameter in PARAMETERS if parameter.name == "AD.1EQ.02"
+        parameters = (
+            ParameterSpec(
+                "bounded",
+                "ele[1][1]",
+                marker=1,
+                default=5.0,
+                sensitivity=2.0,
+                hw_min=0.0,
+                hw_max=12.0,
+            ),
+            ParameterSpec(
+                "unbounded",
+                "ele[2][1]",
+                marker=2,
+                default=-3.0,
+                sensitivity=0.5,
+                hw_min=None,
+                hw_max=None,
+            ),
         )
-        self.assertEqual(by_name["AD.1EQ.02"][1], min(
-            eq02.default + 10.0 * abs(eq02.sensitivity),
-            eq02.hw_max,
-        ))
-        for parameter, (lower, upper) in zip(PARAMETERS, bounds):
+        bounds = hardware_aware_bounds(parameters, 10.0)
+
+        self.assertEqual(bounds[0], (0.0, 12.0))
+        self.assertEqual(bounds[1], (-8.0, 2.0))
+        for parameter, (lower, upper) in zip(parameters, bounds):
             if parameter.hw_min is not None:
                 self.assertGreaterEqual(lower, parameter.hw_min)
             if parameter.hw_max is not None:
@@ -144,6 +159,7 @@ class WarmStartTests(unittest.TestCase):
             "warm_start": [],
             "runs": [],
             "best_result": None,
+            "score_function": score_function_metadata(),
         }
         seen_params = []
 
@@ -227,6 +243,7 @@ class TraceWinLoopTests(unittest.TestCase):
             ],
             "runs": [],
             "best_result": None,
+            "score_function": score_function_metadata(),
         }
         outcomes = {
             100: (True, 10.0),

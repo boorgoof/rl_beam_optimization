@@ -12,10 +12,10 @@ import numpy as np
 import torch
 
 from beam_optimization.config.adige import (
+    ALL_PARTICLES_LOST_NPART_RATIO,
     BEAM_STATE_DIM,
     BEAM_STATE_FEATURES,
     ERROR_SCORE,
-    MIN_NPART_RATIO,
     N_OUTPUT_STAGES,
     N_PARAMS,
     N_STAGES,
@@ -135,26 +135,25 @@ class ScoreConsistencyTests(unittest.TestCase):
             ERROR_SCORE,
         )
 
-    def test_particle_ratio_threshold_is_strictly_ten_percent(self):
-        below = np.zeros(BEAM_STATE_DIM, dtype=np.float32)
-        below[0] = np.nextafter(
-            np.float32(MIN_NPART_RATIO),
-            np.float32(0.0),
-        )
-        boundary = below.copy()
-        boundary[0] = MIN_NPART_RATIO
+    def test_all_particles_lost_boundary_is_inclusive(self):
+        # npart_ratio == 0 (exactly) means all particles lost -> ERROR_SCORE.
+        # Anything strictly above zero, even one float32 ULP, is a real score.
+        boundary = np.zeros(BEAM_STATE_DIM, dtype=np.float32)
+        boundary[0] = ALL_PARTICLES_LOST_NPART_RATIO
+        above = boundary.copy()
+        above[0] = np.nextafter(np.float32(0.0), np.float32(1.0))
 
-        self.assertEqual(score_from_vec(below), ERROR_SCORE)
-        self.assertEqual(score_from_matrix(below[None, :])[0], ERROR_SCORE)
+        self.assertEqual(score_from_vec(boundary), ERROR_SCORE)
+        self.assertEqual(score_from_matrix(boundary[None, :])[0], ERROR_SCORE)
         self.assertEqual(
-            score_tensor(torch.tensor(below[None, :])).item(),
+            score_tensor(torch.tensor(boundary[None, :])).item(),
             ERROR_SCORE,
         )
 
-        self.assertNotEqual(score_from_vec(boundary), ERROR_SCORE)
-        self.assertNotEqual(score_from_matrix(boundary[None, :])[0], ERROR_SCORE)
+        self.assertNotEqual(score_from_vec(above), ERROR_SCORE)
+        self.assertNotEqual(score_from_matrix(above[None, :])[0], ERROR_SCORE)
         self.assertNotEqual(
-            score_tensor(torch.tensor(boundary[None, :])).item(),
+            score_tensor(torch.tensor(above[None, :])).item(),
             ERROR_SCORE,
         )
 

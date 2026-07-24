@@ -9,14 +9,16 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
 from beam_optimization.config.adige import (
-    ERROR_SCORE, LOW_TRANSMISSION_REWARD, MAX_STEPS, REWARD_SCORE_SCALE,
+    ERROR_SCORE, MAX_STEPS, MAX_TERMINAL_RESET_ATTEMPTS,
+    below_rl_min_npart_ratio,
+    REWARD_SCORE_SCALE, TERMINAL_FAILURE_REWARD,
     TEST_RESET_SCALE, TRAIN_RESET_SCALE, SCORE_REFERENCES,
     PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
@@ -25,7 +27,11 @@ from beam_optimization.config.adige import (
 )
 
 from beam_optimization.env.dataset.dataset import param_knn_distance
-from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
+from beam_optimization.env.simulation import (
+    BeamSimulationResult,
+    BeamSimulator,
+    canonical_physics_failure_reason,
+)
 
 
 class BaseBeamEnv(gym.Env, ABC):
@@ -122,9 +128,6 @@ class BaseBeamEnv(gym.Env, ABC):
                 "reset options 'initial_params' and randomize_params=True are mutually exclusive"
             )
 
-        # Sample random initial params and perturb them with per-parameter reset stddevs.
-        # Tests against the real TraceWin backend can disable this through
-        # options={"randomize_params": False} to start from the nominal machine.
         randomize_params = bool(options.get("randomize_params", True))
         if explicit_params is not None:
             if not isinstance(explicit_params, dict):
@@ -138,13 +141,17 @@ class BaseBeamEnv(gym.Env, ABC):
                     "reset option 'initial_params' must contain every configured parameter "
                     f"exactly once; missing={missing}, extra={extra}"
                 )
-            params = {key: float(explicit_params[key]) for key in PARAM_KEYS}
-            if not np.isfinite(np.asarray(list(params.values()), dtype=np.float64)).all():
+            fixed_params = {key: float(explicit_params[key]) for key in PARAM_KEYS}
+            if not np.isfinite(
+                np.asarray(list(fixed_params.values()), dtype=np.float64)
+            ).all():
                 raise ValueError("reset option 'initial_params' contains NaN or infinite values")
             randomize_params = False
             reset_source = "explicit_params"
+            recovery_reset = False
+            active_reset_scale = self.reset_scale
+            active_reset_std = self._reset_std
         else:
-            params = default_params()
             if randomize_params:
                 recovery_reset = (
                     self.recovery_reset_probability > 0.0
@@ -156,34 +163,56 @@ class BaseBeamEnv(gym.Env, ABC):
                 active_reset_std = (
                     self._recovery_reset_std if recovery_reset else self._reset_std
                 )
-                for key, std in zip(PARAM_KEYS, active_reset_std):
-                    params[key] += float(self.np_random.normal(0.0, std))
                 reset_source = (
                     "recovery_gaussian" if recovery_reset else "gaussian"
                 )
             else:
                 recovery_reset = False
                 active_reset_scale = self.reset_scale
+                active_reset_std = self._reset_std
                 reset_source = "defaults"
-        if explicit_params is not None:
-            recovery_reset = False
-            active_reset_scale = self.reset_scale
-        params = clip_params_to_hw(params)
-        self._current_params = params
 
-        # Let the simulator prepare its context to start the episode. 
-        # For the surrogate, it samples beam0 and chooses the active ensemble member.
+        # Keep one beam/model context while rejecting only terminal parameter
+        # samples. This avoids silently changing the physical input beam during
+        # one reset() call.
         self.simulator.reset_context(self.np_random)
 
-        # Run the simulator with the initial parameters.
-        result = self.simulator.simulate(params)
-        if self._is_technical_failure(result):
+        max_attempts = MAX_TERMINAL_RESET_ATTEMPTS if randomize_params else 1
+        rejected_terminal_resets = 0
+        for reset_attempt in range(1, max_attempts + 1):
+            if explicit_params is not None:
+                params = dict(fixed_params)
+            else:
+                params = default_params()
+                if randomize_params:
+                    for key, std in zip(PARAM_KEYS, active_reset_std):
+                        params[key] += float(self.np_random.normal(0.0, std))
+            params = clip_params_to_hw(params)
+
+            result = self.simulator.simulate(params)
+            if self._is_technical_failure(result):
+                raise RuntimeError(
+                    "Simulator failed while creating the initial episode state: "
+                    f"{result.error or 'no usable beam states were produced'}"
+                )
+
+            failure_reason = self._terminal_failure_reason(result)
+            if failure_reason is None:
+                break
+            rejected_terminal_resets += 1
+            if not randomize_params:
+                raise RuntimeError(
+                    "Initial parameters produce a terminal physical state "
+                    f"({failure_reason}); reset cannot start an episode."
+                )
+        else:
             raise RuntimeError(
-                "Simulator failed while creating the initial episode state: "
-                f"{result.error or 'no usable beam states were produced'}"
+                "Could not sample a non-terminal initial state after "
+                f"{MAX_TERMINAL_RESET_ATTEMPTS} Gaussian reset attempts."
             )
 
         obs, score, extra = self._result_to_obs_score_info(result)
+        self._current_params = params
         self._current_obs    = obs
         self._current_score  = score
         self._current_result = result
@@ -204,6 +233,8 @@ class BaseBeamEnv(gym.Env, ABC):
             "reset_scale": active_reset_scale,
             "recovery_reset": recovery_reset,
             "recovery_reset_probability": self.recovery_reset_probability,
+            "reset_attempts": reset_attempt,
+            "rejected_terminal_resets": rejected_terminal_resets,
             **extra,
         }
         return obs.copy(), info
@@ -260,12 +291,11 @@ class BaseBeamEnv(gym.Env, ABC):
 
         obs, score, extra = self._result_to_obs_score_info(result)
 
-        # Absolute reward prevents beam-loss/recovery cycles from farming a
-        # positive delta. Low transmission has a bounded -1 reward so recovery
-        # remains explorable; valid states use normalized physical score.
+        # A physical beam loss is terminal. Valid states use the normalized
+        # absolute physical score.
         reward = (
-            LOW_TRANSMISSION_REWARD
-            if extra["low_transmission"]
+            TERMINAL_FAILURE_REWARD
+            if extra["terminal_failure"]
             else score / REWARD_SCORE_SCALE
         )
 
@@ -289,8 +319,8 @@ class BaseBeamEnv(gym.Env, ABC):
 
         # update step count
         self._step_count += 1
-        terminated = False
-        truncated = self._step_count >= self.max_steps
+        terminated = bool(extra["terminal_failure"])
+        truncated = False if terminated else self._step_count >= self.max_steps
 
         info = {"score": score, "prev_score": prev_score, "reward": reward,
                 "step": self._step_count,
@@ -600,27 +630,64 @@ class BaseBeamEnv(gym.Env, ABC):
         # retain all available stages and therefore remain observable.
         if result.beam_states is None:
             obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+            failure_reason = self._terminal_failure_reason(result)
             return obs, ERROR_SCORE, {
                 "sim_result": result,
-                "low_transmission": False,
+                "low_transmission": failure_reason is not None,
+                "terminal_failure": failure_reason is not None,
+                "failure_reason": failure_reason,
             }
 
         # Select the beam stages configured in adige.py for the Gym observation.
         obs = select_observation_stages(result.beam_states)
+        failure_reason = self._terminal_failure_reason(result)
         return obs, result.score_val, {
             "sim_result": result,
-            "low_transmission": result.score_val == ERROR_SCORE,
+            "low_transmission": failure_reason is not None,
+            "terminal_failure": failure_reason is not None,
+            "failure_reason": failure_reason,
         }
 
     @staticmethod
     def _is_physics_failure(result: BeamSimulationResult) -> bool:
-        return bool((result.metadata or {}).get("physics_failure"))
+        return bool(
+            (result.metadata or {}).get("physics_failure")
+            or canonical_physics_failure_reason(result.error)
+        )
+
+    @classmethod
+    def _terminal_failure_reason(
+        cls,
+        result: BeamSimulationResult,
+    ) -> str | None:
+        metadata = result.metadata or {}
+        if cls._is_physics_failure(result):
+            return str(
+                metadata.get("physics_failure_reason")
+                or canonical_physics_failure_reason(result.error)
+                or "low_transmission"
+            )
+        npart_index = BEAM_STATE_FEATURES.index("npart_ratio")
+        npart_ratio: object | None = None
+        if result.final_beam is not None:
+            npart_ratio = result.final_beam["npart_ratio"]
+        elif result.beam_states is not None:
+            final_beam = np.asarray(result.beam_states[-1])
+            if final_beam.size > npart_index:
+                npart_ratio = final_beam[npart_index]
+        if npart_ratio is not None and below_rl_min_npart_ratio(npart_ratio):
+            return "low_transmission"
+        if result.score_val == ERROR_SCORE:
+            return "low_transmission"
+        return None
 
     @classmethod
     def _is_technical_failure(cls, result: BeamSimulationResult) -> bool:
+        if cls._is_physics_failure(result):
+            return False
         return (
             result.beam_states is None
-            or (not result.success and not cls._is_physics_failure(result))
+            or not result.success
         )
 
     
@@ -644,7 +711,6 @@ class BaseBeamEnv(gym.Env, ABC):
         return df
 
     _OFFSET_ANGLE_FEATURES = frozenset({"x0", "y0", "x'0", "y'0"})
-    _EMITTANCE_FEATURES = frozenset({"ex", "ey"})
 
     @classmethod
     def _feature_improved(cls, feature: str, before: float, after: float) -> bool:
@@ -653,16 +719,13 @@ class BaseBeamEnv(gym.Env, ABC):
         - npart_ratio: maximized (green when it goes up).
         - x0/y0/x'0/y'0 (reference 0): trend toward zero — green when the
           distance to zero shrinks (|after| < |before|), regardless of sign.
-        - ex/ey: maximized (green when they go up, red when they go down).
-        - anything else (SizeX/SizeY, knn_distance, ...): minimized (green
-          when it goes down, red when it goes up).
+        - anything else (ex/ey, SizeX/SizeY, knn_distance, ...): minimized
+          (green when it goes down, red when it goes up).
         """
         if feature == "npart_ratio":
             return round(float(after), 3) >= round(float(before), 3)
         if feature in cls._OFFSET_ANGLE_FEATURES:
             return abs(float(after)) < abs(float(before))
-        if feature in cls._EMITTANCE_FEATURES:
-            return float(after) > float(before)
         return after < before
 
     # Target value shown as a reference line on each state panel, so a trend

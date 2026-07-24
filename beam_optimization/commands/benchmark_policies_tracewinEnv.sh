@@ -3,7 +3,7 @@
 # on the REAL TraceWin environment in TraceWin_workspace_2.
 # Approximate upper bound for TraceWin alone:
 # 1 policy × 10 episodes × 20 steps × ~30 s = ~100 minutes.
-# Requires surrogate_004_0.pt, a completed SAC training run, and TraceWin setup.
+# Requires surrogate_005_0.pt, a completed SAC training run, and TraceWin setup.
 # See: beam_optimization/scripts/benchmark.py, README.md section 4 ("benchmark").
 set -e
 
@@ -15,14 +15,21 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
 fi
 
 python -m beam_optimization benchmark \
-  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
-  --dataset beam_optimization/env/dataset/004/dataset_all.pt \
-  --sac beam_optimization/results/train/rl/all/sac/sac_agent.pt \
+  --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_005_0.pt \
+  --dataset beam_optimization/env/dataset/005/dataset_all.pt \
+  --sac beam_optimization/results/train/rl/sac_001/sac/sac_agent.pt \
   --n-runs 3 \
   --eval-budget 200 \
   --svg-episodes 500 \
+  --svg-horizon 20 \
   --policy-episodes 50 \
   --max-ep-steps 20 \
+  --policy-seed 42 \
+  --hidden 256 256 \
   --tracewin beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2/CB_newMRMS_RFQ_Fields_1.ini \
   --tracewin-episodes 10 \
   --output beam_optimization/results/benchmark/benchmark_tracewin.json
+  # --no-policy-plots/--quick are off by default (full plots, full budget).
+  # Other optional trained-checkpoint flags (all unset/not benchmarked unless
+  # passed): --td3 --ppo --ddpg --a2c --reinforce --trpo --sb3-sac --mbpo
+  # --svg-finale --svg-uniform.

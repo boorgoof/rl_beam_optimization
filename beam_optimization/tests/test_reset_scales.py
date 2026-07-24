@@ -21,9 +21,11 @@ from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 
 class _Simulator(BeamSimulator):
     def simulate(self, params):
+        beam_states = np.zeros((N_STAGES, BEAM_STATE_DIM), dtype=np.float32)
+        beam_states[:, 0] = 1.0
         return BeamSimulationResult(
             params=dict(params),
-            beam_states=np.zeros((N_STAGES, BEAM_STATE_DIM), dtype=np.float32),
+            beam_states=beam_states,
             score_val=0.0,
             success=True,
             source="test",

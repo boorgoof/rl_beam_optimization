@@ -13,6 +13,41 @@ from beam_optimization.env.tracewin_env.tracewin_env import TraceWinEnv
 
 
 class TraceWinDistributionRenderTests(unittest.TestCase):
+    def test_final_dst_lookup_does_not_treat_input_or_plot_snapshot_as_output(self):
+        from beam_optimization.env.tracewin_env.tracewin.visualization import (
+            find_final_tracewin_dst_path,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            calc_dir = Path(tmp)
+            (calc_dir / "part_rfq.dst").touch()
+            (calc_dir / "AD.BI.04.dst").touch()
+            (calc_dir / "280.dst").touch()
+
+            self.assertIsNone(find_final_tracewin_dst_path(calc_dir))
+
+    def test_render_skips_input_and_intermediate_distributions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            calc_dir = Path(temporary)
+            (calc_dir / "part_rfq.dst").touch()
+            (calc_dir / "AD.BI.04.dst").touch()
+            env = TraceWinEnv.__new__(TraceWinEnv)
+            env.simulator = SimpleNamespace(calc_dir=str(calc_dir))
+            env._current_result = SimpleNamespace(
+                success=True,
+                final_beam={feature: 1.0 for feature in BEAM_STATE_FEATURES},
+                score_val=10.0,
+            )
+
+            with mock.patch(
+                "beam_optimization.env.tracewin_env.tracewin.visualization."
+                "tracewin_distribution_from_dst",
+            ) as load_distribution:
+                result = env.render_final_beam_distribution()
+
+        self.assertIsNone(result)
+        load_distribution.assert_not_called()
+
     def test_default_render_matches_distribution_notebook_ranges(self):
         beam_state = {
             feature: (1.0 if feature == "npart_ratio" else 0.0)

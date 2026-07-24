@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from beam_optimization.config.adige import PARAMETERS
+from beam_optimization.config.adige import PARAMETERS, score_function_metadata
 from beam_optimization.config.paths import (
     DEFAULT_PARAMETER_BOUNDS_OUTPUT,
     DEFAULT_TRACEWIN_INI,
@@ -537,6 +537,7 @@ def main() -> None:
             "max_bisections": args.max_bisections,
         },
         "parameter_bounds": results,
+        "score_function": score_function_metadata(),
     }
 
     output = Path(args.output).expanduser().resolve()
