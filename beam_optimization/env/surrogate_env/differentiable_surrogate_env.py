@@ -23,7 +23,6 @@ from beam_optimization.config.adige import (
     N_PARAMS,
     REWARD_SCORE_SCALE,
     STAGE_PARAM_SIZES,
-    TEST_RESET_SCALE,
     TERMINAL_FAILURE_REWARD,
     TRAIN_RESET_SCALE,
     action_step_vec,
@@ -80,8 +79,6 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         device: Optional[str] = None,
         stage_weights: Optional[List[float]] = None,
         reset_scale: float = TRAIN_RESET_SCALE,
-        recovery_reset_probability: float = 0.0,
-        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
         super().__init__(
             model=model,
@@ -89,17 +86,10 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             max_steps=max_steps,
             device=device,
             reset_scale=reset_scale,
-            recovery_reset_probability=recovery_reset_probability,
-            recovery_reset_scale=recovery_reset_scale,
         )
         self.device = self.simulator.device
         self._reset_std_t = torch.tensor(
             reset_std_vec(reset_scale), dtype=torch.float32, device=self.device
-        )
-        self._recovery_reset_std_t = torch.tensor(
-            reset_std_vec(recovery_reset_scale),
-            dtype=torch.float32,
-            device=self.device,
         )
         self._action_step_t = torch.tensor(
             action_step_vec(), dtype=torch.float32, device=self.device
@@ -137,18 +127,10 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         self.simulator.set_active_model(model_index)
 
         beam0_t = self._prepare_beam0(beam0)
-        use_recovery_reset = (
-            self.recovery_reset_probability > 0.0
-            and float(torch.rand((), device=self.device))
-            < self.recovery_reset_probability
-        )
-        reset_std = (
-            self._recovery_reset_std_t if use_recovery_reset else self._reset_std_t
-        )
         for _ in range(MAX_TERMINAL_RESET_ATTEMPTS):
             params = clip_param_tensor_to_hw(
                 self._defaults_t
-                + torch.randn(N_PARAMS, device=self.device) * reset_std
+                + torch.randn(N_PARAMS, device=self.device) * self._reset_std_t
             ).detach()
             beam_states = self._forward(params, beam0_t)
             if not bool(self._terminal_failure_mask(beam_states).item()):

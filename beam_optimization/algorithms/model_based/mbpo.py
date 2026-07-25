@@ -31,7 +31,6 @@ import numpy as np
 from beam_optimization.algorithms.utils.replay_buffer import MixedReplayBuffer
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.config.adige import (
-    TRAIN_RECOVERY_RESET_PROBABILITY,
     TRAIN_RESET_SCALE,
 )
 from beam_optimization.env.dataset import BeamDataset
@@ -92,7 +91,6 @@ class MBPO:
             max_steps=max(1, self.rollout_length),
             device=device,
             reset_scale=TRAIN_RESET_SCALE,
-            recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
         )
 
         # Replace inner agent's replay buffer with mixed one, on the same

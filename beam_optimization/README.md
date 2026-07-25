@@ -396,10 +396,11 @@ distributions. Run it twice, with a different target rate for each constant:
 - `DATASET_SCALE` at **80%** — deliberately looser, so ~20% of the dataset
   used to train the surrogate also covers failure/near-boundary behavior.
 
-`ACTION_SCALE = TRAIN_RESET_SCALE / 10` is the only quantity still derived
+`ACTION_SCALE = DATASET_SCALE / 10` is the only quantity still derived
 from another: with `MAX_STEPS = 20`, a full directed trajectory of
-maximum-magnitude actions covers `±2 * TRAIN_RESET_SCALE`, i.e. a policy that
-wants to can move from one side of the training-reset gaussian to the other.
+maximum-magnitude actions covers `±2 * DATASET_SCALE`, i.e. a policy that
+wants to can move from one side of the dataset-generation gaussian to the
+other (not the narrower training-reset one).
 This step must run **after** `sensitivity` (it uses `sensitivity_vec()` for
 its diagnostics). Hardware bounds never enter the scale calibration itself —
 they are only a clip applied later, when a concrete value is generated
@@ -1081,14 +1082,14 @@ stability benchmark on independent `SurrogateEnv` episodes. It records
 cumulative RL reward, final
 score, final emittance `(ex + ey) / 2`, and final particle ratio for each
 episode, then writes mean/std summaries plus bar and box plots. A final
-particle ratio below `MIN_NPART_RATIO=0.01` maps to `ERROR_SCORE=-999` and
-the terminal RL reward `TERMINAL_FAILURE_REWARD=-10`. The transition returns
+particle ratio at or below `ALL_PARTICLES_LOST_NPART_RATIO=0.0` maps to `ERROR_SCORE=-999`, and
+any RL-terminal state (see `RL_MIN_NPART_RATIO`) receives the terminal RL reward
+`TERMINAL_FAILURE_REWARD=-10`. The transition returns
 `terminated=True, truncated=False`; no recovery step is executed. The policy
 observation contains only
 the selected beam stages (`beam0`, marker 108 and marker 332): 27 beam-feature
-values, without machine parameters. During training, 15% of resets use the
-wider `TEST_RESET_SCALE` distribution to provide difficult but valid initial
-states. Terminal Gaussian reset samples are resampled up to 32 times.
+values, without machine parameters. Every training reset uses `TRAIN_RESET_SCALE`
+(no recovery/mixture distribution). Terminal Gaussian reset samples are resampled up to 32 times.
 
 ```text
 benchmark_policy_episodes.csv

@@ -35,7 +35,6 @@ from pathlib import Path
 
 from beam_optimization.config.adige import (
     MAX_STEPS,
-    TEST_RESET_SCALE,
     TRAIN_RESET_SCALE,
 )
 from beam_optimization.config.paths import new_tracewin_env_calc_dir
@@ -65,8 +64,6 @@ class TraceWinEnv(BaseBeamEnv):
         timeout: float = 45.0,
         retries: int = 2,
         reset_scale: float = TRAIN_RESET_SCALE,
-        recovery_reset_probability: float = 0.0,
-        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
 
         if calc_dir is None:
@@ -85,8 +82,6 @@ class TraceWinEnv(BaseBeamEnv):
         super().__init__(
             max_steps=max_steps,
             reset_scale=reset_scale,
-            recovery_reset_probability=recovery_reset_probability,
-            recovery_reset_scale=recovery_reset_scale,
         )
 
     def _build_simulator(self) -> TraceWinSimulator:

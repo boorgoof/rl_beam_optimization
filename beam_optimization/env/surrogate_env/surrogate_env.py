@@ -36,7 +36,6 @@ from typing import List, Optional, Union
 
 from beam_optimization.config.adige import (
     MAX_STEPS,
-    TEST_RESET_SCALE,
     TRAIN_RESET_SCALE,
 )
 from beam_optimization.env.base_beam_env import BaseBeamEnv
@@ -67,8 +66,6 @@ class SurrogateEnv(BaseBeamEnv):
         device: Optional[str] = None,
         simulator_seed: Optional[int] = None,
         reset_scale: float = TRAIN_RESET_SCALE,
-        recovery_reset_probability: float = 0.0,
-        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
         # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator
         self._simulator_kwargs = {
@@ -82,8 +79,6 @@ class SurrogateEnv(BaseBeamEnv):
         super().__init__(
             max_steps=max_steps,
             reset_scale=reset_scale,
-            recovery_reset_probability=recovery_reset_probability,
-            recovery_reset_scale=recovery_reset_scale,
         )
 
 

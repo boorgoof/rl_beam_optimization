@@ -19,7 +19,7 @@ from beam_optimization.config.adige import (
     ERROR_SCORE, MAX_STEPS, MAX_TERMINAL_RESET_ATTEMPTS,
     below_rl_min_npart_ratio,
     REWARD_SCORE_SCALE, TERMINAL_FAILURE_REWARD,
-    TEST_RESET_SCALE, TRAIN_RESET_SCALE, SCORE_REFERENCES,
+    TRAIN_RESET_SCALE, SCORE_REFERENCES,
     PARAM_KEYS, PARAMETERS, BEAM_STATE_DIM,
     BEAM_STATE_FEATURES, default_params, action_bounds, reset_std_vec,
     observation_dim, observation_stage_labels, observation_stage_indices,
@@ -41,9 +41,6 @@ class BaseBeamEnv(gym.Env, ABC):
         max_steps:    Episode length.
         reset_scale:  Gaussian reset width in sensitivity units. Training is
                       the default; evaluation workflows pass TEST_RESET_SCALE.
-        recovery_reset_probability: probability of using the wider recovery
-                      reset distribution. Training workflows pass 15%;
-                      evaluation leaves it disabled.
         Observation stages are selected by OBSERVATION_STAGE_MASK.
     """
 
@@ -55,8 +52,6 @@ class BaseBeamEnv(gym.Env, ABC):
         self,
         max_steps: int = MAX_STEPS,
         reset_scale: float = TRAIN_RESET_SCALE,
-        recovery_reset_probability: float = 0.0,
-        recovery_reset_scale: float = TEST_RESET_SCALE,
     ):
         super().__init__()
 
@@ -86,13 +81,6 @@ class BaseBeamEnv(gym.Env, ABC):
         # choose the training or test/evaluation reset distribution.
         self.reset_scale = float(reset_scale)
         self._reset_std = reset_std_vec(self.reset_scale).astype(np.float32)
-        self.recovery_reset_probability = float(recovery_reset_probability)
-        if not 0.0 <= self.recovery_reset_probability <= 1.0:
-            raise ValueError("recovery_reset_probability must be between 0 and 1")
-        self.recovery_reset_scale = float(recovery_reset_scale)
-        self._recovery_reset_std = reset_std_vec(
-            self.recovery_reset_scale
-        ).astype(np.float32)
 
         # Episode state
         self._step_count     = 0
@@ -148,29 +136,12 @@ class BaseBeamEnv(gym.Env, ABC):
                 raise ValueError("reset option 'initial_params' contains NaN or infinite values")
             randomize_params = False
             reset_source = "explicit_params"
-            recovery_reset = False
             active_reset_scale = self.reset_scale
             active_reset_std = self._reset_std
         else:
-            if randomize_params:
-                recovery_reset = (
-                    self.recovery_reset_probability > 0.0
-                    and self.np_random.random() < self.recovery_reset_probability
-                )
-                active_reset_scale = (
-                    self.recovery_reset_scale if recovery_reset else self.reset_scale
-                )
-                active_reset_std = (
-                    self._recovery_reset_std if recovery_reset else self._reset_std
-                )
-                reset_source = (
-                    "recovery_gaussian" if recovery_reset else "gaussian"
-                )
-            else:
-                recovery_reset = False
-                active_reset_scale = self.reset_scale
-                active_reset_std = self._reset_std
-                reset_source = "defaults"
+            active_reset_scale = self.reset_scale
+            active_reset_std = self._reset_std
+            reset_source = "gaussian" if randomize_params else "defaults"
 
         # Keep one beam/model context while rejecting only terminal parameter
         # samples. This avoids silently changing the physical input beam during
@@ -231,8 +202,6 @@ class BaseBeamEnv(gym.Env, ABC):
             "reset_randomized": randomize_params,
             "reset_source": reset_source,
             "reset_scale": active_reset_scale,
-            "recovery_reset": recovery_reset,
-            "recovery_reset_probability": self.recovery_reset_probability,
             "reset_attempts": reset_attempt,
             "rejected_terminal_resets": rejected_terminal_resets,
             **extra,

@@ -55,7 +55,6 @@ from beam_optimization.config.adige import (
     N_PARAMS,
     PARAM_KEYS,
     TEST_RESET_SCALE,
-    TRAIN_RECOVERY_RESET_PROBABILITY,
     TRAIN_RESET_SCALE,
     action_bounds,
     default_params,
@@ -417,7 +416,6 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     env = SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
-        recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
     )
     obs_dim = env.observation_space.shape[0]
 
@@ -566,7 +564,6 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
     env = SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
-        recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
     )
 
     logger = _make_logger(out_dir, "sb3_sac", enable_tensorboard)
@@ -782,7 +779,6 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             project_file=tracewin_project,
             max_steps=max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
-            recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
         )
         label = "MBPOWithModelUpdate" if use_model_update else "MBPO"
         print(f"  Real env: TraceWin  ({tracewin_project})  [{label}]")
@@ -790,7 +786,6 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         env = SurrogateEnv(
             model=surrogate, dataset=dataset, max_steps=max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
-            recovery_reset_probability=TRAIN_RECOVERY_RESET_PROBABILITY,
         )
         print("  Real env: surrogate (SurrogateEnv)  [MBPO]")
 

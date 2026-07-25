@@ -141,20 +141,16 @@ MAX_STEPS: int = 20
 #                       covers failure/near-boundary behavior.
 #   TRAIN_RESET_SCALE: --target-success-rate 0.90 -- training resets should
 #                       mostly land in valid, recoverable states.
-# TODO: re-run both calibrations for the current PARAMETERS/sensitivity and
-# replace these placeholders (still the old shared-EXPLORATION_SCALE value
-# and the old formula-derived value, respectively -- neither is an actual
-# 80%/90% measurement yet).
 DATASET_SCALE: float = 0.6
 TRAIN_RESET_SCALE: float = 0.45
 TEST_RESET_SCALE: float = DATASET_SCALE       # evaluation resets deliberately use the same gaussian width as dataset generation
 BAYESIAN_SCALE: float = DATASET_SCALE         # default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity, default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max
 
-# ACTION_SCALE is a fixed fraction of TRAIN_RESET_SCALE, not separately
+# ACTION_SCALE is a fixed fraction of DATASET_SCALE, not separately
 # calibrated: with MAX_STEPS=20, a full directed trajectory covers
-# +-2*TRAIN_RESET_SCALE, i.e. a policy that wants to can move from one side
-# of the reset gaussian to the other.
-ACTION_SCALE: float = TRAIN_RESET_SCALE / 10  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
+# +-2*DATASET_SCALE, i.e. a policy that wants to can move from one side of
+# the dataset-generation gaussian to the other.
+ACTION_SCALE: float = DATASET_SCALE / (MAX_STEPS/2)  # max per-step RL action, step_max_p = ACTION_SCALE * sensitivity_p
 
 # Score assigned when the final particle fraction is operationally unusable.
 ERROR_SCORE: float = -999.0
@@ -184,11 +180,6 @@ TERMINAL_FAILURE_REWARD: float = -10.0
 # Random Gaussian resets that land directly in a terminal physical state are
 # resampled from the same distribution up to this limit.
 MAX_TERMINAL_RESET_ATTEMPTS: int = 32
-
-# Fraction of training resets drawn from the wider TEST_RESET_SCALE
-# distribution to expose policies deliberately to difficult but valid states.
-# Samples that are already terminal are rejected and resampled.
-TRAIN_RECOVERY_RESET_PROBABILITY: float = 0.15
 
 # Beam-quality score weights, shared by score(), score_from_vec() and score_tensor(). 
 SCORE_WEIGHTS: Dict[str, float] = {

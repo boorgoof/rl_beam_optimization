@@ -15,7 +15,7 @@ python -m beam_optimization train_surrogate \
   --n-surrogates 1 \
   --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --seed 123 \
-  --max-epochs 200 \
+  --max-epochs 300 \
   --batch-size 256 \
   --lr 1e-3 \
   --weight-decay 0.0 \
