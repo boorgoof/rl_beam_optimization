@@ -48,12 +48,14 @@ from beam_optimization.config.paths import (
     default_dataset_path,
     default_single_surrogate_model,
 )
+from beam_optimization.env.surrogate_env.surrogate.model.failure_classifier import FailureClassifier
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.scripts.common import algo_style, run_episode
 from beam_optimization.config.adige import (
     BAYESIAN_SCALE,
+    ERROR_SCORE,
     MAX_STEPS,
     N_OUTPUT_STAGES,
     N_PARAMS,
@@ -86,18 +88,31 @@ STAGE_WEIGHT_CONFIGS = {
 # ── Benchmark functions ───────────────────────────────────────────────────────
 
 
-def run_bo(surrogate, dataset, budget, seed) -> Dict:
+def run_bo(surrogate, dataset, budget, seed, classifier=None, classifier_threshold: float = 0.5) -> Dict:
     from beam_optimization.algorithms.baselines.bayesian_opt import (
         BayesianOptimizer,
         hardware_aware_bounds,
     )
     beam0 = _pick_beam(dataset, seed)
     surrogate.eval()
+    if classifier is not None:
+        classifier.eval()
 
     def objective(params):
         with torch.no_grad():
-            outs = surrogate(params_to_stage_tensors(params), beam0)
-            return score({v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_FEATURES)})
+            stage_tensors = params_to_stage_tensors(params)
+            outs = surrogate(stage_tensors, beam0)
+            final_beam = {v: float(outs[-1][0, i]) for i, v in enumerate(BEAM_STATE_FEATURES)}
+            # ModularMLP can never predict npart_ratio exactly 0, so score()
+            # alone can't reproduce the all-particles-lost cliff here; the
+            # classifier is a second, independently trained check on the same
+            # (beam0, params) that overrides the score when it's confident
+            # this parameter set is a real failure.
+            if classifier is not None:
+                proba = classifier.predict_proba(stage_tensors, beam0)
+                if float(proba.item()) > classifier_threshold:
+                    return ERROR_SCORE
+            return score(final_beam)
 
     # Same search box as everywhere else in the project (default ±
     # BAYESIAN_SCALE·sensitivity, clipped to hardware): the surrogate is only
@@ -593,6 +608,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--surrogate",    default=str(default_single_surrogate_model()))
     parser.add_argument("--dataset",      default=str(default_dataset_path()))
+    parser.add_argument("--classifier-path", default=None, metavar="PATH",
+        help="Optional shared failure_classifier_<dataset>.pt (see train_surrogate). "
+             "When given, gates the Bayesian Optimization baseline's score() calls "
+             "on the surrogate's output near the all-particles-lost cliff. Omit to "
+             "keep the current behavior (no gating).")
     parser.add_argument("--output",       default=str(DEFAULT_BENCHMARK_OUTPUT))
     parser.add_argument("--n-runs",       type=int, default=3)
     parser.add_argument("--eval-budget",  type=int, default=3000)
@@ -645,6 +665,12 @@ def main():
     print(f"Dataset:   {args.dataset}")
     dataset = BeamDataset.load(args.dataset)
 
+    classifier = None
+    if args.classifier_path:
+        print(f"Classifier: {args.classifier_path}")
+        classifier = FailureClassifier.load(args.classifier_path)
+        classifier.eval()
+
     results: Dict = {}
 
     for run in range(args.n_runs):
@@ -652,7 +678,7 @@ def main():
         print(f"\n{'='*65}\nRun {run+1}/{args.n_runs}  (seed={seed})\n{'='*65}")
 
         print("Bayesian Optimization...")
-        r = run_bo(surrogate, dataset, args.eval_budget, seed)
+        r = run_bo(surrogate, dataset, args.eval_budget, seed, classifier=classifier)
         results.setdefault("bayesian_opt", []).append(r)
         print(f"  best={r['best_score']:.3f}")
 

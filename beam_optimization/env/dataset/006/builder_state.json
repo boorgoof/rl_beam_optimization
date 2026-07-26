@@ -1,7 +1,7 @@
 {
   "version": 1,
   "status": "complete",
-  "attempt_index": 4086,
+  "attempt_index": 4094,
   "accepted_count": 4000,
   "config": {
     "target_samples": 4000,
@@ -10,7 +10,7 @@
       0.1,
       0.1
     ],
-    "seed": 1707341522,
+    "seed": 407710639,
     "save_all": true,
     "prefix": "dataset",
     "param_sets_count": null,

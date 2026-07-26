@@ -18,7 +18,9 @@ python -m beam_optimization train_surrogate \
   --max-epochs 300 \
   --batch-size 256 \
   --lr 1e-3 \
-  --weight-decay 0.0 \
+  --weight-decay 1e-4 \
+  --patience 40 \
+  --classifier-patience 20 \
   --log-dir beam_optimization/results/train/surrogate
   # --n-surrogates default is 1; the thesis runs use 4
   # --train-dataset/--val-dataset default to the latest numbered dataset's
@@ -26,3 +28,11 @@ python -m beam_optimization train_surrogate \
   # pass --train-dataset/--val-dataset <path> to pin a specific one
   # --device defaults to unset (trainer auto-selects cuda if available, else cpu)
   # --no-tensorboard is off by default (TensorBoard/metrics.csv logging enabled)
+  # --patience stops training early after 40 epochs without val_loss
+  # improvement (ReduceLROnPlateau halves the LR first, at 15 epochs of no
+  # improvement); pass --patience 0 to always run the full --max-epochs
+  # a shared failure_classifier_<dataset>.pt is also trained by default (once
+  # per run, regardless of --n-surrogates) to gate score() calls on surrogate
+  # predictions near the all-particles-lost cliff; --classifier-patience works
+  # like --patience but tracks validation F1 instead of loss; pass
+  # --skip-classifier to disable it entirely

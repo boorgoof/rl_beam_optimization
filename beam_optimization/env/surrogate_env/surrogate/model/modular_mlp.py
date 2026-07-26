@@ -13,9 +13,20 @@ import torch
 import torch.nn as nn
 
 from beam_optimization.config.adige import (
-    BEAM_STATE_DIM, STAGE_PARAM_SIZES, N_OUTPUT_STAGES,
+    BEAM_STATE_DIM, BEAM_STATE_FEATURES, STAGE_PARAM_SIZES, N_OUTPUT_STAGES,
     STAGE_PARAM_KEYS, STAGE_MARKERS,
 )
+
+
+# Beam-state features that are physically bounded, independent of any specific
+# beam line: npart_ratio is a fraction of surviving particles, sizes and
+# emittances cannot be negative. Offsets/angles (x0, y0, x'0, y'0) have no such
+# bound (they are signed displacements from a zero reference), so they are left
+# unconstrained.
+_NPART_RATIO_INDEX = BEAM_STATE_FEATURES.index("npart_ratio")
+_NONNEGATIVE_INDICES = [
+    BEAM_STATE_FEATURES.index(name) for name in ("SizeX", "SizeY", "ex", "ey")
+]
 
 
 class ModularMLP(nn.Module):
@@ -128,6 +139,23 @@ class ModularMLP(nn.Module):
         std  = getattr(self, f"bs_{stage_idx}").to(beam.device)
         return beam * std + mean
 
+    @staticmethod
+    def _apply_physical_bounds(beam: torch.Tensor) -> torch.Tensor:
+        """Clamp predicted beam-state features (raw physical units) to what is
+        physically possible: npart_ratio in [0, 1], sizes/emittances >= 0.
+        Unconstrained MSE regression can otherwise predict impossible values
+        (e.g. negative SizeX) that score() then turns into arbitrarily large
+        rewards/penalties instead of a bounded, physically-meaningful error.
+        """
+        # Rebuild out-of-place (unbind + clamp + stack) rather than assigning into
+        # slices in place: repeated in-place writes to the same tensor break
+        # autograd's saved-tensor version tracking during training.
+        columns = list(torch.unbind(beam, dim=1))
+        columns[_NPART_RATIO_INDEX] = columns[_NPART_RATIO_INDEX].clamp(0.0, 1.0)
+        for index in _NONNEGATIVE_INDICES:
+            columns[index] = columns[index].clamp(min=0.0)
+        return torch.stack(columns, dim=1)
+
     # ── Forward ────────────────────────────────────────────────────────────────
 
     def forward(
@@ -147,12 +175,16 @@ class ModularMLP(nn.Module):
         b0 = self._norm_beam(beam_state_0, stage_idx=0)
 
         latent = self.input_net(torch.cat([b0, sp[0]], dim=1))
-        outputs = [self._denorm_beam(self.output_nets[0](latent), stage_idx=1)]
+        outputs = [
+            self._apply_physical_bounds(self._denorm_beam(self.output_nets[0](latent), stage_idx=1))
+        ]
 
         for i in range(1, len(sp)):
             residual = latent
             latent = self.stage_nets[i - 1](torch.cat([latent, sp[i]], dim=1)) + residual
-            outputs.append(self._denorm_beam(self.output_nets[i](latent), stage_idx=i + 1))
+            outputs.append(
+                self._apply_physical_bounds(self._denorm_beam(self.output_nets[i](latent), stage_idx=i + 1))
+            )
 
         return outputs
 

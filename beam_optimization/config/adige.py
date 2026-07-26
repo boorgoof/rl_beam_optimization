@@ -335,12 +335,9 @@ def observation_stage_indices() -> Tuple[int, ...]:
 def observation_stage_labels() -> Tuple[str, ...]:
     """Return human-readable labels for selected observation stages."""
     labels = []
-    final_index = N_STAGES - 1
     for idx in observation_stage_indices():
         if idx == 0:
             labels.append("beam0")
-        elif idx == final_index:
-            labels.append("final")
         else:
             labels.append(f"marker_{STAGE_MARKERS[idx]}")
     return tuple(labels)

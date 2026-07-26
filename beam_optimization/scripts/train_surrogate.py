@@ -64,7 +64,14 @@ def main() -> None:
     parser.add_argument("--max-epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=40,
+        help="Stop early after this many epochs without val_loss improvement. "
+             "Pass a value <= 0 to disable early stopping (always run --max-epochs).",
+    )
     parser.add_argument("--device", default=None)
     parser.add_argument(
         "--log-dir",
@@ -76,6 +83,20 @@ def main() -> None:
         "--no-tensorboard",
         action="store_true",
         help="Disable TensorBoard/metrics.csv logging for surrogate training.",
+    )
+    parser.add_argument(
+        "--skip-classifier",
+        action="store_true",
+        help="Skip training the shared all-particles-lost FailureClassifier "
+             "(failure_classifier_<dataset>.pt). Trained by default, once per "
+             "run regardless of --n-surrogates.",
+    )
+    parser.add_argument(
+        "--classifier-patience",
+        type=int,
+        default=20,
+        help="Stop the classifier early after this many epochs without val "
+             "F1 improvement. Pass a value <= 0 to disable early stopping.",
     )
     args = parser.parse_args()
 
@@ -91,17 +112,22 @@ def main() -> None:
         batch_size=args.batch_size,
         lr=args.lr,
         weight_decay=args.weight_decay,
+        patience=args.patience if args.patience > 0 else None,
         seed=args.seed,
         device=args.device,
         overwrite=False,
         log_dir=log_dir,
         enable_tensorboard=not args.no_tensorboard,
+        train_classifier=not args.skip_classifier,
+        classifier_patience=args.classifier_patience if args.classifier_patience > 0 else None,
     )
 
     print("\nTRAIN SURROGATE COMPLETE")
     print("Created surrogate checkpoints:")
     for checkpoint in trainer_summary["checkpoints"]:
         print(f"  {checkpoint['path']}")
+    if "classifier" in trainer_summary:
+        print(f"Created failure classifier: {trainer_summary['classifier']['path']}")
 
     print("\nJSON summary:")
     print(json.dumps(trainer_summary, indent=2))

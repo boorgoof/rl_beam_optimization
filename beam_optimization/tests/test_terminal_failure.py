@@ -155,6 +155,31 @@ class TerminalFailureTests(unittest.TestCase):
         self.assertFalse(info["physics_failure"])
         self.assertEqual(info["failure_reason"], "low_transmission")
 
+    def test_classifier_style_error_score_terminates_even_above_rl_threshold(self):
+        # Simulates SurrogateBeamSimulator overriding score_val to ERROR_SCORE
+        # when its FailureClassifier flags a parameter set as all-particles-lost
+        # (see surrogate_simulator.run_surrogate_forward), even though
+        # npart_ratio itself is comfortably above RL_MIN_NPART_RATIO -- i.e.
+        # the regressor's npart_ratio looks fine but the classifier disagrees.
+        # The existing score_val == ERROR_SCORE fallback in
+        # _terminal_failure_reason() already provides this as an OR with the
+        # npart_ratio check below, with no separate wiring needed.
+        env = _Env([
+            _valid_result(),
+            _valid_result(score=ERROR_SCORE, npart_ratio=0.5),
+        ])
+        env.reset(options={"randomize_params": False})
+
+        _, reward, terminated, truncated, info = env.step(
+            np.zeros(len(PARAM_KEYS), dtype=np.float32)
+        )
+
+        self.assertEqual(reward, TERMINAL_FAILURE_REWARD)
+        self.assertTrue(terminated)
+        self.assertFalse(truncated)
+        self.assertFalse(info["physics_failure"])
+        self.assertEqual(info["failure_reason"], "low_transmission")
+
     def test_exact_threshold_is_valid_and_uses_normal_reward(self):
         env = _Env([
             _valid_result(),

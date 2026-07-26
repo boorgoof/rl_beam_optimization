@@ -14,6 +14,7 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
 from beam_optimization.env.dataset import BeamDataset
+from beam_optimization.env.surrogate_env.surrogate.model.failure_classifier import FailureClassifier
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
 
@@ -22,7 +23,9 @@ def run_surrogate_forward(
     beam0: torch.Tensor,
     params: Dict[str, float],
     device: torch.device,
-) -> Tuple[np.ndarray, Dict[str, float], float]:
+    classifier: Optional[FailureClassifier] = None,
+    classifier_threshold: float = 0.5,
+) -> Tuple[np.ndarray, Dict[str, float], float, bool]:
     """Run one surrogate forward pass and score it.
 
     Args:
@@ -30,16 +33,26 @@ def run_surrogate_forward(
         beam0:  Initial beam state tensor, shape (1, BEAM_STATE_DIM), on `device`.
         params: Flat parameter dict (PARAM_KEYS keys).
         device: Device to build stage tensors on (must match `beam0`'s device).
+        classifier: Optional shared FailureClassifier. When given and its
+            predicted failure probability exceeds `classifier_threshold`,
+            `score_val` is overridden to ERROR_SCORE -- the regressor alone
+            can never predict npart_ratio exactly 0, so it cannot reproduce
+            the cliff score() checks near the all-particles-lost boundary.
+            The regressor still always runs (beam_states is needed
+            regardless of the score), so there is no compute saved -- this
+            only corrects the score.
 
     Returns:
         beam_states: (N_STAGES, BEAM_STATE_DIM) float32 ndarray,
                      beam0 followed by each stage output.
         final_beam:  Dict mapping BEAM_STATE_FEATURES -> float, from the last stage.
-        score_val:   float, score(final_beam).
+        score_val:   float, score(final_beam), or ERROR_SCORE if the classifier
+                     flagged failure.
+        classifier_flagged_failure: bool, False when `classifier` is None.
 
     Does not catch exceptions: callers keep their own try/except and failure-shape handling.
     """
-    
+
     # Convert parameters to stage tensors for input
     stage_tensors = params_to_stage_tensors(params, device=device)
 
@@ -60,7 +73,14 @@ def run_surrogate_forward(
     }
     score_val = score(final_beam)
 
-    return beam_states, final_beam, score_val
+    classifier_flagged_failure = False
+    if classifier is not None:
+        proba = classifier.predict_proba(stage_tensors, beam0)
+        classifier_flagged_failure = bool(proba.item() > classifier_threshold)
+        if classifier_flagged_failure:
+            score_val = ERROR_SCORE
+
+    return beam_states, final_beam, score_val, classifier_flagged_failure
 
 
 class SurrogateBeamSimulator(BeamSimulator):
@@ -73,6 +93,8 @@ class SurrogateBeamSimulator(BeamSimulator):
         dataset: BeamDataset,
         device: Optional[str] = None,
         seed: Optional[int] = None,
+        classifier: Optional[FailureClassifier] = None,
+        classifier_threshold: float = 0.5,
     ):
 
         # Initialize the SurrogateBeamSimulator with the given parameters.
@@ -80,6 +102,11 @@ class SurrogateBeamSimulator(BeamSimulator):
         self.model = self._ensemble[0]
         self.dataset = dataset
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.classifier = classifier
+        self.classifier_threshold = float(classifier_threshold)
+        if self.classifier is not None:
+            self.classifier.eval()
+            self.classifier.to(self.device)
 
         for m in self._ensemble:
             m.eval()
@@ -118,6 +145,40 @@ class SurrogateBeamSimulator(BeamSimulator):
         """
         self.model = self._ensemble[index]
         self._active_model_index = index
+
+    def evaluate_ensemble_disagreement(self, params: Dict[str, float]) -> dict:
+        """Run every ensemble member on the same params/episode beam0 and
+        report how much they disagree -- a simple epistemic-uncertainty
+        diagnostic (variance across independently-trained models is a proxy
+        for "is the surrogate confident here, or extrapolating").
+
+        Purely diagnostic: does not touch the active model or any episode
+        state, and is not used by `simulate()`/RL training. With a single
+        model in the ensemble, every std is exactly 0.
+        """
+        beam0_t = torch.tensor(
+            self._episode_beam0, dtype=torch.float32, device=self.device,
+        ).unsqueeze(0)
+
+        final_stage_predictions = []
+        scores = []
+        for member in self._ensemble:
+            _, final_beam, score_val, _ = run_surrogate_forward(member, beam0_t, params, self.device)
+            final_stage_predictions.append([final_beam[name] for name in BEAM_STATE_FEATURES])
+            scores.append(score_val)
+
+        final_stage_predictions = np.asarray(final_stage_predictions, dtype=np.float64)
+        scores = np.asarray(scores, dtype=np.float64)
+
+        return {
+            "n_models": len(self._ensemble),
+            "score_mean": float(scores.mean()),
+            "score_std": float(scores.std()),
+            "final_stage_std": {
+                name: float(final_stage_predictions[:, i].std())
+                for i, name in enumerate(BEAM_STATE_FEATURES)
+            },
+        }
 
     def sample_beam0(self, rng=None) -> np.ndarray:
         """Sample one real initial beam state from the dataset."""
@@ -159,7 +220,17 @@ class SurrogateBeamSimulator(BeamSimulator):
             beam0_t = torch.tensor( self._episode_beam0, dtype=torch.float32, device=self.device, ).unsqueeze(0)
 
             # Run the active surrogate model without gradients and compute the final beam dictionary plus the scalar score.
-            beam_states, final_beam, score_val = run_surrogate_forward(self.model, beam0_t, params, self.device)
+            beam_states, final_beam, score_val, classifier_flagged_failure = run_surrogate_forward(
+                self.model, beam0_t, params, self.device,
+                classifier=self.classifier, classifier_threshold=self.classifier_threshold,
+            )
+
+            metadata = {
+                "beam0": self._episode_beam0.copy(),
+                "model_index": self._active_model_index,
+            }
+            if self.classifier is not None:
+                metadata["classifier_flagged_failure"] = classifier_flagged_failure
 
             # Return the BeamSimulationResult
             return BeamSimulationResult(
@@ -169,10 +240,7 @@ class SurrogateBeamSimulator(BeamSimulator):
                 success=True,
                 source="surrogate",
                 final_beam=final_beam,
-                metadata={
-                    "beam0": self._episode_beam0.copy(),
-                    "model_index": self._active_model_index,
-                },
+                metadata=metadata,
             )
         except Exception as exc:
             return BeamSimulationResult(

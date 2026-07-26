@@ -1,4 +1,15 @@
-"""Offline surrogate evaluation on an independent BeamDataset split."""
+"""Offline surrogate evaluation on an independent BeamDataset split.
+
+Besides the regression metrics (per-stage/per-feature MSE/MAE/RMSE and the
+true-vs-predicted final score correlation), `evaluate_surrogate()` optionally
+accepts a shared `FailureClassifier` (see failure_classifier.py and
+trainer.py's `_train_classifier`) to report how well it separates real
+all-particles-lost samples from the rest -- precision/recall/F1/confusion
+matrix (`classifier_metrics`) plus a second score-metrics block computed as
+if its gate had been applied (`score_metrics_gated`). This is purely
+diagnostic: passing a classifier never changes the default `score_metrics`,
+it only adds extra keys to the result.
+"""
 from __future__ import annotations
 
 import json
@@ -12,6 +23,7 @@ import torch
 
 from beam_optimization.config.adige import (
     BEAM_STATE_FEATURES,
+    ERROR_SCORE,
     N_OUTPUT_STAGES,
     STAGE_MARKERS,
     score_function_metadata,
@@ -24,6 +36,10 @@ from beam_optimization.config.paths import (
     default_dataset_path,
 )
 from beam_optimization.env.dataset import BeamDataset
+from beam_optimization.env.surrogate_env.surrogate.model.failure_classifier import (
+    FailureClassifier,
+    derive_failure_labels,
+)
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
 
@@ -54,12 +70,21 @@ def evaluate_surrogate(
     device: Optional[str | torch.device] = None,
     plots_dir: Optional[str | Path] = None,
     plot_prefix: str = "surrogate",
+    classifier: Optional[FailureClassifier] = None,
+    classifier_threshold: float = 0.5,
 ) -> dict:
     """Evaluate one surrogate on a dataset.
 
     Metrics cover beam-state errors by stage/feature and the score computed
     from the final predicted/target beam. Evaluation is batch-wise; only the
     two final-score vectors are retained for correlation and plots.
+
+    When `classifier` is given, this additionally reports how well it
+    predicts the true all-particles-lost label (precision/recall/F1/confusion
+    matrix) and a second, "gated" score-metrics block computed as if the
+    classifier's gate (see surrogate_simulator.run_surrogate_forward) had
+    been applied -- purely diagnostic, does not change the default
+    ("score_metrics") behavior.
     """
     if len(dataset) == 0:
         raise ValueError("Cannot evaluate a surrogate on an empty dataset")
@@ -67,6 +92,9 @@ def evaluate_surrogate(
     device_t = _resolve_device(device)
     model = model.to(device_t)
     model.eval()
+    if classifier is not None:
+        classifier = classifier.to(device_t)
+        classifier.eval()
 
     n_features = len(BEAM_STATE_FEATURES)
     sse_stage_feature = np.zeros((N_OUTPUT_STAGES, n_features), dtype=np.float64)
@@ -74,6 +102,8 @@ def evaluate_surrogate(
     count_stage_feature = np.zeros((N_OUTPUT_STAGES, n_features), dtype=np.int64)
     true_score_batches: list[np.ndarray] = []
     predicted_score_batches: list[np.ndarray] = []
+    classifier_proba_batches: list[np.ndarray] = []
+    classifier_label_batches: list[np.ndarray] = []
 
     with torch.no_grad():
         for start in range(0, len(dataset), int(batch_size)):
@@ -110,6 +140,14 @@ def evaluate_surrogate(
                     predicted_score_batches.append(
                         score_tensor(pred).detach().cpu().numpy().astype(np.float64)
                     )
+                    if classifier is not None:
+                        proba = classifier.predict_proba(stage_params, beam_states[0])
+                        classifier_proba_batches.append(
+                            proba.detach().cpu().numpy().astype(np.float64)
+                        )
+                        classifier_label_batches.append(
+                            derive_failure_labels(dataset.Y[indices]).numpy().astype(np.float64)
+                        )
 
     mse_stage_feature = _safe_divide(sse_stage_feature, count_stage_feature)
     mae_stage_feature = _safe_divide(sae_stage_feature, count_stage_feature)
@@ -178,8 +216,21 @@ def evaluate_surrogate(
         "score_metrics": score_metrics,
     }
 
+    classifier_proba_all = None
+    classifier_labels_all = None
+    if classifier is not None and classifier_proba_batches:
+        classifier_proba_all = np.concatenate(classifier_proba_batches)
+        classifier_labels_all = np.concatenate(classifier_label_batches)
+        results["classifier_metrics"] = _classifier_metrics(
+            classifier_labels_all, classifier_proba_all, classifier_threshold,
+        )
+        gated_predicted_scores = np.where(
+            classifier_proba_all > classifier_threshold, ERROR_SCORE, predicted_scores,
+        )
+        results["score_metrics_gated"] = _score_metrics(true_scores, gated_predicted_scores)
+
     if plots_dir is not None:
-        results["plots"] = _save_evaluation_plots(
+        plots = _save_evaluation_plots(
             true_scores=true_scores,
             predicted_scores=predicted_scores,
             rmse_stage_feature=rmse_stage_feature,
@@ -187,6 +238,16 @@ def evaluate_surrogate(
             prefix=plot_prefix,
             score_metrics=score_metrics,
         )
+        if classifier_proba_all is not None:
+            plots.update(_save_classifier_plots(
+                labels=classifier_labels_all,
+                proba=classifier_proba_all,
+                threshold=classifier_threshold,
+                classifier_metrics=results["classifier_metrics"],
+                output_dir=Path(plots_dir),
+                prefix=plot_prefix,
+            ))
+        results["plots"] = plots
     else:
         results["plots"] = {}
     return results
@@ -249,6 +310,40 @@ def _score_metrics(true_scores: np.ndarray, predicted_scores: np.ndarray) -> dic
         "true_std": float(np.std(true_scores)),
         "predicted_mean": float(np.mean(predicted_scores)),
         "predicted_std": float(np.std(predicted_scores)),
+    }
+
+
+def _classifier_metrics(labels: np.ndarray, proba: np.ndarray, threshold: float) -> dict:
+    """Precision/recall/F1/confusion matrix of the FailureClassifier against
+    the true all-particles-lost label (derive_failure_labels()), at a given
+    decision threshold. A false negative here (classifier says "fine" but the
+    true beam is fully lost) is worse than a false positive, so recall on the
+    failure class is the metric to watch."""
+    preds = (proba > threshold).astype(np.float64)
+    tp = float(np.sum((preds == 1) & (labels == 1)))
+    fp = float(np.sum((preds == 1) & (labels == 0)))
+    fn = float(np.sum((preds == 0) & (labels == 1)))
+    tn = float(np.sum((preds == 0) & (labels == 0)))
+    total = tp + fp + fn + tn
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else None
+    recall = tp / (tp + fn) if (tp + fn) > 0 else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and (precision + recall) > 0
+        else None
+    )
+    accuracy = (tp + tn) / total if total > 0 else None
+
+    return {
+        "threshold": float(threshold),
+        "n_samples": int(total),
+        "n_true_failures": int(tp + fn),
+        "confusion_matrix": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "accuracy": accuracy,
     }
 
 
@@ -337,6 +432,71 @@ def _save_evaluation_plots(
     return paths
 
 
+def _save_classifier_plots(
+    *,
+    labels: np.ndarray,
+    proba: np.ndarray,
+    threshold: float,
+    classifier_metrics: dict,
+    output_dir: Path,
+    prefix: str,
+) -> dict[str, str]:
+    """Two diagnostic plots for the FailureClassifier: how well its predicted
+    probability separates the two true classes, and the resulting confusion
+    matrix at `threshold`."""
+    configure_matplotlib_cache()
+    import matplotlib.pyplot as plt
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, str] = {}
+
+    fig, axis = plt.subplots(figsize=(7.0, 5.0))
+    bins = np.linspace(0.0, 1.0, 41)
+    axis.hist(proba[labels == 0], bins=bins, alpha=0.6, color="steelblue",
+              label=f"true: not lost (n={int(np.sum(labels == 0)):,})")
+    axis.hist(proba[labels == 1], bins=bins, alpha=0.6, color="crimson",
+              label=f"true: all particles lost (n={int(np.sum(labels == 1)):,})")
+    axis.axvline(threshold, color="black", linestyle="--", linewidth=1.2,
+                 label=f"threshold={threshold:g}")
+    axis.set_xlabel("Predicted failure probability")
+    axis.set_ylabel("Count")
+    axis.set_title(f"{prefix}: classifier probability by true label")
+    axis.legend(fontsize=8)
+    axis.grid(alpha=0.25)
+    fig.tight_layout()
+    hist_path = output_dir / f"{prefix}_classifier_proba_hist.png"
+    fig.savefig(hist_path, dpi=170)
+    plt.close(fig)
+    paths["classifier_proba_hist"] = str(hist_path)
+
+    cm = classifier_metrics["confusion_matrix"]
+    matrix = np.array([[cm["tn"], cm["fp"]], [cm["fn"], cm["tp"]]])
+    fig, axis = plt.subplots(figsize=(4.6, 4.2))
+    image = axis.imshow(matrix, cmap="Blues")
+    axis.set_xticks([0, 1])
+    axis.set_xticklabels(["pred: ok", "pred: failure"])
+    axis.set_yticks([0, 1])
+    axis.set_yticklabels(["true: ok", "true: failure"])
+    vmax = matrix.max() if matrix.size else 0.0
+    for i in range(2):
+        for j in range(2):
+            axis.text(j, i, f"{int(matrix[i, j]):,}", ha="center", va="center",
+                       color="white" if matrix[i, j] > vmax / 2 else "black")
+    axis.set_title(
+        f"{prefix}: classifier confusion matrix\n"
+        f"precision={_format_optional(classifier_metrics['precision'])}  "
+        f"recall={_format_optional(classifier_metrics['recall'])}"
+    )
+    fig.colorbar(image, ax=axis, shrink=0.8)
+    fig.tight_layout()
+    confusion_path = output_dir / f"{prefix}_classifier_confusion.png"
+    fig.savefig(confusion_path, dpi=170)
+    plt.close(fig)
+    paths["classifier_confusion"] = str(confusion_path)
+
+    return paths
+
+
 def _format_optional(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.4g}"
 
@@ -348,6 +508,7 @@ def evaluate_surrogate_folder(
     device: Optional[str | torch.device] = None,
     save_path: Optional[str | Path] = None,
     plots_dir: Optional[str | Path] = None,
+    classifier_path: Optional[str | Path] = None,
 ) -> dict:
     """Evaluate every surrogate_*.pt model in a directory."""
     model_dir = Path(model_dir)
@@ -363,11 +524,17 @@ def evaluate_surrogate_folder(
         output_path = Path(save_path)
         resolved_plots_dir = output_path.parent / f"{output_path.stem}_plots"
 
+    classifier = None
+    if classifier_path is not None:
+        classifier = FailureClassifier.load(str(classifier_path), device=str(device_t))
+        classifier.eval()
+
     results = {
         "model_dir": str(model_dir),
         "dataset_path": str(dataset_path),
         "batch_size": int(batch_size),
         "device": str(device_t),
+        "classifier_path": str(classifier_path) if classifier_path is not None else None,
         "models": {},
         "score_function": score_function_metadata(),
     }
@@ -381,6 +548,7 @@ def evaluate_surrogate_folder(
             device=device_t,
             plots_dir=resolved_plots_dir,
             plot_prefix=model_path.stem,
+            classifier=classifier,
         )
 
     if save_path is not None:
@@ -415,6 +583,17 @@ def main() -> None:
             "--output, uses <output_stem>_plots next to the JSON."
         ),
     )
+    parser.add_argument(
+        "--classifier-path",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Optional shared failure_classifier_<dataset>.pt (see train_surrogate). "
+            "When given, adds classifier_metrics (precision/recall/F1) and a "
+            "score_metrics_gated block to each model's report -- diagnostic "
+            "only, does not change score_metrics."
+        ),
+    )
     args = parser.parse_args()
 
     results = evaluate_surrogate_folder(
@@ -424,6 +603,7 @@ def main() -> None:
         device=args.device,
         save_path=args.output,
         plots_dir=args.plots_dir,
+        classifier_path=args.classifier_path,
     )
 
     for model_name, metrics in results["models"].items():
@@ -474,6 +654,23 @@ def _print_model_report(model_name: str, metrics: dict) -> None:
     print("\nPer-stage RMSE")
     for marker, rmse in zip(metrics["stage_markers"], metrics["rmse_per_stage"]):
         print(f"  marker {marker:>4}: {_format_optional(rmse)}")
+
+    if metrics.get("classifier_metrics"):
+        cm = metrics["classifier_metrics"]
+        print("\nFailure classifier metrics (all-particles-lost)")
+        print(
+            f"  precision={_format_optional(cm['precision'])}  "
+            f"recall={_format_optional(cm['recall'])}  "
+            f"f1={_format_optional(cm['f1'])}  "
+            f"accuracy={_format_optional(cm['accuracy'])}  "
+            f"n_true_failures={cm['n_true_failures']}/{cm['n_samples']}"
+        )
+        gated = metrics["score_metrics_gated"]
+        print(
+            "  score_metrics with classifier gate applied: "
+            f"MAE={_format_optional(gated['mae'])}  RMSE={_format_optional(gated['rmse'])}  "
+            f"R²={_format_optional(gated['r2'])}"
+        )
 
     if metrics.get("plots"):
         print("\nPlots")

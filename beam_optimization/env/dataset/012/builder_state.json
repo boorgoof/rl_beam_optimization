@@ -1,16 +1,16 @@
 {
   "version": 1,
   "status": "running",
-  "attempt_index": 96,
-  "accepted_count": 95,
+  "attempt_index": 631,
+  "accepted_count": 626,
   "config": {
-    "target_samples": 4000,
+    "target_samples": 5000,
     "split_ratios": [
       0.8,
       0.1,
       0.1
     ],
-    "seed": 112439385,
+    "seed": 367076348,
     "save_all": true,
     "prefix": "dataset",
     "param_sets_count": null,

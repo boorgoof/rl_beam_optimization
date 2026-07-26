@@ -1,7 +1,16 @@
-"""Validate and merge multiple flat BeamDataset files into one dataset."""
+"""Validate and merge multiple flat BeamDataset files into one dataset.
+
+Also supports appending new samples onto an already-existing dataset directory
+(``--append``), instead of always merging into a brand-new output directory.
+Every merge/append is recorded as one event in ``merge_log.json`` inside the
+output directory, so -- unlike a plain print to stdout -- the provenance of a
+merged/appended dataset survives on disk, the same way ``builder_state.json``
+records provenance for a TraceWin-built dataset.
+"""
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import io
 import json
 from pathlib import Path
@@ -38,6 +47,30 @@ _OUTPUT_FILENAMES = (
     "dataset_val.pt",
     "dataset_test.pt",
 )
+_MERGE_LOG_FILENAME = "merge_log.json"
+
+
+def _append_merge_log(output_dir: Path, event: dict) -> Path:
+    """Record one merge/append event in output_dir/merge_log.json.
+
+    Unlike builder_state.json (one snapshot, owned by one TraceWinDatasetBuilder
+    run), this is an append-only list: every merge/append into this directory
+    adds one more event, so the full provenance of dataset_all.pt survives
+    across multiple --append calls, not just the most recent one.
+    """
+    log_path = output_dir / _MERGE_LOG_FILENAME
+    if log_path.exists():
+        try:
+            log = json.loads(log_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Cannot read existing {log_path}: {exc}") from exc
+        if not isinstance(log, dict) or not isinstance(log.get("events"), list):
+            raise ValueError(f"Invalid {log_path}: expected a dict with an 'events' list")
+    else:
+        log = {"events": []}
+    log["events"].append(event)
+    log_path.write_text(json.dumps(log, indent=2), encoding="utf-8")
+    return log_path
 
 
 def _resolved(path: Path) -> Path:
@@ -183,34 +216,67 @@ def merge_dataset_files(
     *,
     seed: int = 123,
     allow_running: bool = False,
+    append: bool = False,
 ) -> dict:
     """Merge input datasets, then save all/train/val/test files.
 
-    Samples are preserved in input order in ``dataset_all.pt``. The split files
-    use the project's standard 80/10/10 shuffled split.
+    Samples are preserved in input order in ``dataset_all.pt`` (the existing
+    ``output_dir`` dataset first, when ``append=True``). The split files use
+    the project's standard 80/10/10 shuffled split.
+
+    With ``append=True``, ``output_dir`` must already contain a
+    ``dataset_all.pt`` (e.g. an existing numbered dataset directory): it is
+    treated as an implicit first input, and only new input files need to be
+    passed in ``input_paths``. The four output files are then regenerated in
+    place to include the old samples plus the new ones. Without ``append``,
+    ``output_dir`` must not already contain any of the four output files, and
+    at least two ``input_paths`` are required.
     """
     inputs = [Path(path).expanduser() for path in input_paths]
-    if len(inputs) < 2:
-        raise ValueError("At least two input dataset files are required")
-
     output_dir = Path(output_dir).expanduser()
     targets = [output_dir / filename for filename in _OUTPUT_FILENAMES]
+    existing_all_path = output_dir / "dataset_all.pt"
+
+    if append:
+        if not existing_all_path.is_file():
+            raise ValueError(
+                f"--append requires an existing dataset to append onto: {existing_all_path} not found"
+            )
+        inputs = [existing_all_path, *inputs]
+        if len(inputs) < 2:
+            raise ValueError("At least one new input dataset file is required with --append")
+        state_path = output_dir / "builder_state.json"
+        if state_path.exists():
+            print(
+                f"Warning: {output_dir} has a {state_path.name} -- appending will make its "
+                "accepted_count stale. Do not resume that build afterward without fixing or "
+                "removing the state file first.",
+                flush=True,
+            )
+    elif len(inputs) < 2:
+        raise ValueError("At least two input dataset files are required")
+
     resolved_inputs = [_resolved(path) for path in inputs]
     if len(set(resolved_inputs)) != len(resolved_inputs):
         raise ValueError("The same input dataset was specified more than once")
     resolved_targets = {_resolved(path) for path in targets}
-    collisions = [path for path, resolved in zip(inputs, resolved_inputs) if resolved in resolved_targets]
+    allowed_collision = _resolved(existing_all_path) if append else None
+    collisions = [
+        path for path, resolved in zip(inputs, resolved_inputs)
+        if resolved in resolved_targets and resolved != allowed_collision
+    ]
     if collisions:
         raise ValueError(
             "An input dataset cannot also be an output file: "
             + ", ".join(str(path) for path in collisions)
         )
-    existing = [path for path in targets if path.exists()]
-    if existing:
-        raise ValueError(
-            "Refusing to overwrite existing merged dataset files: "
-            + ", ".join(str(path) for path in existing)
-        )
+    if not append:
+        existing = [path for path in targets if path.exists()]
+        if existing:
+            raise ValueError(
+                "Refusing to overwrite existing merged dataset files: "
+                + ", ".join(str(path) for path in existing)
+            )
 
     merged = BeamDataset()
     input_counts: list[dict[str, object]] = []
@@ -248,33 +314,67 @@ def merge_dataset_files(
         + ", ".join(f"{name}={split_counts[name]:,}" for name in ("train", "val", "test")),
         flush=True,
     )
+
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mode": "append" if append else "merge",
+        "inputs": input_counts,
+        "seed": int(seed),
+        "allow_running": bool(allow_running),
+        "num_samples": len(merged),
+        "split_counts": split_counts,
+    }
+    log_path = _append_merge_log(output_dir, event)
+    print(f"Logged this {event['mode']} to {log_path}", flush=True)
+
     return {
         "inputs": input_counts,
         "output_dir": str(output_dir),
         "seed": int(seed),
         "allow_running": bool(allow_running),
+        "append": bool(append),
         "num_samples": len(merged),
         "split_counts": split_counts,
         "paths": {name: str(path) for name, path in saved.items()},
+        "merge_log_path": str(log_path),
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Merge two or more compatible BeamDataset .pt files into one dataset."
+        description=(
+            "Merge two or more compatible BeamDataset .pt files into one new dataset, "
+            "or append new files onto an already-existing one (--append)."
+        )
     )
     parser.add_argument(
         "--inputs",
         nargs="+",
         required=True,
         metavar="DATASET_PT",
-        help="Two or more dataset .pt files, normally dataset_all.pt files.",
+        help=(
+            "Dataset .pt files to merge, normally dataset_all.pt files. Two or more "
+            "required normally; one or more suffices with --append (the existing "
+            "--output-dir dataset counts as the other)."
+        ),
     )
     parser.add_argument(
         "--output-dir",
         required=True,
         metavar="PATH",
-        help="New directory for dataset_all/train/val/test.pt.",
+        help=(
+            "Directory for dataset_all/train/val/test.pt. Must not already contain them, "
+            "unless --append is given, in which case it must already contain dataset_all.pt."
+        ),
+    )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help=(
+            "Append --inputs onto the dataset_all.pt already in --output-dir instead of "
+            "merging into a fresh output directory. The four output files are regenerated "
+            "in place (old samples first, then the new ones)."
+        ),
     )
     parser.add_argument(
         "--seed",
@@ -292,14 +392,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if len(args.inputs) < 2:
-        parser.error("--inputs requires at least two dataset files")
+    if not args.append and len(args.inputs) < 2:
+        parser.error("--inputs requires at least two dataset files (or use --append)")
     try:
         summary = merge_dataset_files(
             args.inputs,
             args.output_dir,
             seed=args.seed,
             allow_running=args.allow_running,
+            append=args.append,
         )
     except ValueError as exc:
         parser.error(str(exc))
