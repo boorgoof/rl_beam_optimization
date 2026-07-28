@@ -15,7 +15,7 @@ Action:
 
 Reward:
     TERMINAL_FAILURE_REWARD for particle loss; otherwise
-    score(t+1) / REWARD_SCORE_SCALE
+    score(t+1) / REWARD_SCORE_SCALE minus configured training regularizers
 
 Episode design:
     RESET:
@@ -25,7 +25,7 @@ Episode design:
     STEP:
         params_{t+1} = params_t + action
         surrogate(params_{t+1}) -> obs_{t+1}
-        reward = terminal failure reward or score(t+1) / REWARD_SCORE_SCALE
+        reward = terminal failure reward or normalized score minus regularizers
 
     Physical beam losses terminate the episode immediately. Technical simulator
     failures truncate the affected rollout; valid episodes truncate at max_steps.
@@ -66,6 +66,9 @@ class SurrogateEnv(BaseBeamEnv):
         device: Optional[str] = None,
         simulator_seed: Optional[int] = None,
         reset_scale: float = TRAIN_RESET_SCALE,
+        distance_penalty_weight: float = 0.0,
+        action_penalty_weight: float = 0.0,
+        score_regression_penalty_weight: float = 0.0,
     ):
         # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator
         self._simulator_kwargs = {
@@ -74,11 +77,14 @@ class SurrogateEnv(BaseBeamEnv):
             "device": device,
             "seed": simulator_seed,
         }
-        
+
         # Call the base class constructor
         super().__init__(
             max_steps=max_steps,
             reset_scale=reset_scale,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
 
 

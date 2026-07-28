@@ -111,6 +111,9 @@ class MBPOWithModelUpdate(MBPO):
         dataset_save_path: Optional[str | Path] = None,
         surrogate_save_dir: Optional[str | Path] = None,
         device: Optional[str] = None,
+        distance_penalty_weight: float = 0.0,
+        action_penalty_weight: float = 0.0,
+        score_regression_penalty_weight: float = 0.0,
     ):
         super().__init__(
             agent=agent,
@@ -126,6 +129,9 @@ class MBPOWithModelUpdate(MBPO):
             real_buffer_size=real_buffer_size,
             synth_buffer_size=synth_buffer_size,
             device=device,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
         self.model_train_freq     = int(model_train_freq)
         self.model_train_epochs   = int(model_train_epochs)

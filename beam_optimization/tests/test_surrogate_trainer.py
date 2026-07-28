@@ -44,6 +44,80 @@ class FeatureLossWeightsTests(unittest.TestCase):
             )
 
 
+def _dataset_with_known_npart_ratio(*, n: int = 5, seed: int = 0):
+    """Synthetic dataset where every feature except npart_ratio is arbitrary,
+    beam0's npart_ratio is always exactly 1.0 (matches the real dataset
+    invariant -- see visualize_surrogate_model.ipynb section 3.4), and each
+    output stage's npart_ratio is a known, controlled value in (0, 1) so
+    compute_normalization_metadata()'s logit transform can be checked exactly.
+    """
+    rng = np.random.default_rng(seed)
+    npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
+
+    X = rng.normal(size=(n, BEAM_STATE_DIM + N_PARAMS)).astype(np.float32)
+    X[:, npart_idx] = 1.0
+
+    Y = rng.normal(size=(n, N_OUTPUT_STAGES * BEAM_STATE_DIM)).astype(np.float32)
+    known_npart_ratios = np.linspace(0.02, 0.9, n).astype(np.float32)
+    for stage in range(N_OUTPUT_STAGES):
+        col = stage * BEAM_STATE_DIM + npart_idx
+        Y[:, col] = known_npart_ratios
+
+    scores = rng.normal(size=n).astype(np.float32)
+    dataset = BeamDataset()
+    dataset.append_flat_samples(X, Y, scores)
+    return dataset, known_npart_ratios
+
+
+class ComputeNormalizationMetadataLogitTests(unittest.TestCase):
+    def test_output_stage_npart_ratio_uses_logit_space_stats(self):
+        dataset, known = _dataset_with_known_npart_ratio()
+        npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
+
+        norm_stats = compute_normalization_metadata(dataset)
+
+        expected_logit = torch.logit(torch.tensor(known), eps=1e-4)
+        expected_mean = expected_logit.mean().item()
+        expected_var = expected_logit.var(unbiased=False).item()
+
+        for stage_idx in range(1, N_OUTPUT_STAGES + 1):
+            mean = norm_stats["beam_state_means"][stage_idx][npart_idx].item()
+            var = norm_stats["beam_state_variances"][stage_idx][npart_idx].item()
+            self.assertAlmostEqual(mean, expected_mean, places=4, msg=f"stage {stage_idx}")
+            self.assertAlmostEqual(var, expected_var, places=4, msg=f"stage {stage_idx}")
+
+    def test_stage_zero_beam0_npart_ratio_stays_raw(self):
+        # beam0's npart_ratio is a constant 1.0; it must stay untransformed
+        # (raw mean 1.0, raw variance 0.0), not logit-transformed (which
+        # would be +inf without the eps clamp -- compute_normalization_metadata()
+        # deliberately skips stage 0).
+        dataset, _ = _dataset_with_known_npart_ratio()
+        npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
+
+        norm_stats = compute_normalization_metadata(dataset)
+
+        self.assertAlmostEqual(norm_stats["beam_state_means"][0][npart_idx].item(), 1.0, places=5)
+        self.assertAlmostEqual(norm_stats["beam_state_variances"][0][npart_idx].item(), 0.0, places=5)
+
+    def test_other_features_remain_raw_at_every_stage(self):
+        dataset, _ = _dataset_with_known_npart_ratio()
+        npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
+        _, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
+
+        norm_stats = compute_normalization_metadata(dataset)
+
+        for stage_idx, tensor in enumerate(beam_states):
+            for feature_idx in range(BEAM_STATE_DIM):
+                if feature_idx == npart_idx:
+                    continue
+                expected_mean = tensor[:, feature_idx].mean().item()
+                mean = norm_stats["beam_state_means"][stage_idx][feature_idx].item()
+                self.assertAlmostEqual(
+                    mean, expected_mean, places=4,
+                    msg=f"stage {stage_idx} feature {feature_idx}",
+                )
+
+
 def _make_synthetic_dataset(path: Path, *, n: int, seed: int) -> None:
     rng = np.random.default_rng(seed)
     X = rng.normal(size=(n, BEAM_STATE_DIM + N_PARAMS)).astype(np.float32)

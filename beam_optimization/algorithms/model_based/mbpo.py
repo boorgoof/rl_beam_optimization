@@ -76,6 +76,9 @@ class MBPO:
         real_buffer_size: int = int(1e5),
         synth_buffer_size: int = int(1e6),
         device: Optional[str] = None,
+        distance_penalty_weight: float = 0.0,
+        action_penalty_weight: float = 0.0,
+        score_regression_penalty_weight: float = 0.0,
     ):
         self.agent            = agent
         self.rollout_length   = int(rollout_length)
@@ -91,6 +94,9 @@ class MBPO:
             max_steps=max(1, self.rollout_length),
             device=device,
             reset_scale=TRAIN_RESET_SCALE,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
 
         # Replace inner agent's replay buffer with mixed one, on the same
@@ -127,7 +133,15 @@ class MBPO:
         Returns:
             Loss tuple from the last agent.optimize() or None if buffer not ready.
         """
-        self.mixed_buffer.store_real(obs, action, reward, next_obs, float(done))
+        # The environment acts in physical units, while SAC critics (matching
+        # SB3) consume normalized [-1, 1] actions from replay.
+        self.mixed_buffer.store_real(
+            obs,
+            self.agent.scale_action(action),
+            reward,
+            next_obs,
+            float(done),
+        )
 
         if self.mixed_buffer.size >= self.min_real_samples:
             self._generate_synthetic()
@@ -157,7 +171,11 @@ class MBPO:
                 # synthetic transition bootstrap-free (with rollout_length=1 the
                 # critic would collapse to the one-step reward).
                 self.mixed_buffer.store_synth(
-                    obs_i, action_i, reward_i, next_obs_i, float(terminated)
+                    obs_i,
+                    self.agent.scale_action(action_i),
+                    reward_i,
+                    next_obs_i,
+                    float(terminated),
                 )
                 obs_i = next_obs_i
                 if terminated or truncated:

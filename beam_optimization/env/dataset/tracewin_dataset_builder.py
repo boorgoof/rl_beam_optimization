@@ -15,6 +15,7 @@ import numpy as np
 
 from beam_optimization.config.adige import (
     BEAM_STATE_FEATURES,
+    DATASET_SCALE,
     PARAM_KEYS,
     PARAMETERS,
     clip_params_to_hw,
@@ -152,6 +153,7 @@ class TraceWinDatasetBuilder:
         save_all: bool = True,
         prefix: str = "dataset",
         param_sets: Optional[Sequence[Dict[str, float]]] = None,
+        scale: Optional[float] = None,
     ):
         if target_samples is None or int(target_samples) <= 0:
             raise ValueError("target_samples must be a positive integer")
@@ -163,6 +165,11 @@ class TraceWinDatasetBuilder:
         self.save_all = bool(save_all)
         self.prefix = str(prefix)
         self.param_sets = list(param_sets) if param_sets is not None else None
+        # Overrides DATASET_SCALE for this build only (adige.py's global
+        # constant is left untouched, so every other consumer -- RL, Bayesian
+        # opt, other datasets -- is unaffected). None means "use DATASET_SCALE",
+        # same as before this parameter existed.
+        self.scale = float(scale) if scale is not None else None
 
         if self.param_sets is not None and len(self.param_sets) < self.target_samples:
             raise ValueError(
@@ -210,23 +217,24 @@ class TraceWinDatasetBuilder:
             self._write_state(state, status="running", accepted_count=len(dataset))
 
             result = self.simulator.simulate(params)
-            valid = _is_valid_tracewin_result(result)
+            accepted = _is_valid_tracewin_result(result)
             outcome = (
                 "successful"
                 if result.success
                 else "physics_failure"
-                if valid
+                if accepted
                 else "technical_failure"
             )
+            reject_reason = "" if accepted else f" ({result.error})"
             print(
                 f"  [attempt {attempt_index + 1}] "
-                f"{'accepted' if valid else 'rejected'} {outcome} "
+                f"{'accepted' if accepted else 'rejected'} {outcome} "
                 f"score={result.score_val:.6g} "
-                f"-> {len(dataset) + (1 if valid else 0)}/{self.target_samples} accepted"
-                + ("" if valid else f" ({result.error})"),
+                f"-> {len(dataset) + (1 if accepted else 0)}/{self.target_samples} accepted"
+                + reject_reason,
                 flush=True,
             )
-            if not valid:
+            if not accepted:
                 self._write_state(state, status="running", accepted_count=len(dataset))
                 continue
 
@@ -250,6 +258,21 @@ class TraceWinDatasetBuilder:
                 # the current distribution (there is no recorded one to check
                 # against) and persist it for future resumes.
                 saved_config = {**saved_config, "sampling": expected["sampling"]}
+                state["config"] = saved_config
+            elif (
+                saved_config["sampling"] is not None
+                and "dataset_scale" not in saved_config["sampling"]
+            ):
+                # Legacy sampling block written before dataset_scale was recorded
+                # explicitly (it was already implicit in std = sensitivity *
+                # DATASET_SCALE): adopt the current value, same reasoning as above.
+                saved_config = {
+                    **saved_config,
+                    "sampling": {
+                        **saved_config["sampling"],
+                        "dataset_scale": expected["sampling"]["dataset_scale"],
+                    },
+                }
                 state["config"] = saved_config
             if saved_config != expected:
                 raise ValueError(
@@ -305,7 +328,7 @@ class TraceWinDatasetBuilder:
             return dict(self.param_sets[attempt_index])
 
         rng = np.random.default_rng(self.seed + int(attempt_index))
-        return _sample_one_gaussian(rng)
+        return _sample_one_gaussian(rng, self.scale)
 
     def _config_signature(self) -> dict:
         # The sampling block pins the gaussian distribution the samples are
@@ -319,7 +342,8 @@ class TraceWinDatasetBuilder:
             defaults = default_params()
             sampling = {
                 "defaults": [float(defaults[key]) for key in PARAM_KEYS],
-                "std": [float(value) for value in dataset_std_vec()],
+                "dataset_scale": float(DATASET_SCALE if self.scale is None else self.scale),
+                "std": [float(value) for value in dataset_std_vec(self.scale)],
                 "hw_min": [p.hw_min for p in PARAMETERS],
                 "hw_max": [p.hw_max for p in PARAMETERS],
             }
@@ -367,9 +391,9 @@ class TraceWinDatasetBuilder:
         }
 
 
-def _sample_one_gaussian(rng: np.random.Generator) -> Dict[str, float]:
+def _sample_one_gaussian(rng: np.random.Generator, scale: Optional[float] = None) -> Dict[str, float]:
     defaults = default_params()
-    std = dataset_std_vec()
+    std = dataset_std_vec(scale)
     params = {
         key: float(defaults[key] + rng.normal(0.0, s))
         for key, s in zip(PARAM_KEYS, std)

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "status": "running",
-  "attempt_index": 2820,
-  "accepted_count": 2795,
+  "status": "complete",
+  "attempt_index": 5047,
+  "accepted_count": 5000,
   "config": {
     "target_samples": 5000,
     "split_ratios": [
@@ -94,8 +94,10 @@
         null,
         null,
         null
-      ]
-    }
+      ],
+      "dataset_scale": 0.6
+    },
+    "npart_ratio_band": null
   },
   "score_function": {
     "name": "adige_linear_beam_quality",

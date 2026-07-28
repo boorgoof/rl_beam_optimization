@@ -1,7 +1,7 @@
 {
   "events": [
     {
-      "timestamp": "2026-07-26T14:22:35.863243+00:00",
+      "timestamp": "2026-07-27T20:08:13.235537+00:00",
       "mode": "merge",
       "inputs": [
         {
@@ -28,16 +28,31 @@
           "path": "beam_optimization/env/dataset/006/dataset_all.pt",
           "num_samples": 4000,
           "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/007/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/008/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/011/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
         }
       ],
       "seed": 123,
       "allow_running": false,
-      "num_samples": 20000,
+      "num_samples": 35000,
       "split_counts": {
-        "all": 20000,
-        "train": 16000,
-        "val": 2000,
-        "test": 2000
+        "all": 35000,
+        "train": 28000,
+        "val": 3500,
+        "test": 3500
       }
     }
   ]

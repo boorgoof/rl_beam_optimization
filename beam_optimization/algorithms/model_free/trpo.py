@@ -65,7 +65,9 @@ class TRPO:
 
     def select_action(self, state, training: bool = True):
         if training:
-            action, logpa, _, _, _ = self.policy_network.full_pass(state)
+            action, logpa, _, _, _ = self.policy_network.full_pass(
+                state, include_action_scale_jacobian=False
+            )
             value = self.value_network(state)
             return (action.detach().cpu().numpy().squeeze(0),
                     logpa.detach().cpu().numpy().squeeze(),
@@ -85,7 +87,9 @@ class TRPO:
             log_std_old = log_std_old.detach()
         old_dist_params = (mean_old, log_std_old)
 
-        log_probs   = self.policy_network.log_prob(states, actions)
+        log_probs = self.policy_network.log_prob(
+            states, actions, include_action_scale_jacobian=False
+        )
         surr_loss   = -(gaes.unsqueeze(1) * (log_probs - old_logpas.unsqueeze(1)).exp()).mean()
         policy_grad = get_flat_grad(surr_loss, self.policy_network, retain_graph=True)
 

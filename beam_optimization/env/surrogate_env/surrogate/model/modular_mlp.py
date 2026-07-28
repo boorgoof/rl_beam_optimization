@@ -141,17 +141,28 @@ class ModularMLP(nn.Module):
 
     @staticmethod
     def _apply_physical_bounds(beam: torch.Tensor) -> torch.Tensor:
-        """Clamp predicted beam-state features (raw physical units) to what is
-        physically possible: npart_ratio in [0, 1], sizes/emittances >= 0.
-        Unconstrained MSE regression can otherwise predict impossible values
-        (e.g. negative SizeX) that score() then turns into arbitrarily large
-        rewards/penalties instead of a bounded, physically-meaningful error.
+        """Reconstruct predicted beam-state features (raw physical units) into
+        what is physically possible: npart_ratio in (0, 1), sizes/emittances >= 0.
+
+        npart_ratio: sigmoid(), not a clamp. compute_normalization_metadata()
+        (trainer.py) computes this column's mean/std at output stages in
+        logit space, so the denormalized value arriving here already
+        *represents* a logit -- sigmoid() is its exact inverse, giving a
+        value that is mathematically guaranteed to fall in (0, 1) no matter
+        how far off the raw prediction is, instead of a clamp that turns any
+        noisy negative prediction into an artificial exact 0 ("all particles
+        lost" per score()) and discards how wrong the prediction actually was.
+
+        sizes/emittances: still a plain clamp(min=0.0) -- unconstrained MSE
+        regression can otherwise predict impossible negative values that
+        score() then turns into arbitrarily large rewards/penalties instead
+        of a bounded, physically-meaningful error.
         """
-        # Rebuild out-of-place (unbind + clamp + stack) rather than assigning into
-        # slices in place: repeated in-place writes to the same tensor break
+        # Rebuild out-of-place (unbind + transform + stack) rather than assigning
+        # into slices in place: repeated in-place writes to the same tensor break
         # autograd's saved-tensor version tracking during training.
         columns = list(torch.unbind(beam, dim=1))
-        columns[_NPART_RATIO_INDEX] = columns[_NPART_RATIO_INDEX].clamp(0.0, 1.0)
+        columns[_NPART_RATIO_INDEX] = torch.sigmoid(columns[_NPART_RATIO_INDEX])
         for index in _NONNEGATIVE_INDICES:
             columns[index] = columns[index].clamp(min=0.0)
         return torch.stack(columns, dim=1)

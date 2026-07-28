@@ -33,16 +33,25 @@ class DeterministicPolicyNetwork(nn.Module):
     def _rescale(self, x):
         return ((x + 1) / 2) * (self.action_max - self.action_min) + self.action_min
 
-    def forward(self, state):
+    def normalized_forward(self, state):
+        """Return the deterministic action in the internal [-1, 1] space."""
         x = format_input(state, device=self.action_min.device)
         x = self.activation_fc(self.input_layer(x))
         for h in self.hidden_layers:
             x = self.activation_fc(h(x))
-        return self._rescale(torch.tanh(self.output_layer(x)))
+        return torch.tanh(self.output_layer(x))
+
+    def forward(self, state):
+        """Return the action in physical environment coordinates."""
+        return self._rescale(self.normalized_forward(state))
 
     def select_action(self, state) -> np.ndarray:
         with torch.no_grad():
             return self.forward(state).cpu().numpy().squeeze(0)
+
+    def select_normalized_action(self, state) -> np.ndarray:
+        with torch.no_grad():
+            return self.normalized_forward(state).cpu().numpy().squeeze(0)
 
 
 class GaussianPolicyNetwork(nn.Module):
@@ -80,30 +89,53 @@ class GaussianPolicyNetwork(nn.Module):
         log_std = torch.clamp(self.log_std_layer(x), self.log_std_min, self.log_std_max)
         return mean, log_std
 
-    def full_pass(self, state):
+    def full_pass(self, state, include_action_scale_jacobian: bool = True):
+        """Sample an action and return its squashed-Gaussian log-probability.
+
+        By default the density is expressed in the physical action space,
+        preserving the behavior used by the policy-gradient agents. SAC can
+        request the normalized ``[-1, 1]`` density used by Stable Baselines 3
+        by setting ``include_action_scale_jacobian=False``.
+        """
         mean, log_std = self.forward(state)
         std      = log_std.exp()
         dist     = torch.distributions.Normal(mean, std)
         pre_tanh = dist.rsample()
         tanh_a   = torch.tanh(pre_tanh)
         action   = self._rescale(tanh_a)
-        log_prob = (dist.log_prob(pre_tanh)
-                    - torch.log((1 - tanh_a.pow(2)) + 1e-6)
-                    - self._log_rescale_jacobian())
+        log_prob = (
+            dist.log_prob(pre_tanh)
+            - torch.log((1 - tanh_a.pow(2)) + 1e-6)
+        )
+        if include_action_scale_jacobian:
+            log_prob = log_prob - self._log_rescale_jacobian()
         log_prob = log_prob.sum(dim=-1, keepdim=True)
         return action, log_prob, tanh_a, mean, log_std
 
-    def log_prob(self, states, actions):
+    def log_prob(
+        self,
+        states,
+        actions,
+        include_action_scale_jacobian: bool = True,
+    ):
         """Log-probability of already-taken (physical-space) actions under the
-        current policy, with gradient. Inverts the rescale+tanh squashing."""
+        current policy, with gradient. Inverts the rescale+tanh squashing.
+
+        Set ``include_action_scale_jacobian=False`` for a density expressed in
+        the normalized ``[-1, 1]`` space. This avoids a large constant offset
+        in on-policy ratios while preserving the physical action interface.
+        """
         mean, log_std = self.forward(states)
         dist   = torch.distributions.Normal(mean, log_std.exp())
         tanh_a = (actions - self.action_min) / (self.action_max - self.action_min) * 2 - 1
         tanh_a = tanh_a.clamp(-1 + 1e-6, 1 - 1e-6)
         pre_tanh = torch.atanh(tanh_a)
-        log_prob = (dist.log_prob(pre_tanh)
-                    - torch.log((1 - tanh_a.pow(2)) + 1e-6)
-                    - self._log_rescale_jacobian())
+        log_prob = (
+            dist.log_prob(pre_tanh)
+            - torch.log((1 - tanh_a.pow(2)) + 1e-6)
+        )
+        if include_action_scale_jacobian:
+            log_prob = log_prob - self._log_rescale_jacobian()
         return log_prob.sum(dim=-1, keepdim=True)
 
     def select_action(self, state) -> np.ndarray:

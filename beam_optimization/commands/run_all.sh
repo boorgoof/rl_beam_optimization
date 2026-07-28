@@ -26,7 +26,12 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
   source beam_optimization/.venv/bin/activate
 fi
 
-python -m beam_optimization check
+python -m beam_optimization check \
+  --tracewin-calc-dir /tmp/tracewin_check \
+  --tracewin-timeout 120.0 \
+  --surrogate-steps 5
+  # --skip-tracewin is off by default (full onboarding, requires TraceWin);
+  # pass it to skip sections 3-4 on surrogate-only machines
 bash "$SCRIPT_DIR/train_policies.sh"
 bash "$SCRIPT_DIR/benchmark_policies_tracewinEnv.sh"
 bash "$SCRIPT_DIR/test_policy_tracewinEnv.sh"

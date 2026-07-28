@@ -16,7 +16,7 @@ fi
 
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/results/train/rl/sac_001/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
   --env tracewin \
   --tracewin-project beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini \
   --calc-dir beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/tracewin_calc_test \

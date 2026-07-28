@@ -11,7 +11,12 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
   source beam_optimization/.venv/bin/activate
 fi
 
+# <-- MODIFY HERE to train on a different dataset (must have dataset_train.pt/dataset_val.pt).
+DATASET_DIR="beam_optimization/env/dataset/013"
+
 python -m beam_optimization train_surrogate \
+  --train-dataset "$DATASET_DIR/dataset_train.pt" \
+  --val-dataset "$DATASET_DIR/dataset_val.pt" \
   --n-surrogates 1 \
   --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --seed 123 \
@@ -23,9 +28,6 @@ python -m beam_optimization train_surrogate \
   --classifier-patience 20 \
   --log-dir beam_optimization/results/train/surrogate
   # --n-surrogates default is 1; the thesis runs use 4
-  # --train-dataset/--val-dataset default to the latest numbered dataset's
-  # train/val splits in env/dataset/ (e.g. env/dataset/001/dataset_train.pt);
-  # pass --train-dataset/--val-dataset <path> to pin a specific one
   # --device defaults to unset (trainer auto-selects cuda if available, else cpu)
   # --no-tensorboard is off by default (TensorBoard/metrics.csv logging enabled)
   # --patience stops training early after 40 epochs without val_loss

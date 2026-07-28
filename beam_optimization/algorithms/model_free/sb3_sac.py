@@ -94,6 +94,10 @@ class _BestScoreCallback(BaseCallback):
                     "best_score": self.best_score,
                     "episode_reward": self._episode_reward,
                     "episode": float(self._episode_count),
+                    "action_penalty": float(info.get("action_penalty", 0.0)),
+                    "score_regression_penalty": float(
+                        info.get("score_regression_penalty", 0.0)
+                    ),
                 }
                 self.metrics_logger.log(metrics, step=self.num_timesteps)
         if len(dones) > 0 and bool(np.asarray(dones).reshape(-1)[0]):

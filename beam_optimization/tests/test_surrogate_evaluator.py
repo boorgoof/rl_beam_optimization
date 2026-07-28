@@ -18,6 +18,9 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.evaluator import (
+    _binary_metrics,
+    _classifier_diagnostics,
+    _npart_ratio_band_metrics,
     _score_metrics,
     evaluate_surrogate,
 )
@@ -102,6 +105,23 @@ class SurrogateEvaluatorTests(unittest.TestCase):
         np.testing.assert_allclose(
             result["mae_by_stage_and_feature"], self.errors, rtol=2e-5
         )
+        target_std = float(np.std(np.arange(len(self.dataset)) * 0.01))
+        np.testing.assert_allclose(
+            result["nrmse_by_stage_and_feature"],
+            self.errors / target_std,
+            rtol=5e-5,
+        )
+        self.assertEqual(result["sample_groups"], {"n_valid": 5, "n_failures": 0})
+        self.assertEqual(result["score_metrics_valid"], result["score_metrics"])
+        self.assertIsNone(result["score_metrics_failures"]["mae"])
+        self.assertEqual(
+            result["rl_sample_groups"], {"n_valid": 5, "n_terminal": 0}
+        )
+        self.assertEqual(result["score_metrics_rl_valid"], result["score_metrics"])
+        self.assertIsNone(result["score_metrics_rl_terminal"]["mae"])
+        self.assertEqual(
+            result["rl_terminal_metrics"]["regressor_only"]["n_positive"], 0
+        )
 
         for feature_index, feature in enumerate(BEAM_STATE_FEATURES):
             metrics = result["feature_metrics"][feature]
@@ -171,12 +191,68 @@ class SurrogateEvaluatorTests(unittest.TestCase):
             )
             self.assertEqual(
                 set(result["plots"]),
-                {"score_scatter", "score_residuals", "rmse_heatmap"},
+                {
+                    "score_scatter", "score_residuals", "rmse_heatmap",
+                    "nrmse_heatmap",
+                },
             )
             for path in result["plots"].values():
                 target = Path(path)
                 self.assertTrue(target.is_file())
                 self.assertGreater(target.stat().st_size, 0)
+
+    def test_classifier_diagnostics_include_calibration_pr_and_threshold_sweep(self):
+        labels = np.array([0, 0, 1, 1], dtype=np.float64)
+        proba = np.array([0.1, 0.4, 0.6, 0.9], dtype=np.float64)
+        true_scores = np.array([10.0, 20.0, -999.0, -999.0])
+        predicted_scores = np.array([11.0, 19.0, 5.0, 4.0])
+
+        result = _classifier_diagnostics(
+            labels, proba, true_scores, predicted_scores, 0.5
+        )
+
+        self.assertAlmostEqual(result["brier_score"], 0.085)
+        self.assertAlmostEqual(result["average_precision"], 1.0)
+        self.assertEqual(len(result["calibration_bins"]), 10)
+        self.assertEqual(len(result["precision_recall_curve"]), 101)
+        selected = [
+            row for row in result["threshold_diagnostics"]
+            if np.isclose(row["threshold"], 0.5)
+        ][0]
+        self.assertEqual(selected["false_positives"], 0)
+        self.assertEqual(selected["false_negatives"], 0)
+        self.assertLess(selected["gated_score_mae"], 1.0)
+
+    def test_rl_terminal_metrics_and_operational_bands_use_strict_ten_percent(self):
+        true_ratio = np.array([0.0, 0.05, 0.10, 0.20, 0.40])
+        predicted_ratio = np.array([0.02, 0.12, 0.09, 0.21, 0.08])
+        true_terminal = true_ratio < 0.10
+        predicted_terminal = predicted_ratio < 0.10
+
+        terminal = _binary_metrics(true_terminal, predicted_terminal)
+        self.assertEqual(
+            terminal["confusion_matrix"], {"tp": 1, "fp": 2, "fn": 1, "tn": 1}
+        )
+        self.assertAlmostEqual(terminal["precision"], 1 / 3)
+        self.assertAlmostEqual(terminal["recall"], 1 / 2)
+
+        bands = _npart_ratio_band_metrics(
+            true_ratio,
+            predicted_ratio,
+            classifier_proba=np.array([0.9, 0.1, 0.2, 0.8, 0.1]),
+            classifier_threshold=0.5,
+        )
+        by_name = {band["name"]: band for band in bands}
+        self.assertEqual(by_name["all_particles_lost"]["n_samples"], 1)
+        self.assertEqual(by_name["rl_terminal_nonzero"]["n_samples"], 1)
+        self.assertEqual(by_name["rl_valid_near_boundary"]["n_samples"], 2)
+        self.assertEqual(by_name["rl_valid_above_025"]["n_samples"], 1)
+        self.assertAlmostEqual(
+            by_name["rl_valid_near_boundary"]["true_mean"], 0.15
+        )
+        self.assertEqual(
+            by_name["rl_valid_near_boundary"]["pipeline_terminal_rate"], 1.0
+        )
 
     def test_cli_defaults_to_test_and_launcher_forwards_arguments(self):
         package_root = Path(__file__).resolve().parents[1]

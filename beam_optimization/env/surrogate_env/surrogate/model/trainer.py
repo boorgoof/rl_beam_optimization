@@ -596,18 +596,38 @@ def train_surrogate(
 
 
 def compute_normalization_metadata(dataset: BeamDataset) -> dict:
-    """Compute ModularMLP normalization statistics from a BeamDataset."""
+    """Compute ModularMLP normalization statistics from a BeamDataset.
+
+    npart_ratio at output stages (index 1..N_OUTPUT_STAGES of beam_states) is
+    logit-transformed before its mean/variance are computed -- see
+    ModularMLP._apply_physical_bounds(), which correspondingly applies
+    sigmoid() (not a clamp) to reconstruct that one column from the
+    logit-space denormalized value. beam0 (stage 0, the network's input) is
+    left untransformed: it is always exactly 1.0 in this dataset and is only
+    ever consumed by _norm_beam(), not the output-side denorm+bounds path.
+    """
     stage_params, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
+    npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
+
+    transformed_beam_states = []
+    for stage_idx, tensor in enumerate(beam_states):
+        if stage_idx == 0:
+            transformed_beam_states.append(tensor)
+            continue
+        columns = list(torch.unbind(tensor, dim=1))
+        columns[npart_idx] = torch.logit(columns[npart_idx], eps=1e-4)
+        transformed_beam_states.append(torch.stack(columns, dim=1))
+
     return {
         "parameter_means": [tensor.mean(dim=0).detach().cpu() for tensor in stage_params],
         "parameter_variances": [
             tensor.var(dim=0, unbiased=False).detach().cpu()
             for tensor in stage_params
         ],
-        "beam_state_means": [tensor.mean(dim=0).detach().cpu() for tensor in beam_states],
+        "beam_state_means": [tensor.mean(dim=0).detach().cpu() for tensor in transformed_beam_states],
         "beam_state_variances": [
             tensor.var(dim=0, unbiased=False).detach().cpu()
-            for tensor in beam_states
+            for tensor in transformed_beam_states
         ],
     }
 

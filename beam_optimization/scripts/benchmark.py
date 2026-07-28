@@ -5,9 +5,16 @@ All methods receive the same surrogate, the same initial beam0 and the same
 evaluation budget.
 
 Methods:
-  bayesian_opt      Bayesian Optimization (GP)
-  svg_finale        SVGAgent — final-stage reward only
-  svg_uniform      SVGAgent — uniform reward over all stages
+  bayesian_opt      Bayesian Optimization (GP), a classical black-box
+                    baseline, not a trained checkpoint. Skipped with
+                    --policy-only.
+  svg_finale        SVGAgent -- final-stage reward only. Only trained from
+  svg_uniform       scratch as a comparison method if --svg-baseline is given
+                    (off by default: unlike BO, SVG is a full RL method, not
+                    a classical baseline). To evaluate an SVG agent you
+                    already trained (e.g. via train_policies), pass it via
+                    --svg-finale/--svg-uniform instead, like any other
+                    trained policy.
   trained policies  Any checkpoint passed via --sac/--td3/.../--svg-uniform
                     is evaluated over --policy-episodes independent episodes.
 
@@ -17,14 +24,16 @@ Usage:
         --dataset   env/dataset/001/dataset_all.pt \\
         --output    results/benchmark.json \\
         --n-runs    3 \\
-        --eval-budget 3000 \\
-        --svg-episodes 500
+        --eval-budget 3000
 
 With trained agents:
     python -m beam_optimization benchmark \\
         --sac results/train/rl/all/sac/sac_agent.pt \\
         --td3 results/train/rl/all/td3/td3_agent.pt \\
         --ppo results/train/rl/all/ppo/ppo_agent.pt
+
+Also train the from-scratch SVG comparison baseline:
+    python -m beam_optimization benchmark --svg-baseline --svg-episodes 500
 
 Quick smoke test:
     python -m beam_optimization benchmark --quick
@@ -201,6 +210,10 @@ def run_policy_episode(env, agent, algo: str, seed: int, episode_idx: int) -> di
     features = result["final_features"]
     final_ex = float(features.get("ex", np.nan))
     final_ey = float(features.get("ey", np.nan))
+    best_params = {
+        key: float(env.best_params[key])
+        for key in PARAM_KEYS
+    }
     return {
         "algorithm": algo,
         "episode": int(episode_idx),
@@ -211,6 +224,12 @@ def run_policy_episode(env, agent, algo: str, seed: int, episode_idx: int) -> di
         "final_emittance": float((final_ex + final_ey) / 2.0),
         "final_npart_ratio": float(features.get("npart_ratio", np.nan)),
         "n_steps": result["n_steps"],
+        # Private aggregation fields: summarize_policy_episodes() promotes only
+        # the global winner to the public summary. They are removed before the
+        # per-episode JSON/CSV is persisted.
+        "_best_observed_score": float(env.best_score),
+        "_best_observed_step": int(env.best_step),
+        "_best_observed_params": best_params,
     }
 
 
@@ -225,6 +244,20 @@ def summarize_policy_episodes(episodes: list[dict]) -> dict[str, dict]:
             values = np.asarray([row[metric] for row in rows], dtype=float)
             algo_summary[f"{metric}_mean"] = float(np.nanmean(values))
             algo_summary[f"{metric}_std"] = float(np.nanstd(values))
+        # Strict comparison preserves the first occurrence when scores tie.
+        winner = rows[0]
+        for candidate in rows[1:]:
+            if candidate["_best_observed_score"] > winner["_best_observed_score"]:
+                winner = candidate
+        algo_summary.update({
+            "best_observed_score": float(winner["_best_observed_score"]),
+            "best_observed_episode": int(winner["episode"]),
+            "best_observed_step": int(winner["_best_observed_step"]),
+            "best_observed_params": {
+                key: float(winner["_best_observed_params"][key])
+                for key in PARAM_KEYS
+            },
+        })
         summary[algo] = algo_summary
     return summary
 
@@ -281,12 +314,25 @@ def write_policy_csvs(episodes: list[dict], summary: dict[str, dict], output_jso
         "final_emittance_std",
         "final_npart_ratio_mean",
         "final_npart_ratio_std",
+        "best_observed_score",
+        "best_observed_episode",
+        "best_observed_step",
+        *[f"best_param_{key}" for key in PARAM_KEYS],
     ]
     with open(summary_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=summary_fields)
         writer.writeheader()
         for algo, row in sorted(summary.items()):
-            writer.writerow({"algorithm": algo, **row})
+            csv_row = {
+                key: value
+                for key, value in row.items()
+                if key != "best_observed_params"
+            }
+            csv_row.update({
+                f"best_param_{key}": row["best_observed_params"][key]
+                for key in PARAM_KEYS
+            })
+            writer.writerow({"algorithm": algo, **csv_row})
 
     return episodes_path, summary_path
 
@@ -432,15 +478,25 @@ def run_policy_benchmark(args, surrogate, dataset,
                 close()
 
     summary = summarize_policy_episodes(all_episodes)
+    public_episodes = [
+        {
+            key: value
+            for key, value in row.items()
+            if not key.startswith("_best_observed_")
+        }
+        for row in all_episodes
+    ]
     print_policy_table(summary)
-    episodes_csv, summary_csv = write_policy_csvs(all_episodes, summary, args.output, tag=tag)
+    episodes_csv, summary_csv = write_policy_csvs(
+        public_episodes, summary, args.output, tag=tag
+    )
     print(f"Policy episode CSV saved → {episodes_csv}")
     print(f"Policy summary CSV saved → {summary_csv}")
 
     plot_paths = {}
     if not args.no_policy_plots:
         bar_path, box_path = save_policy_plots(
-            all_episodes, summary, args.output,
+            public_episodes, summary, args.output,
             tag=tag, optimization_results=optimization_results,
         )
         plot_paths = {"bar_plot": str(bar_path), "box_plot": str(box_path)}
@@ -448,7 +504,7 @@ def run_policy_benchmark(args, surrogate, dataset,
         print(f"Policy boxplot saved  → {box_path}")
 
     return {
-        "episodes": all_episodes,
+        "episodes": public_episodes,
         "summary": summary,
         "csv": {
             "episodes": str(episodes_csv),
@@ -618,6 +674,30 @@ def main():
     parser.add_argument("--eval-budget",  type=int, default=3000)
     parser.add_argument("--svg-episodes", type=int, default=500)
     parser.add_argument("--svg-horizon",  type=int, default=MAX_STEPS)
+    parser.add_argument("--svg-baseline", action="store_true",
+                        help="Also train a fresh SVGAgent from scratch (both svg_finale/"
+                             "svg_uniform stage-weight variants, --svg-episodes each) as a "
+                             "comparison method, in addition to Bayesian Optimization. Off "
+                             "by default: unlike BO, SVG is a full RL method, not a classical "
+                             "baseline -- to evaluate an SVG agent you already trained "
+                             "(e.g. via train_policies), use --svg-finale/--svg-uniform "
+                             "instead, exactly like --sac/--td3/etc.")
+    parser.add_argument(
+        "--policy-only",
+        action="store_true",
+        help=(
+            "Benchmark only supplied policy checkpoints: skip Bayesian "
+            "Optimization and the optional from-scratch SVG baselines."
+        ),
+    )
+    parser.add_argument(
+        "--tracewin-only",
+        action="store_true",
+        help=(
+            "Skip the surrogate policy benchmark and evaluate supplied "
+            "checkpoints only on TraceWin. Requires --tracewin."
+        ),
+    )
     parser.add_argument("--policy-episodes", type=int, default=50,
                         help="Independent episodes per trained policy in the final policy benchmark.")
     parser.add_argument("--max-ep-steps", type=int, default=MAX_STEPS,
@@ -650,11 +730,15 @@ def main():
     parser.add_argument("--svg-uniform",  dest="svg_uniform", default=None, metavar="CKPT")
     args = parser.parse_args()
 
+    if args.tracewin_only and not args.tracewin:
+        parser.error("--tracewin-only requires --tracewin")
+
     if args.quick:
         args.eval_budget     = 30
         args.svg_episodes    = 1
         args.n_runs          = 1
         args.policy_episodes = 2
+        args.svg_baseline    = True
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
@@ -666,35 +750,39 @@ def main():
     dataset = BeamDataset.load(args.dataset)
 
     classifier = None
-    if args.classifier_path:
+    if args.classifier_path and not args.policy_only:
         print(f"Classifier: {args.classifier_path}")
         classifier = FailureClassifier.load(args.classifier_path)
         classifier.eval()
 
     results: Dict = {}
 
-    for run in range(args.n_runs):
-        seed = 42 + run
-        print(f"\n{'='*65}\nRun {run+1}/{args.n_runs}  (seed={seed})\n{'='*65}")
+    if not args.policy_only:
+        for run in range(args.n_runs):
+            seed = 42 + run
+            print(f"\n{'='*65}\nRun {run+1}/{args.n_runs}  (seed={seed})\n{'='*65}")
 
-        print("Bayesian Optimization...")
-        r = run_bo(surrogate, dataset, args.eval_budget, seed, classifier=classifier)
-        results.setdefault("bayesian_opt", []).append(r)
-        print(f"  best={r['best_score']:.3f}")
-
-        for name, weights in STAGE_WEIGHT_CONFIGS.items():
-            label = f"svg_{name}"
-            print(f"SVGAgent [{name}]...")
-            r = run_svg(surrogate, dataset, args.svg_episodes, args.svg_horizon,
-                        seed, weights)
-            results.setdefault(label, []).append(r)
+            print("Bayesian Optimization...")
+            r = run_bo(surrogate, dataset, args.eval_budget, seed, classifier=classifier)
+            results.setdefault("bayesian_opt", []).append(r)
             print(f"  best={r['best_score']:.3f}")
 
-    print_table(results)
+            if args.svg_baseline:
+                for name, weights in STAGE_WEIGHT_CONFIGS.items():
+                    label = f"svg_{name}"
+                    print(f"SVGAgent [{name}]...")
+                    r = run_svg(surrogate, dataset, args.svg_episodes, args.svg_horizon,
+                                seed, weights)
+                    results.setdefault(label, []).append(r)
+                    print(f"  best={r['best_score']:.3f}")
 
-    policy_evaluation = run_policy_benchmark(
-        args, surrogate, dataset, optimization_results=results,
-    )
+        print_table(results)
+
+    policy_evaluation = {}
+    if not args.tracewin_only:
+        policy_evaluation = run_policy_benchmark(
+            args, surrogate, dataset, optimization_results=results,
+        )
 
     policy_evaluation_tracewin = {}
     if args.tracewin:
@@ -723,25 +811,27 @@ def main():
             optimization_results=results,
         )
 
-    output_payload = {
-        "optimization_results": results,
-        "policy_evaluation": policy_evaluation,
-        "policy_evaluation_tracewin": policy_evaluation_tracewin,
-        "score_function": score_function_metadata(),
-    }
+    output_payload = {"score_function": score_function_metadata()}
+    if not args.policy_only:
+        output_payload["optimization_results"] = results
+    if not args.tracewin_only:
+        output_payload["policy_evaluation"] = policy_evaluation
+    if args.tracewin:
+        output_payload["policy_evaluation_tracewin"] = policy_evaluation_tracewin
 
     with open(args.output, "w") as f:
         json.dump(output_payload, f, indent=2)
     print(f"\nResults saved → {args.output}")
 
-    try:
-        plot_path = save_summary_plot(results, args.output)
-        print(f"Plot saved   → {plot_path}")
-        convergence_path = save_convergence_plot(results, args.output, args.svg_horizon)
-        if convergence_path is not None:
-            print(f"Convergence plot saved → {convergence_path}")
-    except Exception as exc:
-        print(f"WARN: could not save the benchmark plots: {exc}")
+    if results:
+        try:
+            plot_path = save_summary_plot(results, args.output)
+            print(f"Plot saved   → {plot_path}")
+            convergence_path = save_convergence_plot(results, args.output, args.svg_horizon)
+            if convergence_path is not None:
+                print(f"Convergence plot saved → {convergence_path}")
+        except Exception as exc:
+            print(f"WARN: could not save the benchmark plots: {exc}")
 
 
 if __name__ == "__main__":

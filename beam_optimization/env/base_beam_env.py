@@ -52,8 +52,26 @@ class BaseBeamEnv(gym.Env, ABC):
         self,
         max_steps: int = MAX_STEPS,
         reset_scale: float = TRAIN_RESET_SCALE,
+        distance_penalty_weight: float = 0.0,
+        action_penalty_weight: float = 0.0,
+        score_regression_penalty_weight: float = 0.0,
     ):
         super().__init__()
+
+        # Linear reward penalty on how far the current parameters are from the
+        # training dataset (see param_knn_distance()), off by default so this
+        # never changes existing behavior or forces the default dataset to
+        # exist unless explicitly enabled.
+        self.distance_penalty_weight = float(distance_penalty_weight)
+        self.action_penalty_weight = float(action_penalty_weight)
+        self.score_regression_penalty_weight = float(score_regression_penalty_weight)
+        for name, value in (
+            ("distance_penalty_weight", self.distance_penalty_weight),
+            ("action_penalty_weight", self.action_penalty_weight),
+            ("score_regression_penalty_weight", self.score_regression_penalty_weight),
+        ):
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be a finite non-negative number, got {value}")
 
         # every subclass must have a BeamSimulator
         self.simulator = self._build_simulator()
@@ -93,6 +111,7 @@ class BaseBeamEnv(gym.Env, ABC):
         self._last_reward    = 0.0
         self.best_score      = ERROR_SCORE
         self.best_params     = default_params()
+        self.best_step       = 0
 
         # Per-episode history for render(): index 0 is the state right
         # after reset(), index k is the state after the k-th step().
@@ -195,6 +214,11 @@ class BaseBeamEnv(gym.Env, ABC):
         self._obs_history = [obs.copy()]
         self._score_history = [float(score)]
         self._reward_history = [0.0]
+        # Best-of-episode state must be reset here, not only in __init__:
+        # benchmark environments are reused for multiple independent episodes.
+        self.best_score = float(score)
+        self.best_params = dict(self._current_params)
+        self.best_step = 0
 
         info = {
             "score": score,
@@ -261,12 +285,24 @@ class BaseBeamEnv(gym.Env, ABC):
         obs, score, extra = self._result_to_obs_score_info(result)
 
         # A physical beam loss is terminal. Valid states use the normalized
-        # absolute physical score.
-        reward = (
-            TERMINAL_FAILURE_REWARD
-            if extra["terminal_failure"]
-            else score / REWARD_SCORE_SCALE
-        )
+        # absolute physical score plus optional training-only regularizers.
+        # The reported physical score itself is never modified.
+        if extra["terminal_failure"]:
+            distance_penalty = 0.0
+            action_penalty = 0.0
+            score_regression_penalty = 0.0
+            reward = TERMINAL_FAILURE_REWARD
+        else:
+            distance_penalty = self._distance_penalty(self._current_params)
+            action_penalty, score_regression_penalty = self._control_penalties(
+                action, prev_score, score
+            )
+            reward = (
+                score / REWARD_SCORE_SCALE
+                - distance_penalty
+                - action_penalty
+                - score_regression_penalty
+            )
 
         # update episode state
         self._current_obs    = obs
@@ -285,6 +321,7 @@ class BaseBeamEnv(gym.Env, ABC):
         if score > self.best_score:
             self.best_score  = score
             self.best_params = self._current_params.copy()
+            self.best_step   = self._step_count + 1
 
         # update step count
         self._step_count += 1
@@ -294,12 +331,84 @@ class BaseBeamEnv(gym.Env, ABC):
         info = {"score": score, "prev_score": prev_score, "reward": reward,
                 "step": self._step_count,
                 "best_score": self.best_score,
+                "score_reward": (
+                    0.0 if extra["terminal_failure"] else score / REWARD_SCORE_SCALE
+                ),
+                "distance_penalty": (
+                    0.0 if extra["terminal_failure"] else distance_penalty
+                ),
+                "action_penalty": (
+                    0.0 if extra["terminal_failure"] else action_penalty
+                ),
+                "score_regression_penalty": (
+                    0.0 if extra["terminal_failure"] else score_regression_penalty
+                ),
                 "physics_failure": self._is_physics_failure(result),
                 "technical_failure": False,
                 **extra}
 
         return obs.copy(), reward, terminated, truncated, info
 
+    def _control_penalties(
+        self,
+        action: np.ndarray,
+        prev_score: float,
+        score: float,
+    ) -> tuple[float, float]:
+        """Return action-effort and score-regression reward costs.
+
+        The quadratic action cost teaches a policy to emit zero once further
+        corrections are not worth their effort. The regression cost makes an
+        overshoot followed by an opposite correction worse than holding the
+        better state. Both are dimensionless and affect only the RL reward.
+        """
+        action_penalty = 0.0
+        if self.action_penalty_weight > 0.0:
+            scale = np.maximum(
+                np.abs(self.action_space.low),
+                np.abs(self.action_space.high),
+            )
+            normalized_action = np.divide(
+                np.asarray(action, dtype=np.float64),
+                scale,
+                out=np.zeros_like(scale, dtype=np.float64),
+                where=scale > 0.0,
+            )
+            action_penalty = self.action_penalty_weight * float(
+                np.mean(np.square(normalized_action))
+            )
+
+        regression_penalty = 0.0
+        if self.score_regression_penalty_weight > 0.0:
+            normalized_drop = max(0.0, float(prev_score) - float(score)) / REWARD_SCORE_SCALE
+            regression_penalty = (
+                self.score_regression_penalty_weight * normalized_drop
+            )
+
+        return action_penalty, regression_penalty
+
+    def _distance_penalty(self, params: Dict[str, float]) -> float:
+        """Linear penalty on how far `params` sit from the reference dataset
+        (sensitivity-normalized k-NN distance, same metric render() already
+        plots). 0.0 when disabled (self.distance_penalty_weight <= 0), which
+        also skips the k-d tree query/dataset load entirely.
+
+        Uses self.simulator.dataset when the simulator has one (e.g.
+        SurrogateBeamSimulator, trained on a specific dataset) so the distance
+        is measured against the dataset actually relevant to that surrogate,
+        rather than whatever the process-wide default happens to be.
+        TraceWinSimulator has no such attribute, so this falls back to
+        param_knn_distance()'s own default-dataset cache in that case.
+        """
+        if self.distance_penalty_weight <= 0.0:
+            return 0.0
+        dataset = getattr(
+            self,
+            "_distance_dataset",
+            getattr(self.simulator, "dataset", None),
+        )
+        distance = param_knn_distance(params_to_vec(params)[None, :], dataset=dataset)[0]
+        return self.distance_penalty_weight * float(distance)
 
     def render(self, save_path: str | Path | None = None, fps: int = 2) -> dict:
         """Render how machine parameters, beam features, and score/reward

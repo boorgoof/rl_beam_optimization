@@ -52,7 +52,9 @@ class A2C:
 
     def select_action(self, state, training: bool = True):
         if training:
-            action, logpa, _, _, _ = self.policy_network.full_pass(state)
+            action, logpa, _, _, _ = self.policy_network.full_pass(
+                state, include_action_scale_jacobian=False
+            )
             value = self.value_network(state)
             return (action.detach().cpu().numpy().squeeze(0),
                     logpa.detach().cpu().numpy().squeeze(),
@@ -66,8 +68,13 @@ class A2C:
         states, actions, returns, gaes, logpas = self.episode_buffer.get(last_value)
         gaes = (gaes - gaes.mean()) / (gaes.std() + 1e-8)
 
-        log_prob = self.policy_network.log_prob(states, actions)
-        entropy  = -log_prob
+        log_prob = self.policy_network.log_prob(
+            states, actions, include_action_scale_jacobian=False
+        )
+        _, entropy_logp, _, _, _ = self.policy_network.full_pass(
+            states, include_action_scale_jacobian=False
+        )
+        entropy = -entropy_logp
 
         policy_loss = -(gaes.unsqueeze(1) * log_prob).mean()
         actor_loss  = policy_loss - self.entropy_loss_weight * entropy.mean()

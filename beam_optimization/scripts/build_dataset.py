@@ -83,6 +83,22 @@ def main() -> None:
             "it in builder_state.json; provided: make sampling reproducible."
         ),
     )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help=(
+            "Override DATASET_SCALE for this build only (Gaussian half-width = "
+            "scale * sensitivity_p). Does not touch adige.py, so every other "
+            "consumer (RL, Bayesian opt, other datasets) is unaffected. Omitted: "
+            "use the current DATASET_SCALE from adige.py, same as before this "
+            "flag existed. A larger value widens the perturbation and pulls in "
+            "more failure/near-boundary samples -- e.g. useful for a dataset "
+            "dedicated to training the FailureClassifier with a higher, more "
+            "balanced failure rate than the default ~20%%."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--retry-sleep", type=float, default=5.0)
@@ -132,6 +148,7 @@ def main() -> None:
         seed=args.seed,
         save_all=True,
         prefix="dataset",
+        scale=args.scale,
     )
     print(f"Dataset sampling seed: {builder.seed}")
     dataset_summary = builder.build()

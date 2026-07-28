@@ -16,6 +16,8 @@ from beam_optimization.algorithms.utils.replay_buffer   import ReplayBuffer
 
 
 class TD3:
+    IMPLEMENTATION_VERSION = 2
+
     def __init__(self,
                  obs_dim: int,
                  act_dim: int,
@@ -27,7 +29,7 @@ class TD3:
                  tau: float = 0.005,
                  batch_size: int = 256,
                  buffer_size: int = int(1e6),
-                 warmup_steps: int = 1000,
+                 warmup_steps: int = 100,
                  exploration_noise: float = 0.1,
                  policy_noise: float = 0.2,
                  noise_clip: float = 0.5,
@@ -50,15 +52,8 @@ class TD3:
         self._action_low_np  = np.asarray(action_bounds[0], dtype=np.float32)
         self._action_high_np = np.asarray(action_bounds[1], dtype=np.float32)
 
-        self.action_low  = torch.tensor(action_bounds[0], dtype=torch.float32, device=self.device)
-        self.action_high = torch.tensor(action_bounds[1], dtype=torch.float32, device=self.device)
-        # Per-dimension action half-range. exploration_noise / policy_noise /
-        # noise_clip follow the TD3 paper's convention for actions normalized
-        # to [-1, 1], so in this physical action space (whose per-dimension
-        # bounds span several orders of magnitude) they must be rescaled by
-        # each dimension's half-range to keep their intended meaning.
-        self.action_halfrange = (self.action_high - self.action_low) / 2.0
-        self._action_halfrange_np = (self._action_high_np - self._action_low_np) / 2.0
+        if np.any(self._action_high_np <= self._action_low_np):
+            raise ValueError("Every action upper bound must be greater than its lower bound")
 
         self.actor  = DeterministicPolicyNetwork(obs_dim, act_dim, action_bounds, hidden_dims).to(self.device)
         self.critic = TwinQNetwork(obs_dim, act_dim, hidden_dims).to(self.device)
@@ -69,26 +64,45 @@ class TD3:
         self.critic_opt = optim.Adam(self.critic.parameters(), lr=critic_lr)
         self.replay = ReplayBuffer(obs_dim, act_dim, buffer_size, device=self.device)
 
+    def scale_action(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        scaled = 2.0 * (action - self._action_low_np) / (
+            self._action_high_np - self._action_low_np
+        ) - 1.0
+        return np.clip(scaled, -1.0, 1.0)
+
+    def unscale_action(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        return self._action_low_np + 0.5 * (action + 1.0) * (
+            self._action_high_np - self._action_low_np
+        )
+
     def select_action(self, state, training: bool = True):
-        action = self.actor.select_action(state)
+        if training and len(self.replay) < self.warmup_steps:
+            return np.random.uniform(
+                self._action_low_np, self._action_high_np
+            ).astype(np.float32)
+        normalized_action = self.actor.select_normalized_action(state)
         if training:
-            scale  = self.exploration_noise * self._action_halfrange_np
-            noise  = np.random.normal(0, scale, size=action.shape)
-            action = (action + noise).clip(self._action_low_np, self._action_high_np)
-        return action
+            noise = np.random.normal(
+                0.0, self.exploration_noise, size=normalized_action.shape
+            )
+            normalized_action = np.clip(normalized_action + noise, -1.0, 1.0)
+        return self.unscale_action(normalized_action)
 
     def store(self, s, a, r, ns, done):
-        self.replay.store(s, a, r, ns, float(done))
+        self.replay.store(s, self.scale_action(a), r, ns, float(done))
 
     def optimize(self):
-        if len(self.replay) < max(self.batch_size, self.warmup_steps):
+        if len(self.replay) < self.warmup_steps:
             return None
         s, a, r, ns, d = self.replay.sample(self.batch_size)
 
         with torch.no_grad():
-            clip  = self.noise_clip * self.action_halfrange
-            noise = (torch.randn_like(a) * self.policy_noise * self.action_halfrange).clamp(-clip, clip)
-            na    = (self.target_actor.forward(ns) + noise).clamp(self.action_low, self.action_high)
+            noise = (torch.randn_like(a) * self.policy_noise).clamp(
+                -self.noise_clip, self.noise_clip
+            )
+            na = (self.target_actor.normalized_forward(ns) + noise).clamp(-1.0, 1.0)
             q1t, q2t = self.target_critic(ns, na)
             tq = r + self.gamma * torch.min(q1t, q2t) * (1 - d)
 
@@ -101,7 +115,9 @@ class TD3:
         self.update_count += 1
         al = 0.0
         if self.update_count % self.policy_frequency == 0:
-            actor_loss = -self.critic.Q1(s, self.actor.forward(s)).mean()
+            actor_loss = -self.critic.Q1(
+                s, self.actor.normalized_forward(s)
+            ).mean()
             self.actor_opt.zero_grad(); actor_loss.backward(); self.actor_opt.step()
             for tp, sp in zip(self.target_actor.parameters(), self.actor.parameters()):
                 tp.data.copy_(self.tau * sp.data + (1 - self.tau) * tp.data)
@@ -113,15 +129,25 @@ class TD3:
 
     def save(self, path: str):
         torch.save({
+            "implementation_version": self.IMPLEMENTATION_VERSION,
+            "action_representation": "normalized",
             "actor": self.actor.state_dict(), "critic": self.critic.state_dict(),
             "ta": self.target_actor.state_dict(), "tc": self.target_critic.state_dict(),
             "ao": self.actor_opt.state_dict(), "co": self.critic_opt.state_dict(),
             "steps": self.update_count,
         }, path)
 
-    def load(self, path: str):
+    def load(self, path: str, resume_training: bool = False):
         ck = torch.load(path, map_location="cpu")
+        version = int(ck.get("implementation_version", 1))
+        if resume_training and version != self.IMPLEMENTATION_VERSION:
+            raise ValueError(
+                "Legacy TD3 checkpoints use physical critic actions and cannot "
+                "resume training with the normalized-action implementation. "
+                "They remain valid for deterministic policy evaluation."
+            )
         self.actor.load_state_dict(ck["actor"]); self.critic.load_state_dict(ck["critic"])
         self.target_actor.load_state_dict(ck["ta"]); self.target_critic.load_state_dict(ck["tc"])
         self.actor_opt.load_state_dict(ck["ao"]); self.critic_opt.load_state_dict(ck["co"])
         self.update_count = ck["steps"]
+        self.loaded_checkpoint_version = version

@@ -26,9 +26,13 @@ class NormalNoiseDecayStrategy:
         self.step_count       = 0
 
     def select_action(self, model, state, max_exploration=False):
+        return self.add_noise(model.select_action(state), max_exploration)
+
+    def add_noise(self, action, max_exploration=False):
+        """Add bounded Gaussian noise to an already-computed action."""
         noise_scale = self.high if max_exploration else self.noise_ratio * self.high
         noise  = np.random.normal(loc=0, scale=noise_scale, size=len(self.high))
-        return np.clip(model.select_action(state) + noise, self.low, self.high)
+        return np.clip(np.asarray(action) + noise, self.low, self.high)
 
     def update(self):
         self.step_count += 1

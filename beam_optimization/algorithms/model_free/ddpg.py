@@ -19,6 +19,7 @@ Key components:
 import copy
 from typing import Optional, Union
 
+import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -30,6 +31,8 @@ from beam_optimization.algorithms.utils.noise          import NormalNoiseDecaySt
 
 
 class DDPG:
+    IMPLEMENTATION_VERSION = 2
+
     def __init__(self,
                  obs_dim: int,
                  act_dim: int,
@@ -41,7 +44,7 @@ class DDPG:
                  tau: float = 1e-3,
                  batch_size: int = 128,
                  buffer_size: int = int(1e6),
-                 warmup_steps: int = 1000,
+                 warmup_steps: int = 100,
                  init_noise_ratio: float = 0.5,
                  min_noise_ratio: float = 0.01,
                  decay_steps: int = 50_000,
@@ -52,6 +55,10 @@ class DDPG:
         self.warmup_steps = warmup_steps
         self.total_steps  = 0
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.action_low = np.asarray(action_bounds[0], dtype=np.float32)
+        self.action_high = np.asarray(action_bounds[1], dtype=np.float32)
+        if np.any(self.action_high <= self.action_low):
+            raise ValueError("Every action upper bound must be greater than its lower bound")
 
         self.actor  = DeterministicPolicyNetwork(obs_dim, act_dim, action_bounds, hidden_dims).to(self.device)
         self.critic = QNetwork(obs_dim, act_dim, hidden_dims).to(self.device)
@@ -69,33 +76,61 @@ class DDPG:
         # a CPU numpy array regardless of the network's device (see
         # DeterministicPolicyNetwork.select_action), so no device handling
         # is needed here.
-        self.noise  = NormalNoiseDecayStrategy(
-            action_bounds, init_noise_ratio, min_noise_ratio, decay_steps)
+        normalized_bounds = (
+            -np.ones(act_dim, dtype=np.float32),
+            np.ones(act_dim, dtype=np.float32),
+        )
+        self.noise = NormalNoiseDecayStrategy(
+            normalized_bounds, init_noise_ratio, min_noise_ratio, decay_steps
+        )
+
+    def scale_action(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        scaled = 2.0 * (action - self.action_low) / (
+            self.action_high - self.action_low
+        ) - 1.0
+        return np.clip(scaled, -1.0, 1.0)
+
+    def unscale_action(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        return self.action_low + 0.5 * (action + 1.0) * (
+            self.action_high - self.action_low
+        )
 
     def select_action(self, state, training: bool = True):
+        if training and len(self.replay) < self.warmup_steps:
+            return np.random.uniform(
+                self.action_low, self.action_high
+            ).astype(np.float32)
+        normalized_action = self.actor.select_normalized_action(state)
         if training:
-            action = self.noise.select_action(self.actor, state)
+            normalized_action = self.noise.add_noise(normalized_action)
             self.noise.update()
-            return action
-        return self.actor.select_action(state)
+        return self.unscale_action(normalized_action)
 
     def store(self, state, action, reward, next_state, done):
-        self.replay.store(state, action, reward, next_state, float(done))
+        self.replay.store(
+            state,
+            self.scale_action(action),
+            reward,
+            next_state,
+            float(done),
+        )
         self.total_steps += 1
 
     def optimize(self):
-        if len(self.replay) < max(self.batch_size, self.warmup_steps):
+        if len(self.replay) < self.warmup_steps:
             return None
 
         s, a, r, ns, d = self.replay.sample(self.batch_size)
 
         with torch.no_grad():
-            na      = self.target_actor.forward(ns)
+            na      = self.target_actor.normalized_forward(ns)
             target_q = r + self.gamma * self.target_critic(ns, na) * (1 - d)
         critic_loss = F.mse_loss(self.critic(s, a), target_q)
         self.critic_opt.zero_grad(); critic_loss.backward(); self.critic_opt.step()
 
-        actor_loss = -self.critic(s, self.actor.forward(s)).mean()
+        actor_loss = -self.critic(s, self.actor.normalized_forward(s)).mean()
         self.actor_opt.zero_grad(); actor_loss.backward(); self.actor_opt.step()
 
         self._soft_update(self.target_actor,  self.actor)
@@ -108,6 +143,8 @@ class DDPG:
 
     def save(self, path: str):
         torch.save({
+            "implementation_version": self.IMPLEMENTATION_VERSION,
+            "action_representation": "normalized",
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
             "target_actor": self.target_actor.state_dict(),
@@ -117,8 +154,15 @@ class DDPG:
             "total_steps": self.total_steps,
         }, path)
 
-    def load(self, path: str):
+    def load(self, path: str, resume_training: bool = False):
         ck = torch.load(path, map_location="cpu")
+        version = int(ck.get("implementation_version", 1))
+        if resume_training and version != self.IMPLEMENTATION_VERSION:
+            raise ValueError(
+                "Legacy DDPG checkpoints use physical critic actions and cannot "
+                "resume training with the normalized-action implementation. "
+                "They remain valid for deterministic policy evaluation."
+            )
         self.actor.load_state_dict(ck["actor"])
         self.critic.load_state_dict(ck["critic"])
         self.target_actor.load_state_dict(ck["target_actor"])
@@ -126,3 +170,4 @@ class DDPG:
         self.actor_opt.load_state_dict(ck["actor_opt"])
         self.critic_opt.load_state_dict(ck["critic_opt"])
         self.total_steps = ck["total_steps"]
+        self.loaded_checkpoint_version = version

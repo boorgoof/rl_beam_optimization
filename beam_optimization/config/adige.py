@@ -22,7 +22,7 @@ import hashlib
 import inspect
 import json
 import textwrap
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -172,6 +172,12 @@ RL_MIN_NPART_RATIO: float = 0.10
 # RL uses the absolute physical score on valid steps, normalized to a stable
 # numerical range.
 REWARD_SCORE_SCALE: float = 100.0
+
+# Default reward regularizers used by custom model-free agents and SB3-SAC.
+# The action term discourages needless control motion; the regression term
+# penalizes score decreases and therefore overshoot/correction cycles.
+ACTION_PENALTY_WEIGHT: float = 0.02
+SCORE_REGRESSION_PENALTY_WEIGHT: float = 1.0
 
 # A physical beam-loss transition ends the episode and receives this RL reward.
 # ERROR_SCORE remains the separate physical score stored in simulation results.
@@ -427,9 +433,15 @@ def reset_std_vec(reset_scale: float) -> np.ndarray:
     return sensitivity_vec() * float(reset_scale)
 
 
-def dataset_std_vec() -> np.ndarray:
-    """Return dataset Gaussian stddevs: sensitivity * DATASET_SCALE."""
-    return sensitivity_vec() * DATASET_SCALE
+def dataset_std_vec(scale: Optional[float] = None) -> np.ndarray:
+    """Return dataset Gaussian stddevs: sensitivity * scale.
+
+    `scale` defaults to the global `DATASET_SCALE` when omitted. Passing an
+    explicit value overrides it for one call only (e.g. a single
+    `TraceWinDatasetBuilder` run targeting a different failure rate) without
+    touching the module-level constant every other consumer relies on.
+    """
+    return sensitivity_vec() * (DATASET_SCALE if scale is None else float(scale))
 
 
 def clip_params_to_hw(params: Dict[str, float]) -> Dict[str, float]:

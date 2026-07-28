@@ -51,7 +51,9 @@ class PPO:
 
     def select_action(self, state, training: bool = True):
         if training:
-            a, lp, _, _, _ = self.policy.full_pass(state)
+            a, lp, _, _, _ = self.policy.full_pass(
+                state, include_action_scale_jacobian=False
+            )
             v = self.value(state)
             return (a.detach().cpu().numpy().squeeze(0),
                     lp.detach().cpu().numpy().squeeze(),
@@ -72,11 +74,20 @@ class PPO:
             idx = np.random.choice(n, bs, replace=False)
             sb, ab, gb, lb = states[idx], actions[idx], gaes[idx], logpas[idx]
 
-            plp = self.policy.log_prob(sb, ab)
+            plp = self.policy.log_prob(
+                sb, ab, include_action_scale_jacobian=False
+            )
             ratios = (plp - lb.unsqueeze(1)).exp()
             pi_obj = gb.unsqueeze(1) * ratios
             pi_clp = gb.unsqueeze(1) * ratios.clamp(1 - self.clip_range, 1 + self.clip_range)
-            p_loss = -torch.min(pi_obj, pi_clp).mean() - self.entropy_coef * (-plp).mean()
+            # Entropy must use a fresh reparameterized policy sample. Reusing
+            # detached historical actions gives an ineffective score-function
+            # estimate instead of the squashed-policy entropy gradient.
+            _, entropy_logp, _, _, _ = self.policy.full_pass(
+                sb, include_action_scale_jacobian=False
+            )
+            entropy = -entropy_logp.mean()
+            p_loss = -torch.min(pi_obj, pi_clp).mean() - self.entropy_coef * entropy
 
             self.p_opt.zero_grad(); p_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
@@ -86,7 +97,11 @@ class PPO:
                 # k3 estimator (Schulman): E[(r-1) - log r] >= 0, lower variance
                 # than the naive E[log pi_old - log pi_new] (which can go negative
                 # and mask a large divergence).
-                log_ratio = self.policy.log_prob(states, actions) - logpas.unsqueeze(1)
+                log_ratio = self.policy.log_prob(
+                    states,
+                    actions,
+                    include_action_scale_jacobian=False,
+                ) - logpas.unsqueeze(1)
                 kl = (log_ratio.exp() - 1.0 - log_ratio).mean()
             if kl.item() > self.stop_kl:
                 break

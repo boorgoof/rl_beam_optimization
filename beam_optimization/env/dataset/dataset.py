@@ -120,6 +120,9 @@ class BeamDataset(TorchDataset):
         self._X = torch.cat([self._X, X_t], dim=0)
         self._Y = torch.cat([self._Y, Y_t], dim=0)
         self._scores = torch.cat([self._scores, S_t], dim=0)
+        # New parameter samples invalidate the cached standardized k-NN index.
+        self._param_knn_tree = None
+        self._param_knn_std = None
         return int(X_t.shape[0])
 
     def get_training_batch(
@@ -155,26 +158,45 @@ class BeamDataset(TorchDataset):
         """Return all flat parameter vectors as a tensor with shape (N, N_PARAMS)."""
         return self._X[:, BEAM_STATE_DIM:]
 
-    def param_knn_distance(self, param_vecs, k: int = 5) -> np.ndarray:
-        """Mean distance from each row of `param_vecs` (N, N_PARAMS) to its k
-        nearest parameter vectors in this dataset.
-
-        Distances are computed after standardizing every parameter by this
-        dataset's per-parameter std, so no single parameter's scale (e.g.
-        volts vs. millimeters) dominates the result. The k-d tree and std are
-        built once and cached on the instance.
-        """
+    def _ensure_param_knn_index(self) -> None:
+        """Build the standardized parameter k-d tree on first use."""
         if self._param_knn_tree is None:
             ref = self.get_param_vecs().numpy()
+            if len(ref) == 0:
+                raise ValueError("Cannot query parameter neighbors from an empty dataset")
             std = ref.std(axis=0)
             std[std == 0] = 1.0
             self._param_knn_std = std
             self._param_knn_tree = cKDTree(ref / std)
 
+    def query_param_neighbors(
+        self,
+        param_vecs,
+        k: int = 5,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return standardized distances and indices of the nearest parameters.
+
+        Neighbor selection is exposed so differentiable model-based rollouts
+        can select neighbors with the k-d tree, then recompute the same
+        distances in torch to retain gradients with respect to the query.
+        """
+        self._ensure_param_knn_index()
+        effective_k = min(max(1, int(k)), len(self))
         query = np.atleast_2d(np.asarray(param_vecs, dtype=np.float64)) / self._param_knn_std
-        dists, _ = self._param_knn_tree.query(query, k=k)
+        dists, indices = self._param_knn_tree.query(query, k=effective_k)
         if dists.ndim == 1:
             dists = dists[:, None]
+            indices = indices[:, None]
+        return dists, indices
+
+    def param_knn_std(self) -> np.ndarray:
+        """Return a defensive copy of the parameter standardization vector."""
+        self._ensure_param_knn_index()
+        return self._param_knn_std.copy()
+
+    def param_knn_distance(self, param_vecs, k: int = 5) -> np.ndarray:
+        """Mean standardized distance to the k nearest parameter vectors."""
+        dists, _ = self.query_param_neighbors(param_vecs, k=k)
         return dists.mean(axis=1)
 
     @classmethod
@@ -231,6 +253,21 @@ class BeamDataset(TorchDataset):
 _default_dataset_cache: Optional[BeamDataset] = None
 
 
+def resolve_dataset(dataset: Optional[BeamDataset] = None) -> BeamDataset:
+    """Return `dataset`, or a process-wide cached load of the default dataset.
+
+    Shared by param_knn_distance() and anything else (e.g. render()'s KNN
+    reference line) that needs "whichever dataset this call should be
+    compared against" without reloading the default file from disk every time.
+    """
+    global _default_dataset_cache
+    if dataset is None:
+        if _default_dataset_cache is None:
+            _default_dataset_cache = BeamDataset.load(default_dataset_path())
+        dataset = _default_dataset_cache
+    return dataset
+
+
 def param_knn_distance(param_vecs, dataset: Optional[BeamDataset] = None, k: int = 5) -> np.ndarray:
     """Mean distance from each row of `param_vecs` (N, N_PARAMS) to its k
     nearest parameter vectors in `dataset` (the default dataset when not given).
@@ -239,9 +276,5 @@ def param_knn_distance(param_vecs, dataset: Optional[BeamDataset] = None, k: int
     `dataset` is None, so repeated calls (e.g. once per env step during a
     test episode) don't reload the file from disk every time.
     """
-    global _default_dataset_cache
-    if dataset is None:
-        if _default_dataset_cache is None:
-            _default_dataset_cache = BeamDataset.load(default_dataset_path())
-        dataset = _default_dataset_cache
+    dataset = resolve_dataset(dataset)
     return dataset.param_knn_distance(param_vecs, k=k)

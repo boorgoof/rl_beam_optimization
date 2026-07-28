@@ -13,7 +13,7 @@ Action:
 
 Reward:
     TERMINAL_FAILURE_REWARD for particle loss; otherwise
-    score(t+1) / REWARD_SCORE_SCALE
+    score(t+1) / REWARD_SCORE_SCALE minus configured training regularizers
 
 Episode design (consistent with the rest of the project):
     RESET:
@@ -23,7 +23,7 @@ Episode design (consistent with the rest of the project):
     STEP:
         params_{t+1} = params_t + action
         TraceWin(params_{t+1}) → obs_{t+1}
-        reward = bounded failure reward or score(t+1) / REWARD_SCORE_SCALE
+        reward = bounded failure reward or normalized score minus regularizers
     
         Truncated after max_steps steps. Never terminated early.
 
@@ -39,6 +39,7 @@ from beam_optimization.config.adige import (
 )
 from beam_optimization.config.paths import new_tracewin_env_calc_dir
 from beam_optimization.env.base_beam_env import BaseBeamEnv
+from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.tracewin_env.tracewin.tracewin_simulator import TraceWinSimulator
 
 
@@ -54,6 +55,8 @@ class TraceWinEnv(BaseBeamEnv):
         timeout:       Seconds before aborting a single TraceWin call.
         retries:       Retry attempts on TraceWin failure.
         reset_scale:   Gaussian reset width in sensitivity units.
+        distance_dataset: Dataset used as the KNN reference when the distance
+                          reward penalty is enabled.
     """
 
     def __init__(
@@ -64,6 +67,10 @@ class TraceWinEnv(BaseBeamEnv):
         timeout: float = 45.0,
         retries: int = 2,
         reset_scale: float = TRAIN_RESET_SCALE,
+        distance_penalty_weight: float = 0.0,
+        action_penalty_weight: float = 0.0,
+        score_regression_penalty_weight: float = 0.0,
+        distance_dataset: BeamDataset | None = None,
     ):
 
         if calc_dir is None:
@@ -77,11 +84,17 @@ class TraceWinEnv(BaseBeamEnv):
             "timeout": timeout,
             "retries": retries,
         }
+        # TraceWinSimulator has no dataset of its own. When a distance penalty
+        # is enabled, measure it against the dataset selected for this run.
+        self._distance_dataset = distance_dataset
 
         # Call the base class constructor
         super().__init__(
             max_steps=max_steps,
             reset_scale=reset_scale,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
 
     def _build_simulator(self) -> TraceWinSimulator:

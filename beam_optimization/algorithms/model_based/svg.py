@@ -20,8 +20,9 @@ Key idea (SVG(∞): full-horizon backprop through the model, no value function):
     actions (backprop-through-time). No critic is needed: the surrogate *is*
     the critic. Valid states use reward = score_t / REWARD_SCORE_SCALE, while
     terminal low-transmission states use TERMINAL_FAILURE_REWARD and stop the
-    differentiable unroll immediately. The objective rewards reaching a good
-    beam state early and maintaining it while avoiding the terminal boundary.
+    differentiable unroll immediately. Optional KNN, action-effort, and score
+    regression penalties use the same formulas as BaseBeamEnv while retaining
+    gradients through the differentiable rollout.
 
 Practical notes:
     - Uses reparameterization trick (rsample) for low-variance gradients.
@@ -103,6 +104,9 @@ class SVGAgent:
         max_grad_norm: float = 1.0,
         stage_weights: Optional[List[float]] = None,
         device: Optional[str] = None,
+        distance_penalty_weight: float = 0.0,
+        action_penalty_weight: float = 0.0,
+        score_regression_penalty_weight: float = 0.0,
     ):
         self.dataset = dataset
         self.n_step = n_step
@@ -122,6 +126,9 @@ class SVGAgent:
             device=str(self.device),
             stage_weights=stage_weights,
             reset_scale=TRAIN_RESET_SCALE,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
 
         self.obs_dim = int(obs_dim)

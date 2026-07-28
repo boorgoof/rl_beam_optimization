@@ -79,6 +79,9 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         device: Optional[str] = None,
         stage_weights: Optional[List[float]] = None,
         reset_scale: float = TRAIN_RESET_SCALE,
+        distance_penalty_weight: float = 0.0,
+        action_penalty_weight: float = 0.0,
+        score_regression_penalty_weight: float = 0.0,
     ):
         super().__init__(
             model=model,
@@ -86,6 +89,9 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             max_steps=max_steps,
             device=device,
             reset_scale=reset_scale,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
         self.device = self.simulator.device
         self._reset_std_t = torch.tensor(
@@ -98,6 +104,17 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             params_to_vec(default_params()), dtype=torch.float32, device=self.device
         )
         self._stage_weights_t = self._build_stage_weights(stage_weights)
+        self._knn_reference_t = None
+        self._knn_std_t = None
+        if self.distance_penalty_weight > 0.0:
+            self._knn_reference_t = dataset.get_param_vecs().to(
+                device=self.device, dtype=torch.float32
+            )
+            self._knn_std_t = torch.tensor(
+                dataset.param_knn_std(),
+                dtype=torch.float32,
+                device=self.device,
+            )
 
     @contextmanager
     def frozen_surrogate_weights(self) -> Iterator[None]:
@@ -181,10 +198,27 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             regular_score.new_full((), ERROR_SCORE),
             regular_score,
         )
+        terminated = bool(terminal_mask.detach().item())
+        if terminated:
+            zero = score_next.new_zeros(())
+            distance_penalty, action_penalty, regression_penalty = zero, zero, zero
+        else:
+            distance_penalty, action_penalty, regression_penalty = self._differentiable_penalties(
+                state=state,
+                action=action,
+                params_next=params_next,
+                score_next=score_next,
+            )
+        regular_reward = (
+            score_next / REWARD_SCORE_SCALE
+            - distance_penalty
+            - action_penalty
+            - regression_penalty
+        )
         reward = torch.where(
             terminal_mask,
             score_next.new_full((), TERMINAL_FAILURE_REWARD),
-            score_next / REWARD_SCORE_SCALE,
+            regular_reward,
         )
         obs_next = self._build_obs(state.beam0, beam_states)
 
@@ -197,8 +231,52 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             step_count=state.step_count + 1,
             model_index=state.model_index,
         )
-        terminated = bool(terminal_mask.detach().item())
         return next_state, reward, terminated
+
+    def _differentiable_penalties(
+        self,
+        state: DifferentiableBeamState,
+        action: torch.Tensor,
+        params_next: torch.Tensor,
+        score_next: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Torch equivalents of BaseBeamEnv's three reward regularizers.
+
+        The k-d tree selects neighbors from a detached query. Their distances
+        are then recomputed in torch, so the value matches the normal Gym
+        environment while gradients flow locally through ``params_next``.
+        """
+        zero = score_next.new_zeros(())
+
+        distance_penalty = zero
+        if self.distance_penalty_weight > 0.0:
+            _, indices = self.simulator.dataset.query_param_neighbors(
+                params_next.detach().cpu().numpy()[None, :],
+                k=5,
+            )
+            neighbor_indices = torch.as_tensor(
+                indices[0], dtype=torch.long, device=self.device
+            )
+            neighbors = self._knn_reference_t.index_select(0, neighbor_indices)
+            standardized_delta = (params_next.unsqueeze(0) - neighbors) / self._knn_std_t
+            distance = torch.linalg.vector_norm(standardized_delta, dim=1).mean()
+            distance_penalty = self.distance_penalty_weight * distance
+
+        action_penalty = zero
+        if self.action_penalty_weight > 0.0:
+            normalized_action = torch.where(
+                self._action_step_t > 0.0,
+                action / self._action_step_t,
+                torch.zeros_like(action),
+            )
+            action_penalty = self.action_penalty_weight * normalized_action.square().mean()
+
+        regression_penalty = zero
+        if self.score_regression_penalty_weight > 0.0:
+            normalized_drop = torch.relu(state.score - score_next) / REWARD_SCORE_SCALE
+            regression_penalty = self.score_regression_penalty_weight * normalized_drop
+
+        return distance_penalty, action_penalty, regression_penalty
 
     def _prepare_beam0(
         self,

@@ -23,3 +23,9 @@ python -m beam_optimization build_dataset \
   # --seed defaults to a fresh random seed, saved in builder_state.json
   # --no-kill-stale is off by default (stale TraceWin processes are killed
   # before each simulation)
+  # --scale defaults to unset (uses DATASET_SCALE from adige.py); pass
+  # --scale <float> to widen/narrow the sampling Gaussian for this build only,
+  # without touching adige.py -- e.g. a larger value for a dataset dedicated
+  # to training the FailureClassifier with a higher failure rate. Resuming an
+  # interrupted build must reuse the same --scale (or omit it consistently),
+  # or it is rejected as a config mismatch (see builder_state.json)

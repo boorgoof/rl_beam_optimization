@@ -13,10 +13,10 @@ if [ -f "beam_optimization/.venv/bin/activate" ]; then
 fi
 
 python -m beam_optimization exploration_scale_calculation \
-  --start-scale 0.5 \
+  --start-scale 1 \
   --min-scale 0.05 \
   --scale-step 0.05 \
-  --target-success-rate 0.9 \
+  --target-success-rate 0.5 \
   --samples-per-distribution 32 \
   --tracewin-particles 10000 \
   --timeout 180.0 \

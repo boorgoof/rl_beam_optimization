@@ -20,3 +20,6 @@ python -m beam_optimization merge_datasets \
   --seed 123 \
   "$@"
   # --allow-running is off by default (see header comment)
+  # --append is off by default (merges into a fresh --output-dir); pass
+  # --append to instead append --inputs onto the dataset_all.pt already in
+  # --output-dir (which must already exist in that case)

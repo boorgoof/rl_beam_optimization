@@ -50,10 +50,12 @@ from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.scripts.common import algo_style, evaluate_policy, set_global_seed
 from beam_optimization.config.adige import (
+    ACTION_PENALTY_WEIGHT,
     MAX_STEPS,
     N_OUTPUT_STAGES,
     N_PARAMS,
     PARAM_KEYS,
+    SCORE_REGRESSION_PENALTY_WEIGHT,
     TEST_RESET_SCALE,
     TRAIN_RESET_SCALE,
     action_bounds,
@@ -409,6 +411,9 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
              eval_every: int = 1000,
              eval_episodes: int = 5,
              enable_learning_curve: bool = True,
+             distance_penalty_weight: float = 0.0,
+             action_penalty_weight: float = ACTION_PENALTY_WEIGHT,
+             score_regression_penalty_weight: float = SCORE_REGRESSION_PENALTY_WEIGHT,
              learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
     """Train one custom model-free algorithm on the surrogate environment."""
     set_global_seed(seed)
@@ -416,16 +421,20 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     env = SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
+        distance_penalty_weight=distance_penalty_weight,
+        action_penalty_weight=action_penalty_weight,
+        score_regression_penalty_weight=score_regression_penalty_weight,
     )
     obs_dim = env.observation_space.shape[0]
 
     act_bds = action_bounds()
     bounds  = (act_bds[0].tolist(), act_bds[1].tolist())
     agent_kwargs = {}
-    if not is_on_policy(algo):
-        # Scale the replay warmup with the budget so short (--quick) runs
-        # still perform gradient updates; full runs keep the default 1000.
-        agent_kwargs["warmup_steps"] = min(1000, max(1, n_steps // 4))
+    if algo in {"sac", "td3", "ddpg"}:
+        # Match Stable Baselines 3 off-policy learning_starts. These agents
+        # sample uniformly from the physical action box during warm-up and
+        # train their critics on normalized replay actions afterwards.
+        agent_kwargs["warmup_steps"] = min(100, max(1, n_steps // 4))
     agent = make_agent(algo, obs_dim, ACT_DIM, bounds, hidden_dims=hidden, **agent_kwargs)
 
     obs, _     = env.reset(seed=seed)
@@ -444,6 +453,9 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     make_eval_env = lambda: SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TEST_RESET_SCALE,
+        distance_penalty_weight=distance_penalty_weight,
+        action_penalty_weight=action_penalty_weight,
+        score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
     try:
@@ -490,6 +502,10 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
                 metrics = {
                     "reward": float(reward),
                     "action_norm": float(np.linalg.norm(action)),
+                    "action_penalty": float(info.get("action_penalty", 0.0)),
+                    "score_regression_penalty": float(
+                        info.get("score_regression_penalty", 0.0)
+                    ),
                 }
                 metrics.update(_loss_metrics(algo, optimize_result))
                 if len(metrics) > 2 or step % log_every == 0:
@@ -556,6 +572,9 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
                   eval_every: int = 1000,
                   eval_episodes: int = 5,
                   enable_learning_curve: bool = True,
+                  distance_penalty_weight: float = 0.0,
+                  action_penalty_weight: float = ACTION_PENALTY_WEIGHT,
+                  score_regression_penalty_weight: float = SCORE_REGRESSION_PENALTY_WEIGHT,
                   learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
     """Train Stable Baselines 3 SAC on the surrogate environment (sanity baseline)."""
     from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
@@ -564,6 +583,9 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
     env = SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
+        distance_penalty_weight=distance_penalty_weight,
+        action_penalty_weight=action_penalty_weight,
+        score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
     logger = _make_logger(out_dir, "sb3_sac", enable_tensorboard)
@@ -575,6 +597,9 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
     make_eval_env = lambda: SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TEST_RESET_SCALE,
+        distance_penalty_weight=distance_penalty_weight,
+        action_penalty_weight=action_penalty_weight,
+        score_regression_penalty_weight=score_regression_penalty_weight,
     )
     agent = SB3SAC(
         env,
@@ -629,6 +654,9 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
 def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
               stage_weights, out_dir: Path,
               seed: int = 42,
+              distance_penalty_weight: float = 0.0,
+              action_penalty_weight: float = 0.0,
+              score_regression_penalty_weight: float = 0.0,
               enable_tensorboard: bool = True,
               eval_every: int = 1000,
               eval_episodes: int = 5,
@@ -649,6 +677,9 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
         hidden_dims=tuple(hidden),
         n_step=horizon,
         stage_weights=stage_weights,
+        distance_penalty_weight=distance_penalty_weight,
+        action_penalty_weight=action_penalty_weight,
+        score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
     best_score = -np.inf
@@ -663,6 +694,9 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
     make_eval_env = lambda: SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=horizon,
         reset_scale=TEST_RESET_SCALE,
+        distance_penalty_weight=distance_penalty_weight,
+        action_penalty_weight=action_penalty_weight,
+        score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
     try:
@@ -729,6 +763,9 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
 def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                rollout_length, hidden, out_dir: Path,
                seed: int = 42,
+               distance_penalty_weight: float = 0.0,
+               action_penalty_weight: float = 0.0,
+               score_regression_penalty_weight: float = 0.0,
                tracewin_project: Optional[str] = None,
                online_finetune: bool = False,
                online_mix_ratio: float = 0.5,
@@ -779,6 +816,10 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             project_file=tracewin_project,
             max_steps=max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
+            distance_dataset=dataset,
         )
         label = "MBPOWithModelUpdate" if use_model_update else "MBPO"
         print(f"  Real env: TraceWin  ({tracewin_project})  [{label}]")
@@ -786,6 +827,9 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         env = SurrogateEnv(
             model=surrogate, dataset=dataset, max_steps=max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
         print("  Real env: surrogate (SurrogateEnv)  [MBPO]")
 
@@ -793,7 +837,9 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
     act_bds = action_bounds()
     bounds  = (act_bds[0].tolist(), act_bds[1].tolist())
     # Scale warmup/thresholds with the budget so short (--quick) runs still train.
-    warmup = min(1000, max(1, n_steps // 4))
+    # Match the SB3 SAC default while retaining a smaller threshold for quick
+    # smoke tests.
+    warmup = min(100, max(1, n_steps // 4))
     inner  = SAC(obs_dim, ACT_DIM, bounds, hidden_dims=tuple(hidden), warmup_steps=warmup)
 
     mbpo_kwargs = dict(
@@ -804,6 +850,9 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         act_dim=ACT_DIM,
         rollout_length=rollout_length,
         min_real_samples=min(256, max(1, n_steps // 4)),
+        distance_penalty_weight=distance_penalty_weight,
+        action_penalty_weight=action_penalty_weight,
+        score_regression_penalty_weight=score_regression_penalty_weight,
     )
     if use_model_update:
         mbpo_kwargs["online_mix_ratio"] = online_mix_ratio
@@ -853,10 +902,17 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             return TraceWinEnv(
                 project_file=tracewin_project, max_steps=max_ep_steps,
                 reset_scale=TEST_RESET_SCALE,
+                distance_penalty_weight=distance_penalty_weight,
+                action_penalty_weight=action_penalty_weight,
+                score_regression_penalty_weight=score_regression_penalty_weight,
+                distance_dataset=dataset,
             )
         return SurrogateEnv(
             model=surrogate, dataset=dataset, max_steps=max_ep_steps,
             reset_scale=TEST_RESET_SCALE,
+            distance_penalty_weight=distance_penalty_weight,
+            action_penalty_weight=action_penalty_weight,
+            score_regression_penalty_weight=score_regression_penalty_weight,
         )
 
     try:
@@ -1023,6 +1079,35 @@ def main():
     parser.add_argument("--eval-episodes",  type=int, default=5,
                         help="Test episodes per learning-curve evaluation. "
                              "Default: 5.")
+    parser.add_argument("--distance-penalty-weight", type=float, default=0.0,
+                        help="Linear reward penalty (weight * param_knn_distance) on how "
+                             "far the current parameters are from the training dataset, "
+                             "applied to model-free, MBPO, and SVG training. "
+                             "0.0 (default) disables it -- no "
+                             "change to existing behavior. Meant to discourage the "
+                             "policy from drifting into parameter regions the surrogate "
+                             "was never trained on and cannot be trusted in.")
+    parser.add_argument(
+        "--action-penalty-weight",
+        type=float,
+        default=ACTION_PENALTY_WEIGHT,
+        help=(
+            "Quadratic penalty on bound-normalized action magnitude for "
+            "model-free, MBPO, and SVG agents. Encourages zero action after "
+            f"convergence. Default: {ACTION_PENALTY_WEIGHT}."
+        ),
+    )
+    parser.add_argument(
+        "--score-regression-penalty-weight",
+        type=float,
+        default=SCORE_REGRESSION_PENALTY_WEIGHT,
+        help=(
+            "Additional penalty for score decreases, normalized by "
+            "REWARD_SCORE_SCALE, applied to model-free, MBPO, and SVG agents. "
+            "Discourages overshoot/correction cycles. "
+            f"Default: {SCORE_REGRESSION_PENALTY_WEIGHT}."
+        ),
+    )
     parser.add_argument("--no-learning-curve", action="store_true",
                         help="Disable periodic evaluation and learning-curve plots.")
     parser.add_argument("--no-tensorboard", action="store_true",
@@ -1102,6 +1187,12 @@ def main():
         eval_episodes=args.eval_episodes,
         enable_learning_curve=enable_learning_curve,
     )
+    # Shared by model-free, MBPO, and SVG training environments.
+    reward_regularization_kwargs = dict(
+        distance_penalty_weight=args.distance_penalty_weight,
+        action_penalty_weight=args.action_penalty_weight,
+        score_regression_penalty_weight=args.score_regression_penalty_weight,
+    )
 
     # ── Model-free RL ─────────────────────────────────────────────────────────
     for algo in MODEL_FREE_ALGORITHMS:
@@ -1115,6 +1206,7 @@ def main():
                 algo, single_surrogate, dataset, args.rl_steps,
                 args.max_ep_steps, args.hidden, out_dir,
                 seed=seed, learning_curves=curves, **common_kwargs,
+                **reward_regularization_kwargs,
             ),
             learning_curves,
         )
@@ -1128,6 +1220,7 @@ def main():
                 single_surrogate, dataset, args.rl_steps,
                 args.max_ep_steps, args.hidden, out_dir,
                 seed=seed, learning_curves=curves, **common_kwargs,
+                **reward_regularization_kwargs,
             ),
             learning_curves,
         )
@@ -1160,6 +1253,7 @@ def main():
                 dataset_path=Path(args.dataset),
                 update_surrogates_path=str(updated_ensemble_path) if use_mu else None,
                 learning_curves=curves, **common_kwargs,
+                **reward_regularization_kwargs,
             ),
             learning_curves,
         )
@@ -1177,6 +1271,7 @@ def main():
                 base_ensemble, dataset, args.svg_episodes, args.svg_horizon,
                 args.hidden, weights, out_dir,
                 seed=seed, learning_curves=curves, curve_label=label, **common_kwargs,
+                **reward_regularization_kwargs,
             ),
             learning_curves,
         )
@@ -1190,7 +1285,19 @@ def main():
     summary_path = out_root / "summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w") as f:
-        json.dump({**scores, "score_function": score_function_metadata()}, f, indent=2)
+        json.dump(
+            {
+                **scores,
+                "training_reward_regularization": {
+                    "distance_penalty_weight": args.distance_penalty_weight,
+                    "action_penalty_weight": args.action_penalty_weight,
+                    "score_regression_penalty_weight": args.score_regression_penalty_weight,
+                },
+                "score_function": score_function_metadata(),
+            },
+            f,
+            indent=2,
+        )
     print(f"\nSummary saved → {summary_path}")
 
 

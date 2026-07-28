@@ -53,7 +53,9 @@ class REINFORCE:
 
     def select_action(self, state, training: bool = True):
         if training:
-            action, logpa, _, _, _ = self.policy_network.full_pass(state)
+            action, logpa, _, _, _ = self.policy_network.full_pass(
+                state, include_action_scale_jacobian=False
+            )
             return (action.detach().cpu().numpy().squeeze(0),
                     logpa.detach().cpu().numpy().squeeze(),
                     0.0)
@@ -71,8 +73,13 @@ class REINFORCE:
             np.logspace(0, T, num=T, base=self.gamma, endpoint=False),
             dtype=torch.float32, device=self.device)
 
-        log_probs    = self.policy_network.log_prob(states, actions).squeeze(-1)
-        entropy_loss = log_probs.mean()
+        log_probs = self.policy_network.log_prob(
+            states, actions, include_action_scale_jacobian=False
+        ).squeeze(-1)
+        _, entropy_logp, _, _, _ = self.policy_network.full_pass(
+            states, include_action_scale_jacobian=False
+        )
+        entropy_loss = entropy_logp.mean()
 
         policy_loss = -(discounts * returns * log_probs).mean()
         loss        = policy_loss + self.entropy_loss_weight * entropy_loss
