@@ -1,24 +1,28 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Train new base surrogate checkpoints from an existing train/val dataset
 # (e.g. produced by build_dataset.sh).
 # See: beam_optimization/scripts/train_surrogate.py, README.md section 4.
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
-if [ -f "beam_optimization/.venv/bin/activate" ]; then
-  source beam_optimization/.venv/bin/activate
-fi
+source beam_optimization/.venv/bin/activate
 
 # <-- MODIFY HERE to train on a different dataset (must have dataset_train.pt/dataset_val.pt).
-DATASET_DIR="beam_optimization/env/dataset/013"
+DATASET_DIR="beam_optimization/env/dataset/018"
+MODEL_DIR="beam_optimization/env/surrogate_env/surrogate/trained_models/base_018_final"
+
+if [ -e "$MODEL_DIR" ]; then
+  echo "Refusing to overwrite existing model directory: $MODEL_DIR" >&2
+  exit 1
+fi
 
 python -m beam_optimization train_surrogate \
   --train-dataset "$DATASET_DIR/dataset_train.pt" \
   --val-dataset "$DATASET_DIR/dataset_val.pt" \
-  --n-surrogates 1 \
-  --model-dir beam_optimization/env/surrogate_env/surrogate/trained_models/base \
+  --n-surrogates 4 \
+  --model-dir "$MODEL_DIR" \
   --seed 123 \
   --max-epochs 300 \
   --batch-size 256 \
@@ -26,8 +30,9 @@ python -m beam_optimization train_surrogate \
   --weight-decay 1e-4 \
   --patience 40 \
   --classifier-patience 20 \
-  --log-dir beam_optimization/results/train/surrogate
-  # --n-surrogates default is 1; the thesis runs use 4
+  --log-dir beam_optimization/results/train/surrogate_018 \
+  "$@"
+  # Four models are required for the final MBPO/SVG ensemble.
   # --device defaults to unset (trainer auto-selects cuda if available, else cpu)
   # --no-tensorboard is off by default (TensorBoard/metrics.csv logging enabled)
   # --patience stops training early after 40 epochs without val_loss

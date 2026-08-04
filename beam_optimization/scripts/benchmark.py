@@ -8,14 +8,14 @@ Methods:
   bayesian_opt      Bayesian Optimization (GP), a classical black-box
                     baseline, not a trained checkpoint. Skipped with
                     --policy-only.
-  svg_finale        SVGAgent -- final-stage reward only. Only trained from
+  svg_final         SVGAgent -- final-stage reward only. Only trained from
   svg_uniform       scratch as a comparison method if --svg-baseline is given
                     (off by default: unlike BO, SVG is a full RL method, not
                     a classical baseline). To evaluate an SVG agent you
                     already trained (e.g. via train_policies), pass it via
-                    --svg-finale/--svg-uniform instead, like any other
+                    --svg-final/--svg-uniform instead, like any other
                     trained policy.
-  trained policies  Any checkpoint passed via --sac/--td3/.../--svg-uniform
+  trained policies  Any checkpoint passed via --sac/--sac-custom/.../--svg-uniform
                     is evaluated over --policy-episodes independent episodes.
 
 Usage:
@@ -28,9 +28,9 @@ Usage:
 
 With trained agents:
     python -m beam_optimization benchmark \\
-        --sac results/train/rl/all/sac/sac_agent.pt \\
-        --td3 results/train/rl/all/td3/td3_agent.pt \\
-        --ppo results/train/rl/all/ppo/ppo_agent.pt
+        --sac results/train/rl/all/sac/sac_agent.zip \\
+        --td3-custom results/train/rl/all/td3_custom/td3_custom_agent.pt \\
+        --ppo results/train/rl/all/ppo/ppo_agent.zip
 
 Also train the from-scratch SVG comparison baseline:
     python -m beam_optimization benchmark --svg-baseline --svg-episodes 500
@@ -43,13 +43,19 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import warnings
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import numpy as np
 import torch
 
-from beam_optimization.algorithms import make_agent
+from beam_optimization.algorithms import (
+    CUSTOM_MODEL_FREE_ALGORITHMS,
+    STABLE_BASELINES_ALGORITHMS,
+    canonical_algorithm_name,
+    make_custom_agent,
+)
 from beam_optimization.config.paths import (
     DEFAULT_BENCHMARK_OUTPUT,
     DEFAULT_TRACEWIN_INI,
@@ -83,13 +89,21 @@ from beam_optimization.config.adige import (
 OBS_DIM = observation_dim()
 ACT_DIM = N_PARAMS
 ACTION_BOUNDS = tuple(v.tolist() for v in action_bounds())
+POLICY_ALGORITHMS = (
+    *STABLE_BASELINES_ALGORITHMS,
+    *CUSTOM_MODEL_FREE_ALGORITHMS,
+    "mbpo",
+    "iterative_sim2real_sac",
+    "svg_final",
+    "svg_uniform",
+)
 
 # skopt refits the GP after every evaluation, so its cost grows quickly with
 # the number of calls; cap the BO baseline here even when --eval-budget is larger.
 BO_MAX_CALLS = 200
 
 STAGE_WEIGHT_CONFIGS = {
-    "finale":  None,
+    "final":   None,
     "uniform": [1.0] * N_OUTPUT_STAGES,
 }
 
@@ -178,12 +192,20 @@ def make_policy_agent(algo: str, ckpt_path: str, env, hidden: list[int],
     bounds = ACTION_BOUNDS
     obs_dim = env.observation_space.shape[0]
 
-    if algo == "sb3_sac":
-        from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
-        return SB3SAC.load(ckpt_path, env=env)
-    if algo in {"svg_finale", "svg_uniform"}:
+    algo = canonical_algorithm_name(algo)
+    if algo == "iterative_sim2real_sac":
+        from beam_optimization.algorithms.model_free.stable_baselines import (
+            StableBaselinesAgent,
+        )
+        return StableBaselinesAgent.load("sac", ckpt_path, env=env)
+    if algo in STABLE_BASELINES_ALGORITHMS:
+        from beam_optimization.algorithms.model_free.stable_baselines import (
+            StableBaselinesAgent,
+        )
+        return StableBaselinesAgent.load(algo, ckpt_path, env=env)
+    if algo in {"svg_final", "svg_finale", "svg_uniform"}:
         from beam_optimization.algorithms.model_based.svg import SVGAgent
-        stage_weights = STAGE_WEIGHT_CONFIGS["uniform" if algo == "svg_uniform" else "finale"]
+        stage_weights = STAGE_WEIGHT_CONFIGS["uniform" if algo == "svg_uniform" else "final"]
         agent = SVGAgent(
             surrogate=surrogate,
             dataset=dataset,
@@ -198,8 +220,10 @@ def make_policy_agent(algo: str, ckpt_path: str, env, hidden: list[int],
         )
     else:
         # "mbpo" checkpoints are the inner SAC saved by train_dyna.
-        name = "sac" if algo == "mbpo" else algo
-        agent = make_agent(name, obs_dim, ACT_DIM, bounds, hidden_dims=hidden)
+        name = "sac_custom" if algo == "mbpo" else algo
+        agent = make_custom_agent(
+            name, obs_dim, ACT_DIM, bounds, hidden_dims=hidden
+        )
 
     agent.load(ckpt_path)
     return agent
@@ -434,18 +458,19 @@ def run_policy_benchmark(args, surrogate, dataset,
         episodes = args.policy_episodes
 
     checkpoint_args = {
-        "sac": args.sac,
-        "td3": args.td3,
-        "ppo": args.ppo,
-        "ddpg": args.ddpg,
-        "a2c": args.a2c,
-        "reinforce": args.reinforce,
-        "trpo": args.trpo,
-        "sb3_sac": args.sb3_sac,
-        "mbpo": args.mbpo,
-        "svg_finale": args.svg_finale,
-        "svg_uniform": args.svg_uniform,
+        algo: getattr(args, algo, None)
+        for algo in POLICY_ALGORITHMS
     }
+    legacy_sb3_sac = getattr(args, "sb3_sac", None)
+    if legacy_sb3_sac is not None:
+        if checkpoint_args["sac"] is not None and checkpoint_args["sac"] != legacy_sb3_sac:
+            raise ValueError("Pass only one of 'sac' and legacy 'sb3_sac'.")
+        warnings.warn(
+            "'sb3_sac' is deprecated; use 'sac'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        checkpoint_args["sac"] = legacy_sb3_sac
     checkpoints = {
         algo: Path(path)
         for algo, path in checkpoint_args.items()
@@ -458,6 +483,22 @@ def run_policy_benchmark(args, surrogate, dataset,
     if missing:
         details = ", ".join(f"{algo}: {path}" for algo, path in missing.items())
         raise FileNotFoundError(f"Policy checkpoint not found: {details}")
+    wrong_suffix = {}
+    for algo, path in checkpoints.items():
+        expected = (
+            ".zip"
+            if algo in STABLE_BASELINES_ALGORITHMS
+            or algo == "iterative_sim2real_sac"
+            else ".pt"
+        )
+        if path.suffix.lower() != expected:
+            wrong_suffix[algo] = (path, expected)
+    if wrong_suffix:
+        details = ", ".join(
+            f"{algo}: expected {expected}, got {path.name}"
+            for algo, (path, expected) in wrong_suffix.items()
+        )
+        raise ValueError(f"Invalid policy checkpoint extension: {details}")
 
     all_episodes: list[dict] = []
     label = tag.lstrip("_") or "surrogate"
@@ -675,12 +716,12 @@ def main():
     parser.add_argument("--svg-episodes", type=int, default=500)
     parser.add_argument("--svg-horizon",  type=int, default=MAX_STEPS)
     parser.add_argument("--svg-baseline", action="store_true",
-                        help="Also train a fresh SVGAgent from scratch (both svg_finale/"
+                        help="Also train a fresh SVGAgent from scratch (both svg_final/"
                              "svg_uniform stage-weight variants, --svg-episodes each) as a "
                              "comparison method, in addition to Bayesian Optimization. Off "
                              "by default: unlike BO, SVG is a full RL method, not a classical "
                              "baseline -- to evaluate an SVG agent you already trained "
-                             "(e.g. via train_policies), use --svg-finale/--svg-uniform "
+                             "(e.g. via train_policies), use --svg-final/--svg-uniform "
                              "instead, exactly like --sac/--td3/etc.")
     parser.add_argument(
         "--policy-only",
@@ -712,23 +753,71 @@ def main():
     parser.add_argument("--tracewin-episodes", type=int, default=5,
                         help="Episodes per policy in the TraceWin validation "
                              "(default: 5; keep small — real physics is slow).")
+    parser.add_argument(
+        "--no-kill-stale",
+        action="store_true",
+        help=(
+            "Do not perform global TraceWin/Xvfb cleanup during TraceWin "
+            "validation. Use this when other independent TraceWin workspaces "
+            "are running concurrently."
+        ),
+    )
+    parser.add_argument(
+        "--tracewin-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Threads used by each TraceWin validation simulation. Omitted: "
+            "all CPUs. Set an explicit share for concurrent workspaces."
+        ),
+    )
+    parser.add_argument(
+        "--tracewin-timeout",
+        type=float,
+        default=45.0,
+        metavar="SECONDS",
+        help="Timeout for each TraceWin validation simulation (default: 45).",
+    )
     parser.add_argument("--hidden", type=int, nargs="+", default=[256, 256],
                         help="Hidden layer sizes used to recreate checkpointed custom agents.")
     parser.add_argument("--no-policy-plots", action="store_true",
                         help="Disable policy bar plot and boxplot generation.")
     parser.add_argument("--quick",        action="store_true")
-    parser.add_argument("--sac",          default=None, metavar="CKPT")
-    parser.add_argument("--td3",          default=None, metavar="CKPT")
-    parser.add_argument("--ppo",          default=None, metavar="CKPT")
-    parser.add_argument("--ddpg",         default=None, metavar="CKPT")
-    parser.add_argument("--a2c",          default=None, metavar="CKPT")
-    parser.add_argument("--reinforce",    default=None, metavar="CKPT")
-    parser.add_argument("--trpo",         default=None, metavar="CKPT")
-    parser.add_argument("--sb3-sac",      dest="sb3_sac", default=None, metavar="CKPT")
+    parser.add_argument("--sac",          default=None, metavar="CKPT", help="SB3 SAC .zip")
+    parser.add_argument("--ppo",          default=None, metavar="CKPT", help="SB3 PPO .zip")
+    parser.add_argument("--td3",          default=None, metavar="CKPT", help="SB3 TD3 .zip")
+    parser.add_argument("--ddpg",         default=None, metavar="CKPT", help="SB3 DDPG .zip")
+    parser.add_argument("--a2c",          default=None, metavar="CKPT", help="SB3 A2C .zip")
+    parser.add_argument("--sac-custom",       dest="sac_custom", default=None, metavar="CKPT")
+    parser.add_argument("--ppo-custom",       dest="ppo_custom", default=None, metavar="CKPT")
+    parser.add_argument("--td3-custom",       dest="td3_custom", default=None, metavar="CKPT")
+    parser.add_argument("--ddpg-custom",      dest="ddpg_custom", default=None, metavar="CKPT")
+    parser.add_argument("--a2c-custom",       dest="a2c_custom", default=None, metavar="CKPT")
+    parser.add_argument("--reinforce-custom", dest="reinforce_custom", default=None, metavar="CKPT")
+    parser.add_argument("--trpo-custom",      dest="trpo_custom", default=None, metavar="CKPT")
+    parser.add_argument(
+        "--sb3-sac", dest="sb3_sac", default=None, metavar="CKPT",
+        help="Deprecated alias for --sac.",
+    )
     parser.add_argument("--mbpo",         default=None, metavar="CKPT")
-    parser.add_argument("--svg-finale",   dest="svg_finale", default=None, metavar="CKPT")
+    parser.add_argument(
+        "--iterative-sim2real-sac",
+        dest="iterative_sim2real_sac",
+        default=None,
+        metavar="CKPT",
+        help="Iterative Sim-to-Real SAC checkpoint (.zip).",
+    )
+    parser.add_argument(
+        "--svg-final", "--svg-finale", dest="svg_final", default=None, metavar="CKPT",
+        help="SVG final-stage checkpoint (--svg-finale is a deprecated alias).",
+    )
     parser.add_argument("--svg-uniform",  dest="svg_uniform", default=None, metavar="CKPT")
     args = parser.parse_args()
+    if args.tracewin_threads is not None and args.tracewin_threads <= 0:
+        parser.error("--tracewin-threads must be positive")
+    if args.tracewin_timeout <= 0.0:
+        parser.error("--tracewin-timeout must be positive")
 
     if args.tracewin_only and not args.tracewin:
         parser.error("--tracewin-only requires --tracewin")
@@ -786,12 +875,10 @@ def main():
 
     policy_evaluation_tracewin = {}
     if args.tracewin:
-        n_ckpts = sum(
-            1 for path in (args.sac, args.td3, args.ppo, args.ddpg, args.a2c,
-                           args.reinforce, args.trpo, args.sb3_sac, args.mbpo,
-                           args.svg_finale, args.svg_uniform)
-            if path is not None
-        )
+        checkpoint_values = [getattr(args, algo, None) for algo in POLICY_ALGORITHMS]
+        if args.sb3_sac is not None and args.sac is None:
+            checkpoint_values.append(args.sb3_sac)
+        n_ckpts = sum(path is not None for path in checkpoint_values)
         est_min = n_ckpts * args.tracewin_episodes * args.max_ep_steps * 30 / 60
         print(f"\nTraceWin validation: {n_ckpts} policies × {args.tracewin_episodes} "
               f"episodes × {args.max_ep_steps} steps ≈ {est_min:.0f} min of real physics")
@@ -801,6 +888,9 @@ def main():
             return TraceWinEnv(
                 project_file=args.tracewin, max_steps=args.max_ep_steps,
                 reset_scale=TEST_RESET_SCALE,
+                kill_stale=not args.no_kill_stale,
+                num_threads=args.tracewin_threads,
+                timeout=args.tracewin_timeout,
             )
 
         policy_evaluation_tracewin = run_policy_benchmark(

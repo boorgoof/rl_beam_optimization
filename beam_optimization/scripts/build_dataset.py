@@ -103,11 +103,23 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--retry-sleep", type=float, default=5.0)
     parser.add_argument(
+        "--tracewin-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Threads used by each TraceWin simulation. Omitted: all CPUs. "
+            "Set an explicit share when running multiple workspaces concurrently."
+        ),
+    )
+    parser.add_argument(
         "--no-kill-stale",
         action="store_true",
         help="Do not kill stale TraceWin processes before each simulation.",
     )
     args = parser.parse_args()
+    if args.tracewin_threads is not None and args.tracewin_threads <= 0:
+        parser.error("--tracewin-threads must be positive")
 
     try:
         tracewin_workspace, tracewin_project = resolve_tracewin_project(
@@ -139,6 +151,7 @@ def main() -> None:
         retries=args.retries,
         retry_sleep=args.retry_sleep,
         kill_stale=not args.no_kill_stale,
+        num_threads=args.tracewin_threads,
     )
 
     builder = TraceWinDatasetBuilder(

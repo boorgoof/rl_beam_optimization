@@ -11,6 +11,7 @@ import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
 from beam_optimization.algorithms.networks.value_nets   import ValueNetwork
+from beam_optimization.algorithms.utils.atomic_save     import atomic_torch_save
 from beam_optimization.algorithms.utils.episode_buffer  import EpisodeBuffer
 
 
@@ -67,7 +68,9 @@ class PPO:
         states, actions, returns, gaes, logpas = self.buffer.get(last_value)
         n      = len(actions)
         values = self.value(states).detach()
-        gaes   = (gaes - gaes.mean()) / (gaes.std() + 1e-8)
+        # correction=0 keeps the standard deviation finite for a trajectory
+        # containing a single transition (e.g. immediate beam loss).
+        gaes   = (gaes - gaes.mean()) / (gaes.std(unbiased=False) + 1e-8)
 
         for _ in range(self.n_epochs):
             bs  = max(1, int(self.sample_ratio * n))
@@ -128,7 +131,7 @@ class PPO:
         return v_loss.item(), p_loss.item()
 
     def save(self, path: str):
-        torch.save({"policy": self.policy.state_dict(), "value": self.value.state_dict(),
+        atomic_torch_save({"policy": self.policy.state_dict(), "value": self.value.state_dict(),
                     "po": self.p_opt.state_dict(), "vo": self.v_opt.state_dict()}, path)
 
     def load(self, path: str):

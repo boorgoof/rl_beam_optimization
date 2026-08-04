@@ -31,6 +31,7 @@ import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets  import GaussianPolicyNetwork
 from beam_optimization.algorithms.networks.value_nets   import ValueNetwork
+from beam_optimization.algorithms.utils.atomic_save     import atomic_torch_save
 from beam_optimization.algorithms.utils.episode_buffer  import EpisodeBuffer
 from beam_optimization.algorithms.utils.trpo_utils import (
     conjugate_gradient, fisher_vector_product, compute_kl_divergence,
@@ -79,7 +80,9 @@ class TRPO:
 
     def optimize(self, last_value: float = 0.0):
         states, actions, returns, gaes, old_logpas = self.episode_buffer.get(last_value)
-        gaes = (gaes - gaes.mean()) / (gaes.std() + 1e-8)
+        # correction=0 keeps the standard deviation finite for a trajectory
+        # containing a single transition (e.g. immediate beam loss).
+        gaes = (gaes - gaes.mean()) / (gaes.std(unbiased=False) + 1e-8)
 
         with torch.no_grad():
             mean_old, log_std_old = self.policy_network.forward(states)
@@ -101,13 +104,15 @@ class TRPO:
         dFd       = (natural_grad * Avp(natural_grad)).sum()
         step_size = (2 * self.max_kl / (dFd + 1e-8)).sqrt()
         full_step = step_size * natural_grad
+        expected_improve = (-policy_grad * full_step).sum().detach()
 
         line_search(
             policy=self.policy_network,
             states=states, actions=actions, advantages=gaes,
             old_log_probs=old_logpas.unsqueeze(1),
             old_dist_params=old_dist_params,
-            full_step=full_step, max_kl=self.max_kl,
+            full_step=full_step, expected_improve=expected_improve,
+            max_kl=self.max_kl,
         )
 
         value_loss_val = 0.0
@@ -122,7 +127,7 @@ class TRPO:
         return value_loss_val, surr_loss.item()
 
     def save(self, path: str):
-        torch.save({
+        atomic_torch_save({
             "policy": self.policy_network.state_dict(),
             "value":  self.value_network.state_dict(),
             "v_opt":  self.value_optimizer.state_dict(),

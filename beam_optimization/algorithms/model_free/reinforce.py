@@ -28,6 +28,7 @@ import torch
 import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
+from beam_optimization.algorithms.utils.atomic_save    import atomic_torch_save
 from beam_optimization.algorithms.utils.episode_buffer import EpisodeBuffer
 
 
@@ -92,7 +93,7 @@ class REINFORCE:
         return 0.0, loss.item()
 
     def save(self, path: str):
-        torch.save({
+        atomic_torch_save({
             "policy": self.policy_network.state_dict(),
             "optim":  self.optimizer.state_dict(),
         }, path)

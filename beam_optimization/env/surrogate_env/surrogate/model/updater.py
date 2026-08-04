@@ -39,6 +39,8 @@ class SurrogateDatasetUpdater:
         device: Torch device string or None for auto-detect.
         online_dataset_save_path: Optional default path for save_online_dataset().
         merged_dataset_save_path: Optional default path for save_merged_dataset().
+        initial_online_dataset: Optional previously collected online data,
+            used when resuming an iterative sim-to-real workflow.
     """
 
     def __init__(
@@ -54,10 +56,15 @@ class SurrogateDatasetUpdater:
         device: Optional[str] = None,
         online_dataset_save_path: Optional[str | Path] = None,
         merged_dataset_save_path: Optional[str | Path] = None,
+        initial_online_dataset: Optional[BeamDataset] = None,
     ):
         self.surrogates = surrogates if isinstance(surrogates, list) else [surrogates]
         self._offline_dataset = offline_dataset
-        self._online_dataset = BeamDataset()
+        self._online_dataset = (
+            initial_online_dataset
+            if initial_online_dataset is not None
+            else BeamDataset()
+        )
 
         self.model_dir = Path(model_dir) if model_dir else None
         self.batch_size = int(batch_size)

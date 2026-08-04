@@ -186,6 +186,7 @@ class TraceWinSimulator(BeamSimulator):
                 elem_params=params,
                 other_params=self.tracewin_params,
                 num_threads=self.num_threads,
+                kill_remote_on_timeout=self.kill_stale,
             )
 
             if not success:

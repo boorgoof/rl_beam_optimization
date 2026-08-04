@@ -22,6 +22,7 @@ import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
 from beam_optimization.algorithms.networks.value_nets  import ValueNetwork
+from beam_optimization.algorithms.utils.atomic_save    import atomic_torch_save
 from beam_optimization.algorithms.utils.episode_buffer import EpisodeBuffer
 
 
@@ -66,7 +67,9 @@ class A2C:
 
     def optimize(self, last_value: float = 0.0):
         states, actions, returns, gaes, logpas = self.episode_buffer.get(last_value)
-        gaes = (gaes - gaes.mean()) / (gaes.std() + 1e-8)
+        # correction=0 keeps the standard deviation finite for a trajectory
+        # containing a single transition (e.g. immediate beam loss).
+        gaes = (gaes - gaes.mean()) / (gaes.std(unbiased=False) + 1e-8)
 
         log_prob = self.policy_network.log_prob(
             states, actions, include_action_scale_jacobian=False
@@ -95,7 +98,7 @@ class A2C:
         return value_loss.item(), policy_loss.item()
 
     def save(self, path: str):
-        torch.save({
+        atomic_torch_save({
             "policy": self.policy_network.state_dict(),
             "value":  self.value_network.state_dict(),
             "p_opt":  self.policy_optimizer.state_dict(),

@@ -159,14 +159,24 @@ class SACCheckpointCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             current_path = Path(temp_dir) / "current.pt"
             legacy_path = Path(temp_dir) / "legacy.pt"
-            make_sac().save(str(current_path))
+            source = make_sac()
+            source.store(
+                np.zeros(3, dtype=np.float32),
+                np.array([0.5, 12.0], dtype=np.float32),
+                1.0,
+                np.ones(3, dtype=np.float32),
+                False,
+            )
+            source.save(str(current_path), include_replay=True)
 
             current_payload = torch.load(current_path, map_location="cpu")
             self.assertEqual(
                 current_payload["implementation_version"],
                 SAC.IMPLEMENTATION_VERSION,
             )
-            make_sac().load(str(current_path), resume_training=True)
+            resumed = make_sac()
+            resumed.load(str(current_path), resume_training=True)
+            self.assertEqual(len(resumed.replay), 1)
 
             current_payload.pop("implementation_version")
             current_payload.pop("action_representation")

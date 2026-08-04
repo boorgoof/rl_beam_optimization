@@ -1,8 +1,8 @@
-"""Test one trained policy on one qualitative episode.
+"""Test one trained policy on one or more qualitative episodes.
 
 This command is intentionally separate from benchmark:
-benchmark compares methods numerically over many episodes, while test runs one
-trained policy for one episode and can save qualitative render images.
+benchmark compares methods numerically, while test can save detailed qualitative
+render images for every requested episode.
 """
 from __future__ import annotations
 
@@ -12,7 +12,12 @@ import shutil
 import warnings
 from pathlib import Path
 
-from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, load_agent
+from beam_optimization.algorithms import (
+    MODEL_FREE_ALGORITHMS,
+    STABLE_BASELINES_ALGORITHMS,
+    canonical_algorithm_name,
+    load_custom_agent,
+)
 from beam_optimization.config.adige import (
     MAX_STEPS, N_PARAMS, TEST_RESET_SCALE, TRAIN_RESET_SCALE, action_bounds,
     score_function_metadata,
@@ -33,6 +38,7 @@ from beam_optimization.scripts.common import run_episode as run_common_episode
 
 
 ACT_DIM = N_PARAMS
+ITERATIVE_SIM2REAL_ALGORITHM = "iterative_sim2real_sac"
 
 
 def load_surrogate(path: str | Path):
@@ -75,26 +81,45 @@ def make_env(args):
 
     project_file = Path(args.tracewin_project)
     calc_dir = Path(args.calc_dir) if args.calc_dir else default_eval_calc_dir(project_file)
+    distance_dataset = BeamDataset.load(args.dataset)
     return TraceWinEnv(
         project_file=str(project_file),
         calc_dir=str(calc_dir),
         max_steps=args.max_ep_steps,
         timeout=args.tracewin_timeout,
         reset_scale=reset_scale,
+        distance_dataset=distance_dataset,
+        kill_stale=not args.no_kill_stale,
     )
 
 
 def make_agent(algo: str, policy_path: str, obs_dim: int, hidden: list[int], env=None):
     """Instantiate and load a trained policy."""
-    if algo == "sb3_sac":
-        from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
+    algo = canonical_algorithm_name(algo)
+    if algo == ITERATIVE_SIM2REAL_ALGORITHM:
+        from beam_optimization.algorithms.model_free.stable_baselines import (
+            StableBaselinesAgent,
+        )
         if env is None:
-            raise ValueError("SB3 SAC loading requires the test env.")
-        return SB3SAC.load(policy_path, env=env)
+            raise ValueError("Iterative Sim-to-Real SAC loading requires the test env.")
+        return StableBaselinesAgent.load("sac", policy_path, env=env)
+    if algo in STABLE_BASELINES_ALGORITHMS:
+        from beam_optimization.algorithms.model_free.stable_baselines import (
+            StableBaselinesAgent,
+        )
+        if env is None:
+            raise ValueError("Stable Baselines3 loading requires the test env.")
+        return StableBaselinesAgent.load(algo, policy_path, env=env)
 
     bounds = action_bounds()
-    return load_agent(algo, policy_path, obs_dim, ACT_DIM,
-                      (bounds[0].tolist(), bounds[1].tolist()), hidden_dims=hidden)
+    return load_custom_agent(
+        algo,
+        policy_path,
+        obs_dim,
+        ACT_DIM,
+        (bounds[0].tolist(), bounds[1].tolist()),
+        hidden_dims=hidden,
+    )
 
 
 def algorithm_render_dir(args) -> Path:
@@ -145,10 +170,12 @@ def save_render(env, args, episode_idx: int, step_idx: int) -> None:
     result["state"].savefig(prefix.with_name(prefix.name + "_state.png"), dpi=args.dpi)
     result["score"].savefig(prefix.with_name(prefix.name + "_score.png"), dpi=args.dpi)
     result["knn"].savefig(prefix.with_name(prefix.name + "_knn.png"), dpi=args.dpi)
+    result["delta"].savefig(prefix.with_name(prefix.name + "_delta.png"), dpi=args.dpi)
     plt.close(result["params"])
     plt.close(result["state"])
     plt.close(result["score"])
     plt.close(result["knn"])
+    plt.close(result["delta"])
 
     if args.env == "tracewin" and args.tracewin_phase_space:
         with warnings.catch_warnings():
@@ -248,7 +275,12 @@ def run_episode(env, agent, args, episode_idx: int) -> dict:
                 f"reward={info.get('reward', 0.0):.4g} "
                 f"score={info.get('score', float('nan')):.4g}"
             )
-        if args.render and (step_idx == 0 or step_idx % args.render_every == 0 or done):
+        should_render = (
+            done
+            if args.render_final_only
+            else (step_idx == 0 or step_idx % args.render_every == 0 or done)
+        )
+        if args.render and should_render:
             save_render(env_, args, episode_idx, step_idx)
         if want_phase_space_video:
             frame_path = save_phase_space_frame(env_, args, episode_idx, step_idx)
@@ -273,13 +305,15 @@ def run_episode(env, agent, args, episode_idx: int) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run one trained policy for one qualitative test episode."
+        description="Run one trained policy for qualitative test episodes."
     )
     parser.add_argument("--algo", required=True,
-                        choices=[*MODEL_FREE_ALGORITHMS, "sb3_sac"])
+                        choices=[*MODEL_FREE_ALGORITHMS, "sb3_sac", ITERATIVE_SIM2REAL_ALGORITHM])
     parser.add_argument("--policy", required=True, help="Path to the trained policy checkpoint.")
     parser.add_argument("--env", default="surrogate", choices=["surrogate", "tracewin"])
     parser.add_argument("--max-ep-steps", type=int, default=MAX_STEPS)
+    parser.add_argument("--episodes", type=int, default=1,
+                        help="Number of qualitative test episodes (default: %(default)s).")
     parser.add_argument("--hidden", type=int, nargs="+", default=[256, 256])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--deterministic-reset", action="store_true",
@@ -295,11 +329,24 @@ def main():
     parser.add_argument("--tracewin-project", default=str(DEFAULT_TRACEWIN_INI))
     parser.add_argument("--calc-dir", default=None)
     parser.add_argument("--tracewin-timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--no-kill-stale",
+        action="store_true",
+        help=(
+            "Do not perform global TraceWin/Xvfb cleanup. Use this when "
+            "other independent TraceWin workspaces may be active."
+        ),
+    )
 
     parser.add_argument("--output", default=str(DEFAULT_TEST_OUTPUT))
     parser.add_argument("--render", action="store_true", help="Save render PNG files during the test episode.")
     parser.add_argument("--render-dir", default=str(DEFAULT_TEST_RENDER_DIR))
     parser.add_argument("--render-every", type=int, default=1)
+    parser.add_argument(
+        "--render-final-only",
+        action="store_true",
+        help="Save static render images only at the final step of each episode.",
+    )
     parser.add_argument("--dpi", type=int, default=130)
     parser.add_argument("--episode-video", action=argparse.BooleanOptionalAction, default=True,
                         help="Save parameter/beam-feature trend GIFs for the test episode into "
@@ -311,9 +358,29 @@ def main():
     parser.add_argument("--max-particles", type=int, default=40000)
     parser.add_argument("--bins", type=int, default=150)
     args = parser.parse_args()
+    if args.episodes < 1:
+        parser.error("--episodes must be at least 1")
+    if args.algo == "sb3_sac":
+        warnings.warn(
+            "'sb3_sac' is deprecated; use 'sac'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        args.algo = "sac"
 
     if not Path(args.policy).exists():
         raise FileNotFoundError(args.policy)
+    expected_suffix = (
+        ".zip"
+        if args.algo in STABLE_BASELINES_ALGORITHMS
+        or args.algo == ITERATIVE_SIM2REAL_ALGORITHM
+        else ".pt"
+    )
+    if Path(args.policy).suffix.lower() != expected_suffix:
+        raise ValueError(
+            f"{args.algo} requires a {expected_suffix} checkpoint, "
+            f"got {Path(args.policy).name}"
+        )
 
     env = make_env(args)
     obs_dim = env.observation_space.shape[0]
@@ -330,8 +397,13 @@ def main():
         render_dir = reset_render_dir(args)
         print(f"Render dir:  {render_dir} (cleared)")
 
-    print("\nTest episode")
-    result = run_episode(env, agent, args, 0)
+    results = []
+    for episode_idx in range(args.episodes):
+        print(f"\nTest episode {episode_idx + 1}/{args.episodes}")
+        results.append(run_episode(env, agent, args, episode_idx))
+
+    mean_final_score = sum(float(result["final_score"]) for result in results) / len(results)
+    mean_total_reward = sum(float(result["total_reward"]) for result in results) / len(results)
 
     summary = {
         "algo": args.algo,
@@ -341,9 +413,12 @@ def main():
         "deterministic_reset": bool(args.deterministic_reset),
         "reset_scale_mode": None if args.deterministic_reset else args.reset_scale,
         "reset_scale": None if args.deterministic_reset else float(env.reset_scale),
-        "episode": result,
-        "final_score": float(result["final_score"]),
-        "total_reward": float(result["total_reward"]),
+        # Keep ``episode`` for consumers of legacy one-episode test files.
+        "episode": results[0],
+        "episodes": results,
+        "n_episodes": len(results),
+        "final_score": mean_final_score,
+        "total_reward": mean_total_reward,
         "score_function": score_function_metadata(),
     }
 
@@ -353,8 +428,9 @@ def main():
         json.dump(summary, f, indent=2)
 
     print("\nTEST SUMMARY")
-    print(f"  final_score:  {summary['final_score']:.6g}")
-    print(f"  total_reward: {summary['total_reward']:.6g}")
+    print(f"  episodes:          {summary['n_episodes']}")
+    print(f"  mean final_score:  {summary['final_score']:.6g}")
+    print(f"  mean total_reward: {summary['total_reward']:.6g}")
     print(f"  saved: {output}")
 
 

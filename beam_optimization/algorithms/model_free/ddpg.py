@@ -26,6 +26,7 @@ import torch.nn.functional as F
 
 from beam_optimization.algorithms.networks.policy_nets import DeterministicPolicyNetwork
 from beam_optimization.algorithms.networks.value_nets  import QNetwork
+from beam_optimization.algorithms.utils.atomic_save    import atomic_torch_save
 from beam_optimization.algorithms.utils.replay_buffer  import ReplayBuffer
 from beam_optimization.algorithms.utils.noise          import NormalNoiseDecayStrategy
 
@@ -141,8 +142,8 @@ class DDPG:
         for tp, sp in zip(target.parameters(), source.parameters()):
             tp.data.copy_(self.tau * sp.data + (1 - self.tau) * tp.data)
 
-    def save(self, path: str):
-        torch.save({
+    def save(self, path: str, include_replay: bool = False):
+        checkpoint = {
             "implementation_version": self.IMPLEMENTATION_VERSION,
             "action_representation": "normalized",
             "actor": self.actor.state_dict(),
@@ -152,7 +153,11 @@ class DDPG:
             "actor_opt": self.actor_opt.state_dict(),
             "critic_opt": self.critic_opt.state_dict(),
             "total_steps": self.total_steps,
-        }, path)
+            "noise": self.noise.state_dict(),
+        }
+        if include_replay:
+            checkpoint["replay"] = self.replay.state_dict()
+        atomic_torch_save(checkpoint, path)
 
     def load(self, path: str, resume_training: bool = False):
         ck = torch.load(path, map_location="cpu")
@@ -163,6 +168,11 @@ class DDPG:
                 "resume training with the normalized-action implementation. "
                 "They remain valid for deterministic policy evaluation."
             )
+        if resume_training and "replay" not in ck:
+            raise ValueError(
+                "This DDPG checkpoint has no replay snapshot. Save with "
+                "include_replay=True before using resume_training=True."
+            )
         self.actor.load_state_dict(ck["actor"])
         self.critic.load_state_dict(ck["critic"])
         self.target_actor.load_state_dict(ck["target_actor"])
@@ -170,4 +180,8 @@ class DDPG:
         self.actor_opt.load_state_dict(ck["actor_opt"])
         self.critic_opt.load_state_dict(ck["critic_opt"])
         self.total_steps = ck["total_steps"]
+        if "noise" in ck:
+            self.noise.load_state_dict(ck["noise"])
+        if resume_training:
+            self.replay.load_state_dict(ck["replay"])
         self.loaded_checkpoint_version = version

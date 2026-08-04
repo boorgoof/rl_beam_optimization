@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -126,6 +128,36 @@ class SVGTerminalFailureTests(unittest.TestCase):
 
         self.assertEqual(agent.env.calls, 3)
         self.assertEqual(score, ERROR_SCORE)
+
+    def test_svg_checkpoint_restores_best_parameter_configuration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "svg.pt"
+            source = SVGAgent.__new__(SVGAgent)
+            source.policy = _Policy()
+            source.optimizer = torch.optim.SGD(source.policy.parameters(), lr=1e-3)
+            source.device = torch.device("cpu")
+            source.best_score = 42.0
+            source.best_params = {
+                key: float(index)
+                for index, key in enumerate(PARAM_KEYS)
+            }
+            source.train_steps = 7
+            source.save(str(checkpoint))
+
+            restored = SVGAgent.__new__(SVGAgent)
+            restored.policy = _Policy()
+            restored.optimizer = torch.optim.SGD(
+                restored.policy.parameters(), lr=1e-3
+            )
+            restored.device = torch.device("cpu")
+            restored.best_score = -float("inf")
+            restored.best_params = {}
+            restored.train_steps = 0
+            restored.load(str(checkpoint))
+
+            self.assertEqual(restored.best_score, source.best_score)
+            self.assertEqual(restored.best_params, source.best_params)
+            self.assertEqual(restored.train_steps, source.train_steps)
 
 
 if __name__ == "__main__":

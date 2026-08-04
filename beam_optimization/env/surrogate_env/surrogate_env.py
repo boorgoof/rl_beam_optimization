@@ -69,6 +69,7 @@ class SurrogateEnv(BaseBeamEnv):
         distance_penalty_weight: float = 0.0,
         action_penalty_weight: float = 0.0,
         score_regression_penalty_weight: float = 0.0,
+        action_smoothness_penalty_weight: float = 0.0,
     ):
         # Store the simulator kwargs for later use in _build_simulator() for the surrogate simulator
         self._simulator_kwargs = {
@@ -84,6 +85,7 @@ class SurrogateEnv(BaseBeamEnv):
             reset_scale=reset_scale,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
         )
 

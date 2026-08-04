@@ -1,26 +1,24 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Evaluate every surrogate_*.pt checkpoint on the test split, including
 # per-stage/per-feature errors, final-score accuracy, correlations and plots.
 # See: beam_optimization/env/surrogate_env/surrogate/model/evaluator.py.
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
-if [ -f "beam_optimization/.venv/bin/activate" ]; then
-  source beam_optimization/.venv/bin/activate
-fi
+source beam_optimization/.venv/bin/activate
 
 # <-- MODIFY HERE to evaluate against a different dataset's test split.
-DATASET_DIR="beam_optimization/env/dataset/013"
-MODEL_DIR="beam_optimization/env/surrogate_env/surrogate/trained_models/base"
+DATASET_DIR="beam_optimization/env/dataset/018"
+MODEL_DIR="beam_optimization/env/surrogate_env/surrogate/trained_models/base_018_final"
 
 python -m beam_optimization evaluate_surrogate \
   --model-dir "$MODEL_DIR" \
   --dataset "$DATASET_DIR/dataset_test.pt" \
   --classifier-path "$MODEL_DIR/failure_classifier_$(basename "$DATASET_DIR").pt" \
   --batch-size 1024 \
-  --output beam_optimization/results/benchmark/surrogate_eval.json \
+  --output beam_optimization/results/benchmark/surrogate_eval_018.json \
   "$@"
   # --classifier-path is set by default (train_surrogate trains one shared
   # classifier per dataset automatically) so classifier_metrics,

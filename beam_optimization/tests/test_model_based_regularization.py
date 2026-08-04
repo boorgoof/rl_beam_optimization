@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from beam_optimization.algorithms.model_based.mbpo import MBPO
+from beam_optimization.algorithms.model_based.svg import SVGAgent
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM,
     N_OUTPUT_STAGES,
@@ -17,6 +18,7 @@ from beam_optimization.config.adige import (
     action_step_vec,
 )
 from beam_optimization.env.dataset import BeamDataset
+from beam_optimization.env.base_beam_env import BaseBeamEnv
 from beam_optimization.env.surrogate_env.differentiable_surrogate_env import (
     DifferentiableBeamState,
     DifferentiableSurrogateEnv,
@@ -35,7 +37,11 @@ def _dataset_with_params(param_rows: np.ndarray) -> BeamDataset:
     return dataset
 
 
-def _state(score: torch.Tensor, params: torch.Tensor) -> DifferentiableBeamState:
+def _state(
+    score: torch.Tensor,
+    params: torch.Tensor,
+    previous_action: torch.Tensor | None = None,
+) -> DifferentiableBeamState:
     return DifferentiableBeamState(
         beam0=torch.ones((1, BEAM_STATE_DIM)),
         params=params,
@@ -46,7 +52,13 @@ def _state(score: torch.Tensor, params: torch.Tensor) -> DifferentiableBeamState
         ],
         step_count=0,
         model_index=0,
+        previous_action=previous_action,
     )
+
+
+class _PenaltyOnlyEnv(BaseBeamEnv):
+    def _build_simulator(self):
+        raise NotImplementedError
 
 
 class DifferentiableRegularizationTests(unittest.TestCase):
@@ -56,6 +68,7 @@ class DifferentiableRegularizationTests(unittest.TestCase):
         *,
         distance: float = 0.0,
         action: float = 0.0,
+        smoothness: float = 0.0,
         regression: float = 0.0,
     ) -> DifferentiableSurrogateEnv:
         env = DifferentiableSurrogateEnv.__new__(DifferentiableSurrogateEnv)
@@ -63,6 +76,7 @@ class DifferentiableRegularizationTests(unittest.TestCase):
         env.simulator = SimpleNamespace(dataset=dataset)
         env.distance_penalty_weight = distance
         env.action_penalty_weight = action
+        env.action_smoothness_penalty_weight = smoothness
         env.score_regression_penalty_weight = regression
         env._action_step_t = torch.as_tensor(action_step_vec(), dtype=torch.float32)
         env._knn_reference_t = dataset.get_param_vecs()
@@ -80,7 +94,7 @@ class DifferentiableRegularizationTests(unittest.TestCase):
         )
         state = _state(torch.tensor(20.0), torch.zeros(N_PARAMS))
 
-        distance, _, _ = env._differentiable_penalties(
+        distance, _, _, _ = env._differentiable_penalties(
             state,
             torch.zeros(N_PARAMS),
             params,
@@ -109,14 +123,17 @@ class DifferentiableRegularizationTests(unittest.TestCase):
         score_next = torch.tensor(20.0, requires_grad=True)
         state = _state(torch.tensor(30.0), torch.zeros(N_PARAMS))
 
-        _, action_penalty, regression_penalty = env._differentiable_penalties(
+        _, action_penalty, smoothness_penalty, regression_penalty = (
+            env._differentiable_penalties(
             state,
             action,
             torch.zeros(N_PARAMS),
             score_next,
+            )
         )
 
         self.assertAlmostEqual(float(action_penalty.detach()), action_weight * 0.25)
+        self.assertEqual(float(smoothness_penalty), 0.0)
         self.assertAlmostEqual(
             float(regression_penalty.detach()),
             regression_weight * 10.0 / REWARD_SCORE_SCALE,
@@ -126,6 +143,79 @@ class DifferentiableRegularizationTests(unittest.TestCase):
         self.assertGreater(float(action.grad.abs().sum()), 0.0)
         self.assertTrue(torch.isfinite(score_next.grad))
         self.assertLess(float(score_next.grad), 0.0)
+
+    def test_smoothness_matches_gym_formula_and_gradients_reach_both_actions(self):
+        dataset = _dataset_with_params(np.zeros((1, N_PARAMS), dtype=np.float32))
+        weight = 0.25
+        env = self._env(dataset, smoothness=weight)
+        previous_action = (-env._action_step_t).detach().requires_grad_(True)
+        action = env._action_step_t.detach().requires_grad_(True)
+        state = _state(
+            torch.tensor(20.0),
+            torch.zeros(N_PARAMS),
+            previous_action=previous_action,
+        )
+
+        _, _, smoothness_penalty, _ = env._differentiable_penalties(
+            state,
+            action,
+            torch.zeros(N_PARAMS),
+            torch.tensor(20.0),
+        )
+
+        self.assertAlmostEqual(float(smoothness_penalty.detach()), 4.0 * weight)
+        smoothness_penalty.backward()
+        for gradient in (action.grad, previous_action.grad):
+            self.assertIsNotNone(gradient)
+            self.assertTrue(torch.isfinite(gradient).all())
+            self.assertGreater(float(gradient.abs().sum()), 0.0)
+
+    def test_detach_for_next_step_detaches_previous_action(self):
+        previous_action = torch.ones(N_PARAMS, requires_grad=True)
+        state = _state(
+            torch.tensor(20.0),
+            torch.zeros(N_PARAMS),
+            previous_action=previous_action,
+        )
+
+        detached = state.detach_for_next_step()
+
+        self.assertIsNotNone(detached.previous_action)
+        self.assertFalse(detached.previous_action.requires_grad)
+        self.assertIsNot(detached.previous_action, previous_action)
+
+    def test_smoothness_value_has_numeric_parity_with_gym_environment(self):
+        dataset = _dataset_with_params(np.zeros((1, N_PARAMS), dtype=np.float32))
+        weight = 0.25
+        torch_env = self._env(dataset, smoothness=weight)
+        previous_action = -torch_env._action_step_t
+        action = 0.5 * torch_env._action_step_t
+        state = _state(
+            torch.tensor(20.0),
+            torch.zeros(N_PARAMS),
+            previous_action=previous_action,
+        )
+        _, _, torch_penalty, _ = torch_env._differentiable_penalties(
+            state,
+            action,
+            torch.zeros(N_PARAMS),
+            torch.tensor(20.0),
+        )
+
+        gym_env = _PenaltyOnlyEnv.__new__(_PenaltyOnlyEnv)
+        step = action_step_vec()
+        gym_env.action_space = SimpleNamespace(low=-step, high=step)
+        gym_env.action_penalty_weight = 0.0
+        gym_env.action_smoothness_penalty_weight = weight
+        gym_env.score_regression_penalty_weight = 0.0
+        gym_env._last_action = -step
+        _, gym_penalty, _ = gym_env._control_penalties(
+            0.5 * step,
+            20.0,
+            20.0,
+        )
+
+        self.assertAlmostEqual(float(torch_penalty), gym_penalty, places=6)
 
 
 class MBPORegularizationTests(unittest.TestCase):
@@ -146,13 +236,41 @@ class MBPORegularizationTests(unittest.TestCase):
                 synth_buffer_size=2,
                 distance_penalty_weight=0.02,
                 action_penalty_weight=0.03,
+                action_smoothness_penalty_weight=0.25,
                 score_regression_penalty_weight=1.0,
             )
 
         kwargs = env_class.call_args.kwargs
         self.assertEqual(kwargs["distance_penalty_weight"], 0.02)
         self.assertEqual(kwargs["action_penalty_weight"], 0.03)
+        self.assertEqual(kwargs["action_smoothness_penalty_weight"], 0.25)
         self.assertEqual(kwargs["score_regression_penalty_weight"], 1.0)
+
+
+class SVGRegularizationTests(unittest.TestCase):
+    def test_penalty_weight_is_forwarded_to_differentiable_environment(self):
+        bounds = action_step_vec().astype(np.float32)
+        with mock.patch(
+            "beam_optimization.algorithms.model_based.svg."
+            "DifferentiableSurrogateEnv"
+        ) as env_class:
+            SVGAgent(
+                surrogate=object(),
+                dataset=BeamDataset(),
+                obs_dim=3,
+                act_dim=N_PARAMS,
+                action_bounds=(-bounds, bounds),
+                param_keys=tuple(f"p{i}" for i in range(N_PARAMS)),
+                default_params={f"p{i}": 0.0 for i in range(N_PARAMS)},
+                hidden_dims=(4,),
+                device="cpu",
+                action_smoothness_penalty_weight=0.25,
+            )
+
+        self.assertEqual(
+            env_class.call_args.kwargs["action_smoothness_penalty_weight"],
+            0.25,
+        )
 
 
 if __name__ == "__main__":

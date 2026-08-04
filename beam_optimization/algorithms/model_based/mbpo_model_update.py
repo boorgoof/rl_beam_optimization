@@ -114,7 +114,10 @@ class MBPOWithModelUpdate(MBPO):
         distance_penalty_weight: float = 0.0,
         action_penalty_weight: float = 0.0,
         score_regression_penalty_weight: float = 0.0,
+        action_smoothness_penalty_weight: float = 0.0,
     ):
+        if int(model_train_freq) <= 0:
+            raise ValueError("model_train_freq must be positive")
         super().__init__(
             agent=agent,
             surrogates=surrogates,
@@ -131,6 +134,7 @@ class MBPOWithModelUpdate(MBPO):
             device=device,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
         )
         self.model_train_freq     = int(model_train_freq)
@@ -156,6 +160,7 @@ class MBPOWithModelUpdate(MBPO):
         )
 
         self._real_step_count = 0
+        self._last_model_update_step = 0
         self.last_update_losses = None
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -190,17 +195,35 @@ class MBPOWithModelUpdate(MBPO):
         self._real_step_count += 1
 
         if self._real_step_count % self.model_train_freq == 0:
-            losses = self._updater.update_if_ready()
-            if losses is not None:
-                self.last_update_losses = losses
-
-            if losses is not None and self.dataset_save_path is not None:
-                self.save_dataset()
-
-            if losses is not None and self.surrogate_save_dir is not None:
-                self.save_surrogates()
+            self._update_model()
 
         return super().step(obs, action, reward, next_obs, done)
+
+    def _update_model(self):
+        """Fine-tune and persist the working model at the current real step."""
+        losses = self._updater.update_if_ready()
+        self._last_model_update_step = self._real_step_count
+        if losses is None:
+            return None
+
+        self.last_update_losses = losses
+        if self.dataset_save_path is not None:
+            self.save_dataset()
+        if self.surrogate_save_dir is not None:
+            self.save_surrogates()
+        return losses
+
+    def finalize_model_update(self):
+        """Include the final partial update period in the saved surrogate.
+
+        A training budget does not normally end on ``model_train_freq``.  This
+        explicit flush makes the last real samples participate in one final
+        fine-tuning pass, while avoiding a duplicate update when the final step
+        already triggered the periodic update.
+        """
+        if self._last_model_update_step == self._real_step_count:
+            return None
+        return self._update_model()
 
     @property
     def n_online_samples(self) -> int:

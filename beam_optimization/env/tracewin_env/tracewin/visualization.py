@@ -53,6 +53,28 @@ def find_final_tracewin_dst_path(calc_dir: str | Path) -> Path | None:
     return None
 
 
+def subsample_distribution(
+    distr: Dict[str, np.ndarray],
+    max_particles: Optional[int],
+    seed: int = 123,
+) -> Dict[str, np.ndarray]:
+    """Randomly subsample every array in `distr` to at most `max_particles` rows.
+
+    The same random indices are used for every key, so x/y/xp/yp stay
+    paired per particle. Returns `distr` unchanged if `max_particles` is
+    None or already >= the particle count. Factored out of
+    `tracewin_distribution_from_dst()` so a distribution already loaded into
+    memory (e.g. a snapshot cached before its source .dst file was
+    overwritten) can be subsampled the same way at render time.
+    """
+    n_particles = len(next(iter(distr.values())))
+    if max_particles is None or n_particles <= max_particles:
+        return distr
+    rng = np.random.default_rng(seed)
+    indices = rng.choice(np.arange(n_particles), size=max_particles, replace=False)
+    return {key: np.asarray(values)[indices] for key, values in distr.items()}
+
+
 def tracewin_distribution_from_dst(
     dst_path: str | Path,
     *,
@@ -70,23 +92,15 @@ def tracewin_distribution_from_dst(
     if not dst_path.exists():
         raise FileNotFoundError(f"TraceWin distribution file not found: {dst_path}")
 
-    # read the .dst file and extract the number of particle to create an array of indices.
+    # read the .dst file into full x/y/xp/yp arrays.
     dst = Dst(str(dst_path))
-    n_particles = int(dst.Np)
-    indices = np.arange(n_particles)
-
-    # if a maximum number of particles is specified, randomly select that many indices.
-    if max_particles is not None and n_particles > max_particles:
-        rng = np.random.default_rng(seed)
-        indices = rng.choice(indices, size=max_particles, replace=False)
-
-    # return the selected particle features of the array as a dictionary
-    return {
-        "x": np.asarray(dst["x"], dtype=float)[indices],
-        "y": np.asarray(dst["y"], dtype=float)[indices],
-        "xp": np.asarray(dst["xp"], dtype=float)[indices],
-        "yp": np.asarray(dst["yp"], dtype=float)[indices],
+    distribution = {
+        "x": np.asarray(dst["x"], dtype=float),
+        "y": np.asarray(dst["y"], dtype=float),
+        "xp": np.asarray(dst["xp"], dtype=float),
+        "yp": np.asarray(dst["yp"], dtype=float),
     }
+    return subsample_distribution(distribution, max_particles, seed=seed)
 
 # daniele
 def plot_tracewin_distribution(

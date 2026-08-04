@@ -48,7 +48,14 @@ class TraceWin:
             return value.decode("utf-8", errors="replace")
         return str(value)
 
-    def run(self, timeout, elem_params, other_params=None, num_threads=None) -> bool:
+    def run(
+        self,
+        timeout,
+        elem_params,
+        other_params=None,
+        num_threads=None,
+        kill_remote_on_timeout=True,
+    ) -> bool:
         """Execute TraceWin and wait for completion
         
         Args:
@@ -56,6 +63,9 @@ class TraceWin:
             elem_params: Dictionary of element parameters
             other_params: Dictionary of other parameters
             num_threads: Number of threads for TraceWin (default: all available CPUs)
+            kill_remote_on_timeout: Whether timeout recovery may perform the
+                legacy global cleanup of remote TraceWin/Xvfb processes. Set
+                this to False when independent workspaces run concurrently.
 
         Returns:
             True if TraceWin exited successfully, False otherwise.
@@ -93,12 +103,14 @@ class TraceWin:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             self._kill_process_group(proc, pgid)
-            self._kill_remote_tracewin_processes()
+            if kill_remote_on_timeout:
+                self._kill_remote_tracewin_processes()
             try:
                 stdout, stderr = proc.communicate(timeout=5)
             except subprocess.TimeoutExpired as cleanup_exc:
                 self._kill_process_group(proc, pgid)
-                self._kill_remote_tracewin_processes()
+                if kill_remote_on_timeout:
+                    self._kill_remote_tracewin_processes()
                 stdout = cleanup_exc.output or exc.output or ""
                 stderr = cleanup_exc.stderr or exc.stderr or ""
             self.last_stdout = self._as_text(stdout)

@@ -52,6 +52,56 @@ class ReplayBuffer:
     def __len__(self):
         return self.size
 
+    def state_dict(self) -> dict:
+        """Serialize only populated rows, avoiding the unused buffer capacity."""
+        return {
+            "max_size": int(self.max_size),
+            "ptr": int(self.ptr),
+            "size": int(self.size),
+            "states": torch.from_numpy(self.states[:self.size].copy()),
+            "actions": torch.from_numpy(self.actions[:self.size].copy()),
+            "rewards": torch.from_numpy(self.rewards[:self.size].copy()),
+            "next_states": torch.from_numpy(self.next_states[:self.size].copy()),
+            "terminals": torch.from_numpy(self.terminals[:self.size].copy()),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore a replay snapshot into a compatible buffer instance."""
+        size = int(state["size"])
+        if size < 0 or size > self.max_size:
+            raise ValueError(
+                f"Replay snapshot size {size} exceeds buffer capacity {self.max_size}"
+            )
+        arrays = {
+            "states": self.states,
+            "actions": self.actions,
+            "rewards": self.rewards,
+            "next_states": self.next_states,
+            "terminals": self.terminals,
+        }
+        for name, destination in arrays.items():
+            stored = state[name]
+            if isinstance(stored, torch.Tensor):
+                source = stored.detach().cpu().numpy().astype(np.float32, copy=False)
+            else:
+                # Backward-compatible with snapshots created before replay
+                # fields were stored as weights-only-safe tensors.
+                source = np.asarray(stored, dtype=np.float32)
+            expected_shape = (size, *destination.shape[1:])
+            if source.shape != expected_shape:
+                raise ValueError(
+                    f"Replay field {name!r} has shape {source.shape}, "
+                    f"expected {expected_shape}"
+                )
+            destination[:size] = source
+        self.size = size
+        self.ptr = int(state["ptr"])
+        if self.ptr < 0 or self.ptr >= self.max_size:
+            raise ValueError(
+                f"Replay snapshot pointer {self.ptr} is outside buffer capacity "
+                f"{self.max_size}"
+            )
+
 
 class MixedReplayBuffer:
     """Samples from real and synthetic buffers with a fixed real/synth ratio.
@@ -103,3 +153,15 @@ class MixedReplayBuffer:
     @property
     def size(self) -> int:
         return len(self.real_buffer)
+
+    def state_dict(self) -> dict:
+        return {
+            "real_ratio": self.real_ratio,
+            "real_buffer": self.real_buffer.state_dict(),
+            "synth_buffer": self.synth_buffer.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self.real_ratio = float(state["real_ratio"])
+        self.real_buffer.load_state_dict(state["real_buffer"])
+        self.synth_buffer.load_state_dict(state["synth_buffer"])

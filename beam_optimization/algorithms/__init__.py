@@ -1,54 +1,81 @@
-"""Registry of the custom RL algorithms.
+"""Public algorithm names and model-free factories.
 
-The seven model-free classes share the same constructor signature
-(obs_dim, act_dim, action_bounds, hidden_dims=..., **hyperparams) and the
-select_action/store/optimize/save/load convention, so scripts can build any
-of them through make_agent(). SB3-SAC, SVG and MBPO need an env/surrogate/
-dataset at construction time and are built explicitly by the scripts.
-
-Adding an algorithm = one line in _REGISTRY.
+Stable Baselines3 implementations use their plain algorithm names. The
+project implementations use an explicit ``_custom`` suffix so checkpoints,
+plots, and CLI flags are never ambiguous.
 """
 from __future__ import annotations
 
 from importlib import import_module
 
-_REGISTRY: dict[str, tuple[str, str]] = {
-    "sac":       ("beam_optimization.algorithms.model_free.sac",       "SAC"),
-    "td3":       ("beam_optimization.algorithms.model_free.td3",       "TD3"),
-    "ppo":       ("beam_optimization.algorithms.model_free.ppo",       "PPO"),
-    "ddpg":      ("beam_optimization.algorithms.model_free.ddpg",      "DDPG"),
-    "a2c":       ("beam_optimization.algorithms.model_free.a2c",       "A2C"),
-    "reinforce": ("beam_optimization.algorithms.model_free.reinforce", "REINFORCE"),
-    "trpo":      ("beam_optimization.algorithms.model_free.trpo",      "TRPO"),
+_CUSTOM_REGISTRY: dict[str, tuple[str, str]] = {
+    "sac_custom":       ("beam_optimization.algorithms.model_free.sac",       "SAC"),
+    "td3_custom":       ("beam_optimization.algorithms.model_free.td3",       "TD3"),
+    "ppo_custom":       ("beam_optimization.algorithms.model_free.ppo",       "PPO"),
+    "ddpg_custom":      ("beam_optimization.algorithms.model_free.ddpg",      "DDPG"),
+    "a2c_custom":       ("beam_optimization.algorithms.model_free.a2c",       "A2C"),
+    "reinforce_custom": ("beam_optimization.algorithms.model_free.reinforce", "REINFORCE"),
+    "trpo_custom":      ("beam_optimization.algorithms.model_free.trpo",      "TRPO"),
 }
 
-MODEL_FREE_ALGORITHMS: tuple[str, ...] = tuple(_REGISTRY)
+STABLE_BASELINES_ALGORITHMS: tuple[str, ...] = ("sac", "ppo", "td3", "ddpg", "a2c")
+CUSTOM_MODEL_FREE_ALGORITHMS: tuple[str, ...] = tuple(_CUSTOM_REGISTRY)
+MODEL_FREE_ALGORITHMS: tuple[str, ...] = (
+    *STABLE_BASELINES_ALGORITHMS,
+    *CUSTOM_MODEL_FREE_ALGORITHMS,
+)
+MODEL_BASED_ALGORITHMS: tuple[str, ...] = (
+    "mbpo",
+    "svg_final",
+    "svg_uniform",
+    "iterative_sim2real_sac",
+)
+ALGORITHMS: tuple[str, ...] = (*MODEL_FREE_ALGORITHMS, *MODEL_BASED_ALGORITHMS)
+LEGACY_ALGORITHM_ALIASES = {"sb3_sac": "sac"}
 
 # On-policy agents use store(state, action, reward, value, logpa, done) +
 # optimize(last_value); off-policy ones use store(s, a, r, ns, done) + optimize().
-ON_POLICY_ALGORITHMS: frozenset[str] = frozenset({"ppo", "a2c", "reinforce", "trpo"})
+CUSTOM_ON_POLICY_ALGORITHMS: frozenset[str] = frozenset(
+    {"ppo_custom", "a2c_custom", "reinforce_custom", "trpo_custom"}
+)
 
 
-def make_agent(name: str, obs_dim: int, act_dim: int, action_bounds,
-               hidden_dims=(256, 256), **kwargs):
-    """Build one of the custom model-free agents by name (lazy import)."""
+def canonical_algorithm_name(name: str) -> str:
+    """Resolve supported legacy public names to their canonical identifier."""
     key = name.lower()
-    if key not in _REGISTRY:
+    return LEGACY_ALGORITHM_ALIASES.get(key, key)
+
+
+def make_custom_agent(name: str, obs_dim: int, act_dim: int, action_bounds,
+                      hidden_dims=(256, 256), **kwargs):
+    """Build one of the custom model-free agents by suffixed public name."""
+    key = canonical_algorithm_name(name)
+    if key not in _CUSTOM_REGISTRY:
         raise ValueError(
-            f"Unknown algorithm '{name}'. Available: {', '.join(MODEL_FREE_ALGORITHMS)}"
+            f"Unknown custom algorithm '{name}'. Available: "
+            f"{', '.join(CUSTOM_MODEL_FREE_ALGORITHMS)}"
         )
-    module_name, class_name = _REGISTRY[key]
+    module_name, class_name = _CUSTOM_REGISTRY[key]
     cls = getattr(import_module(module_name), class_name)
     return cls(obs_dim, act_dim, action_bounds, hidden_dims=tuple(hidden_dims), **kwargs)
 
 
-def load_agent(name: str, checkpoint: str, obs_dim: int, act_dim: int,
-               action_bounds, hidden_dims=(256, 256)):
+def load_custom_agent(name: str, checkpoint: str, obs_dim: int, act_dim: int,
+                      action_bounds, hidden_dims=(256, 256)):
     """Build a custom model-free agent and load its checkpoint."""
-    agent = make_agent(name, obs_dim, act_dim, action_bounds, hidden_dims=hidden_dims)
+    agent = make_custom_agent(
+        name, obs_dim, act_dim, action_bounds, hidden_dims=hidden_dims
+    )
     agent.load(checkpoint)
     return agent
 
 
-def is_on_policy(name: str) -> bool:
-    return name.lower() in ON_POLICY_ALGORITHMS
+def is_custom_on_policy(name: str) -> bool:
+    return canonical_algorithm_name(name) in CUSTOM_ON_POLICY_ALGORITHMS
+
+
+# Compatibility aliases for Python callers. Public algorithm identifiers must
+# still use the explicit ``_custom`` suffix.
+make_agent = make_custom_agent
+load_agent = load_custom_agent
+is_on_policy = is_custom_on_policy

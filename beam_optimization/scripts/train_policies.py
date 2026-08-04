@@ -2,8 +2,9 @@
 Train — trains all algorithms in sequence on the surrogate environment.
 
 Algorithms:
-  model-free      SAC, TD3, PPO, DDPG, A2C, REINFORCE, TRPO (+ SB3-SAC baseline)
-  model-based     SVGAgent, MBPO (with inner SAC)
+  Stable Baselines3  SAC, PPO, TD3, DDPG, A2C
+  custom model-free  SAC, TD3, PPO, DDPG, A2C, REINFORCE, TRPO (_custom)
+  model-based     SVGAgent, MBPO, Iterative Sim-to-Real SAC
 
 Quick smoke test (few steps):
     python -m beam_optimization train_policies --quick
@@ -18,9 +19,9 @@ Full run:
         --svg-episodes 2000
 
 Checkpoints are saved as:
-    results/train/rl/all/<algo>/<algo>_agent.pt          (model-free)
-    results/train/rl/all/sb3_sac/sb3_sac_agent.zip
-    results/train/rl/all/svg_finale/svg_agent.pt, results/train/rl/all/svg_uniform/svg_agent.pt
+    results/train/rl/all/<algo>/<algo>_agent.zip         (Stable Baselines3)
+    results/train/rl/all/<algo>_custom/<algo>_custom_agent.pt
+    results/train/rl/all/svg_final/svg_agent.pt, results/train/rl/all/svg_uniform/svg_agent.pt
     results/train/rl/all/dyna/dyna_agent.pt              (MBPO inner SAC)
 """
 from __future__ import annotations
@@ -29,12 +30,22 @@ import argparse
 import csv
 import json
 import shutil
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 
-from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, is_on_policy, make_agent
+from beam_optimization.algorithms import (
+    CUSTOM_MODEL_FREE_ALGORITHMS,
+    STABLE_BASELINES_ALGORITHMS,
+    is_custom_on_policy,
+    make_custom_agent,
+)
+from beam_optimization.algorithms.model_based import (
+    IterativeSim2RealSAC,
+    IterativeSim2RealSACConfig,
+)
 from beam_optimization.algorithms.utils.logger import Logger
 from beam_optimization.config.paths import (
     DEFAULT_BASE_SURROGATE_DIR,
@@ -51,6 +62,7 @@ from beam_optimization.env.surrogate_env import SurrogateEnv
 from beam_optimization.scripts.common import algo_style, evaluate_policy, set_global_seed
 from beam_optimization.config.adige import (
     ACTION_PENALTY_WEIGHT,
+    ACTION_SMOOTHNESS_PENALTY_WEIGHT,
     MAX_STEPS,
     N_OUTPUT_STAGES,
     N_PARAMS,
@@ -73,8 +85,18 @@ EVAL_SEED = 10_000
 # OBS_DIM is computed dynamically from the env observation mask.
 
 STAGE_WEIGHT_CONFIGS = {
-    "finale":  None,
+    "final":   None,
     "uniform": [1.0] * N_OUTPUT_STAGES,
+}
+
+ITERATIVE_SIM2REAL_ALGORITHM = "iterative_sim2real_sac"
+CONCRETE_TRAINING_ALGORITHMS = {
+    *CUSTOM_MODEL_FREE_ALGORITHMS,
+    *STABLE_BASELINES_ALGORITHMS,
+    "dyna",
+    "svg_final",
+    "svg_uniform",
+    ITERATIVE_SIM2REAL_ALGORITHM,
 }
 
 
@@ -123,7 +145,7 @@ def load_surrogate_ensemble(folder: str | Path, *, label: str):
 
 
 def initialize_updated_ensemble_from_base(base_dir: str | Path, updated_dir: str | Path) -> None:
-    """Copy base surrogate_*.pt files into updated when updated is empty."""
+    """Copy base models into an empty working ensemble with canonical names."""
     base_dir = Path(base_dir)
     updated_dir = Path(updated_dir)
 
@@ -137,8 +159,12 @@ def initialize_updated_ensemble_from_base(base_dir: str | Path, updated_dir: str
         )
 
     updated_dir.mkdir(parents=True, exist_ok=True)
-    for source in base_files:
-        shutil.copy2(source, updated_dir / source.name)
+    for index, source in enumerate(base_files):
+        # SurrogateDatasetUpdater persists updated weights using this naming
+        # scheme.  Canonical names ensure each update replaces its working
+        # copy instead of leaving both e.g. surrogate_018_0.pt and
+        # surrogate_0.pt in the directory (which would double-load a model).
+        shutil.copy2(source, updated_dir / f"surrogate_{index}.pt")
     print(
         f"Initialized updated ensemble by copying {len(base_files)} surrogates "
         f"from {base_dir} to {updated_dir}"
@@ -157,9 +183,10 @@ def _loss_metrics(algo: str, losses) -> dict[str, float]:
     values = list(losses) if isinstance(losses, (tuple, list)) else [losses]
     values = [None if value is None else float(value) for value in values]
 
-    if algo == "sac":
+    base_algo = algo.removesuffix("_custom")
+    if base_algo == "sac":
         names = ["critic_loss", "actor_loss", "entropy_loss"]
-    elif algo in {"td3", "ddpg"}:
+    elif base_algo in {"td3", "ddpg"}:
         names = ["critic_loss", "actor_loss", "entropy_loss"]
     else:
         names = ["value_loss", "policy_loss"]
@@ -226,7 +253,14 @@ class LearningCurveRecorder:
         stds = [row["eval_std_score"] for row in self.rows]
 
         fig, ax = plt.subplots(figsize=(7.2, 4.2))
-        ax.plot(steps, scores, marker="o", linewidth=1.8, label=self.algorithm)
+        ax.plot(
+            steps,
+            scores,
+            marker="o",
+            linestyle="-",
+            linewidth=1.8,
+            label=self.algorithm,
+        )
         if len(steps) > 1:
             lower = np.asarray(scores) - np.asarray(stds)
             upper = np.asarray(scores) + np.asarray(stds)
@@ -287,8 +321,8 @@ def save_all_learning_curves_plot(curves: Dict[str, list[dict]], out_root: Path)
         steps = np.asarray([row["step"] for row in rows], dtype=float)
         scores = np.asarray([row["eval_mean_score"] for row in rows], dtype=float)
         stds = np.asarray([row.get("eval_std_score", 0.0) for row in rows], dtype=float)
-        color, linestyle = algo_style(name)
-        ax.plot(steps, scores, color=color, linestyle=linestyle, linewidth=1.8, label=name)
+        color, _ = algo_style(name)
+        ax.plot(steps, scores, color=color, linestyle="-", linewidth=1.8, label=name)
         if len(steps) > 1:
             ax.fill_between(steps, scores - stds, scores + stds, color=color, alpha=0.12)
     ax.set_title("Learning curves")
@@ -404,7 +438,7 @@ def run_seeded(
 
 # ── Training loops ────────────────────────────────────────────────────────────
 
-def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
+def train_custom(algo: str, surrogate, dataset, n_steps, max_ep_steps,
              hidden, out_dir: Path,
              seed: int = 42,
              enable_tensorboard: bool = True,
@@ -414,7 +448,8 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
              distance_penalty_weight: float = 0.0,
              action_penalty_weight: float = ACTION_PENALTY_WEIGHT,
              score_regression_penalty_weight: float = SCORE_REGRESSION_PENALTY_WEIGHT,
-             learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
+             learning_curves: Optional[Dict[str, list[dict]]] = None,
+             action_smoothness_penalty_weight: float = ACTION_SMOOTHNESS_PENALTY_WEIGHT) -> float:
     """Train one custom model-free algorithm on the surrogate environment."""
     set_global_seed(seed)
     # Create env first so obs_dim is known before building the agent
@@ -423,6 +458,7 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
         distance_penalty_weight=distance_penalty_weight,
         action_penalty_weight=action_penalty_weight,
+        action_smoothness_penalty_weight=action_smoothness_penalty_weight,
         score_regression_penalty_weight=score_regression_penalty_weight,
     )
     obs_dim = env.observation_space.shape[0]
@@ -430,12 +466,14 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
     act_bds = action_bounds()
     bounds  = (act_bds[0].tolist(), act_bds[1].tolist())
     agent_kwargs = {}
-    if algo in {"sac", "td3", "ddpg"}:
+    if algo in {"sac_custom", "td3_custom", "ddpg_custom"}:
         # Match Stable Baselines 3 off-policy learning_starts. These agents
         # sample uniformly from the physical action box during warm-up and
         # train their critics on normalized replay actions afterwards.
         agent_kwargs["warmup_steps"] = min(100, max(1, n_steps // 4))
-    agent = make_agent(algo, obs_dim, ACT_DIM, bounds, hidden_dims=hidden, **agent_kwargs)
+    agent = make_custom_agent(
+        algo, obs_dim, ACT_DIM, bounds, hidden_dims=hidden, **agent_kwargs
+    )
 
     obs, _     = env.reset(seed=seed)
     best_score = -np.inf
@@ -449,12 +487,13 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
         else None
     )
 
-    on_policy = is_on_policy(algo)
+    on_policy = is_custom_on_policy(algo)
     make_eval_env = lambda: SurrogateEnv(
         model=surrogate, dataset=dataset, max_steps=max_ep_steps,
         reset_scale=TEST_RESET_SCALE,
         distance_penalty_weight=distance_penalty_weight,
         action_penalty_weight=action_penalty_weight,
+        action_smoothness_penalty_weight=action_smoothness_penalty_weight,
         score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
@@ -503,6 +542,9 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
                     "reward": float(reward),
                     "action_norm": float(np.linalg.norm(action)),
                     "action_penalty": float(info.get("action_penalty", 0.0)),
+                    "action_smoothness_penalty": float(
+                        info.get("action_smoothness_penalty", 0.0)
+                    ),
                     "score_regression_penalty": float(
                         info.get("score_regression_penalty", 0.0)
                     ),
@@ -565,19 +607,29 @@ def train_rl(algo: str, surrogate, dataset, n_steps, max_ep_steps,
             logger.close()
 
 
-def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
-                  hidden, out_dir: Path,
-                  seed: int = 42,
-                  enable_tensorboard: bool = True,
-                  eval_every: int = 1000,
-                  eval_episodes: int = 5,
-                  enable_learning_curve: bool = True,
-                  distance_penalty_weight: float = 0.0,
-                  action_penalty_weight: float = ACTION_PENALTY_WEIGHT,
-                  score_regression_penalty_weight: float = SCORE_REGRESSION_PENALTY_WEIGHT,
-                  learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
-    """Train Stable Baselines 3 SAC on the surrogate environment (sanity baseline)."""
-    from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
+def train_stable_baselines(
+    algo: str,
+    surrogate,
+    dataset,
+    n_steps,
+    max_ep_steps,
+    hidden,
+    out_dir: Path,
+    seed: int = 42,
+    enable_tensorboard: bool = True,
+    eval_every: int = 1000,
+    eval_episodes: int = 5,
+    enable_learning_curve: bool = True,
+    distance_penalty_weight: float = 0.0,
+    action_penalty_weight: float = ACTION_PENALTY_WEIGHT,
+    score_regression_penalty_weight: float = SCORE_REGRESSION_PENALTY_WEIGHT,
+    learning_curves: Optional[Dict[str, list[dict]]] = None,
+    action_smoothness_penalty_weight: float = ACTION_SMOOTHNESS_PENALTY_WEIGHT,
+) -> float:
+    """Train one continuous-action Stable Baselines3 algorithm."""
+    from beam_optimization.algorithms.model_free.stable_baselines import (
+        StableBaselinesAgent,
+    )
 
     set_global_seed(seed)
     env = SurrogateEnv(
@@ -585,12 +637,13 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
         reset_scale=TRAIN_RESET_SCALE,
         distance_penalty_weight=distance_penalty_weight,
         action_penalty_weight=action_penalty_weight,
+        action_smoothness_penalty_weight=action_smoothness_penalty_weight,
         score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
-    logger = _make_logger(out_dir, "sb3_sac", enable_tensorboard)
+    logger = _make_logger(out_dir, algo, enable_tensorboard)
     recorder = (
-        LearningCurveRecorder(out_dir, "sb3_sac")
+        LearningCurveRecorder(out_dir, algo)
         if enable_learning_curve and eval_episodes > 0
         else None
     )
@@ -599,9 +652,11 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
         reset_scale=TEST_RESET_SCALE,
         distance_penalty_weight=distance_penalty_weight,
         action_penalty_weight=action_penalty_weight,
+        action_smoothness_penalty_weight=action_smoothness_penalty_weight,
         score_regression_penalty_weight=score_regression_penalty_weight,
     )
-    agent = SB3SAC(
+    agent = StableBaselinesAgent(
+        algo,
         env,
         hidden_dims=tuple(hidden),
         seed=seed,
@@ -640,15 +695,28 @@ def train_sb3_sac(surrogate, dataset, n_steps, max_ep_steps,
                 metrics=metrics,
             )
         if learning_curves is not None and recorder is not None:
-            learning_curves["sb3_sac"] = list(recorder.rows)
+            learning_curves[algo] = list(recorder.rows)
     finally:
         if logger is not None:
             logger.close()
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    agent.save(str(out_dir / "sb3_sac_agent"))
-    print(f"  Saved → {out_dir / 'sb3_sac_agent.zip'}")
+    agent.save(str(out_dir / f"{algo}_agent"))
+    print(f"  Saved → {out_dir / f'{algo}_agent.zip'}")
     return best_score
+
+
+# Python-level compatibility for callers that imported the old helper names.
+train_rl = train_custom
+
+
+def train_sb3_sac(*args, **kwargs):
+    warnings.warn(
+        "train_sb3_sac() is deprecated; use train_stable_baselines('sac', ...).",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return train_stable_baselines("sac", *args, **kwargs)
 
 
 def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
@@ -662,7 +730,8 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
               eval_episodes: int = 5,
               enable_learning_curve: bool = True,
               learning_curves: Optional[Dict[str, list[dict]]] = None,
-              curve_label: str = "svg") -> float:
+              curve_label: str = "svg",
+              action_smoothness_penalty_weight: float = ACTION_SMOOTHNESS_PENALTY_WEIGHT) -> float:
     from beam_optimization.algorithms.model_based.svg import SVGAgent
 
     set_global_seed(seed)
@@ -679,6 +748,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
         stage_weights=stage_weights,
         distance_penalty_weight=distance_penalty_weight,
         action_penalty_weight=action_penalty_weight,
+        action_smoothness_penalty_weight=action_smoothness_penalty_weight,
         score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
@@ -696,6 +766,7 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
         reset_scale=TEST_RESET_SCALE,
         distance_penalty_weight=distance_penalty_weight,
         action_penalty_weight=action_penalty_weight,
+        action_smoothness_penalty_weight=action_smoothness_penalty_weight,
         score_regression_penalty_weight=score_regression_penalty_weight,
     )
 
@@ -720,6 +791,9 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
                         "final_score": float(result.final_score),
                         "best_score": float(best_score),
                         "grad_norm": float(result.grad_norm),
+                        "action_smoothness_penalty": float(
+                            result.action_smoothness_penalty
+                        ),
                         "episode": float(ep),
                     },
                     step=ep,
@@ -763,6 +837,9 @@ def train_svg(surrogate, dataset, n_episodes, horizon, hidden,
 def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                rollout_length, hidden, out_dir: Path,
                seed: int = 42,
+               n_synthetic_per_step: int = 40,
+               mbpo_min_real_samples: Optional[int] = None,
+               model_train_freq: int = 50,
                distance_penalty_weight: float = 0.0,
                action_penalty_weight: float = 0.0,
                score_regression_penalty_weight: float = 0.0,
@@ -777,7 +854,8 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                eval_every: int = 1000,
                eval_episodes: int = 5,
                enable_learning_curve: bool = True,
-               learning_curves: Optional[Dict[str, list[dict]]] = None) -> float:
+               learning_curves: Optional[Dict[str, list[dict]]] = None,
+               action_smoothness_penalty_weight: float = ACTION_SMOOTHNESS_PENALTY_WEIGHT) -> float:
     """
     Train MBPO with the surrogate ensemble for synthetic rollouts.
 
@@ -818,6 +896,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
             distance_dataset=dataset,
         )
@@ -829,6 +908,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             reset_scale=TRAIN_RESET_SCALE,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
         )
         print("  Real env: surrogate (SurrogateEnv)  [MBPO]")
@@ -849,13 +929,22 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         obs_dim=obs_dim,
         act_dim=ACT_DIM,
         rollout_length=rollout_length,
-        min_real_samples=min(256, max(1, n_steps // 4)),
+        n_synthetic_per_step=n_synthetic_per_step,
+        min_real_samples=(
+            min(256, max(1, n_steps // 4))
+            if mbpo_min_real_samples is None
+            else mbpo_min_real_samples
+        ),
+        n_grad_updates=20,
+        real_ratio=0.05,
         distance_penalty_weight=distance_penalty_weight,
         action_penalty_weight=action_penalty_weight,
+        action_smoothness_penalty_weight=action_smoothness_penalty_weight,
         score_regression_penalty_weight=score_regression_penalty_weight,
     )
     if use_model_update:
         mbpo_kwargs["online_mix_ratio"] = online_mix_ratio
+        mbpo_kwargs["model_train_freq"] = model_train_freq
 
         if update_dataset_path is not None:
             dataset_save_path = Path(update_dataset_path)
@@ -904,6 +993,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                 reset_scale=TEST_RESET_SCALE,
                 distance_penalty_weight=distance_penalty_weight,
                 action_penalty_weight=action_penalty_weight,
+                action_smoothness_penalty_weight=action_smoothness_penalty_weight,
                 score_regression_penalty_weight=score_regression_penalty_weight,
                 distance_dataset=dataset,
             )
@@ -912,6 +1002,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             reset_scale=TEST_RESET_SCALE,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
         )
 
@@ -931,7 +1022,7 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
             next_obs, reward, terminated, truncated, info = env.step(action)
             done     = terminated or truncated
 
-            # Pass only true terminations to the replay buffer (see train_rl):
+            # Pass only true terminations to the replay buffer (see train_custom):
             # `done` keeps driving the episode loop below.
             if use_model_update:
                 optimize_result = mbpo.step(obs, action, reward, next_obs, terminated,
@@ -944,6 +1035,14 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                     "real_reward": float(reward),
                     "reward": float(reward),
                     "action_norm": float(np.linalg.norm(action)),
+                    "distance_penalty": float(info.get("distance_penalty", 0.0)),
+                    "action_penalty": float(info.get("action_penalty", 0.0)),
+                    "action_smoothness_penalty": float(
+                        info.get("action_smoothness_penalty", 0.0)
+                    ),
+                    "score_regression_penalty": float(
+                        info.get("score_regression_penalty", 0.0)
+                    ),
                 }
                 metrics.update(_loss_metrics("sac", optimize_result))
                 if use_model_update:
@@ -981,7 +1080,10 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
                              if use_model_update else "")
                     print(f"  step={step:>7d}  ep={ep_count:>4d}  "
                           f"reward={ep_reward:.2f}  score={sc:.3f}  best={best_score:.3f}{extra}")
-                obs, _ = env.reset()
+                # Do not spend one extra real TraceWin simulation resetting
+                # after the training budget has already been exhausted.
+                if step < n_steps:
+                    obs, _ = env.reset()
                 ep_reward = 0.0
 
             if recorder is not None and step % max(1, eval_every) == 0:
@@ -1011,7 +1113,9 @@ def train_dyna(surrogate, dataset, n_steps, max_ep_steps,
         print(f"  Saved → {out_dir / 'dyna_agent.pt'}")
 
         if use_model_update:
-            # final flush, even outside the model_train_freq period
+            # Train once more outside the periodic schedule so the last
+            # TraceWin samples affect the final working surrogate.
+            mbpo.finalize_model_update()
             mbpo.save_surrogates()
             mbpo.save_dataset()
 
@@ -1036,14 +1140,13 @@ def print_summary(scores: Dict[str, dict]):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    configure_matplotlib_cache()
-
+def build_parser() -> argparse.ArgumentParser:
+    """Build the shared policy-training CLI parser."""
     parser = argparse.ArgumentParser(description="Train all algorithms")
     parser.add_argument("--single-surrogate", default=str(default_single_surrogate_model()),
                         metavar="PATH",
-                        help="Single surrogate used by SAC/PPO/TD3/DDPG/A2C/"
-                             "REINFORCE/TRPO/SB3-SAC. Default: first "
+                        help="Single surrogate used by Stable Baselines3 and "
+                             "custom model-free algorithms. Default: first "
                              "surrogate_*.pt found in --base-ensemble.")
     parser.add_argument("--base-ensemble", default=str(DEFAULT_BASE_SURROGATE_DIR),
                         metavar="PATH",
@@ -1059,8 +1162,32 @@ def main():
     parser.add_argument("--rl-steps",       type=int, default=200_000)
     parser.add_argument("--svg-episodes",   type=int, default=1000)
     parser.add_argument("--svg-horizon",    type=int, default=MAX_STEPS)
-    parser.add_argument("--rollout-length", type=int, default=1,
-                        help="MBPO synthetic rollout length (1=Dyna, >1=MBPO)")
+    parser.add_argument("--rollout-length", type=int, default=5,
+                        help="MBPO synthetic rollout length (default: 5)")
+    parser.add_argument(
+        "--n-synthetic-per-step",
+        type=int,
+        default=40,
+        help="Number of MBPO synthetic rollouts per real step (default: 40).",
+    )
+    parser.add_argument(
+        "--mbpo-min-real-samples",
+        type=int,
+        default=None,
+        help=(
+            "Real transitions required before MBPO synthetic rollouts start. "
+            "Default: min(256, rl_steps/4), preserving legacy behaviour."
+        ),
+    )
+    parser.add_argument(
+        "--model-train-freq",
+        type=int,
+        default=50,
+        help=(
+            "Fine-tune the online surrogate every N real TraceWin steps "
+            "(default: 50; requires --online-finetune)."
+        ),
+    )
     parser.add_argument("--max-ep-steps",   type=int, default=MAX_STEPS)
     parser.add_argument("--hidden",         type=int, nargs="+", default=[256, 256])
     parser.add_argument("--seed",           type=int, default=42,
@@ -1098,6 +1225,16 @@ def main():
         ),
     )
     parser.add_argument(
+        "--action-smoothness-penalty-weight",
+        type=float,
+        default=ACTION_SMOOTHNESS_PENALTY_WEIGHT,
+        help=(
+            "Quadratic penalty on the bound-normalized change from the "
+            "previous clipped action. The first step is unpenalized. "
+            f"Default: {ACTION_SMOOTHNESS_PENALTY_WEIGHT}."
+        ),
+    )
+    parser.add_argument(
         "--score-regression-penalty-weight",
         type=float,
         default=SCORE_REGRESSION_PENALTY_WEIGHT,
@@ -1112,12 +1249,23 @@ def main():
                         help="Disable periodic evaluation and learning-curve plots.")
     parser.add_argument("--no-tensorboard", action="store_true",
                         help="Disable TensorBoard and metrics.csv logging.")
-    parser.add_argument("--skip",           nargs="*", default=[],
-                        help="Algorithms to skip (e.g.: --skip dyna ppo)")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--skip", nargs="*", default=[],
+                           help="Algorithms to skip, using canonical names such as "
+                                "ppo, sac_custom, dyna, or svg.")
+    selection.add_argument(
+        "--only", nargs="+", default=None, metavar="ALGO",
+        help=("Train only the listed algorithms. Iterative Sim-to-Real SAC is "
+              "available only via --only iterative_sim2real_sac."),
+    )
     parser.add_argument("--tracewin",       default=None, metavar="INI",
                         nargs="?", const=str(DEFAULT_TRACEWIN_INI),
-                        help="Use TraceWin as the real env for MBPO. "
+                        help="Use TraceWin as the real env for MBPO or Iterative "
+                             "Sim-to-Real SAC. "
                              "Without a value, uses the project default path.")
+    parser.add_argument("--tracewin-timeout", type=float, default=180.0)
+    parser.add_argument("--tracewin-threads", type=int, default=None, metavar="N")
+    parser.add_argument("--no-kill-stale", action="store_true")
     parser.add_argument("--online-finetune", action="store_true",
                         help="Fine-tune the surrogate ensemble on real data "
                              "during training (MBPOWithModelUpdate). "
@@ -1132,17 +1280,104 @@ def main():
                              "by MBPOWithModelUpdate. Default: same path as --dataset, "
                              "so that file grows run after run. Requires "
                              "--online-finetune.")
+    parser.add_argument("--cycles", type=int, default=1)
+    parser.add_argument(
+        "--initial-policy", default=None, metavar="PATH",
+        help=("Initialize Iterative Sim-to-Real from an existing SB3 SAC "
+              "sac_agent.zip, or from a directory containing it. This skips "
+              "the initial surrogate pretraining and starts at TraceWin cycle 1."),
+    )
+    parser.add_argument("--initial-surrogate-steps", type=int, default=200_000)
+    parser.add_argument("--subsequent-surrogate-steps", type=int, default=50_000)
+    parser.add_argument("--real-steps-per-cycle", type=int, default=2_000)
+    parser.add_argument("--real-learning-starts", type=int, default=256)
+    parser.add_argument("--sim2real-online-mix-ratio", type=float, default=0.25)
+    parser.add_argument("--surrogate-update-steps", type=int, default=200)
+    parser.add_argument("--surrogate-update-batch-size", type=int, default=128)
+    parser.add_argument("--surrogate-update-lr", type=float, default=3e-5)
+    parser.add_argument("--checkpoint-every-real-steps", type=int, default=30)
+    parser.add_argument("--checkpoint-every-surrogate-steps", type=int, default=10_000)
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume Sim-to-Real; requires --only iterative_sim2real_sac.",
+    )
+    return parser
+
+
+def main():
+    configure_matplotlib_cache()
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.quick:
         args.rl_steps     = 200
         args.svg_episodes = 5
+        args.initial_surrogate_steps = 200
+        args.subsequent_surrogate_steps = 100
+        args.real_steps_per_cycle = 2
+        args.real_learning_starts = 1
+        args.surrogate_update_steps = 1
+        args.checkpoint_every_real_steps = 1
+        args.checkpoint_every_surrogate_steps = 100
 
     if args.online_finetune and not args.tracewin:
         parser.error("--online-finetune requires --tracewin")
+    if args.rollout_length <= 0:
+        parser.error("--rollout-length must be positive")
+    if args.n_synthetic_per_step <= 0:
+        parser.error("--n-synthetic-per-step must be positive")
+    if args.mbpo_min_real_samples is not None and args.mbpo_min_real_samples <= 0:
+        parser.error("--mbpo-min-real-samples must be positive")
+    if args.model_train_freq <= 0:
+        parser.error("--model-train-freq must be positive")
+    if args.tracewin_timeout <= 0.0:
+        parser.error("--tracewin-timeout must be positive")
+    if args.tracewin_threads is not None and args.tracewin_threads <= 0:
+        parser.error("--tracewin-threads must be positive")
+
+    aliases = {"sb3_sac": "sac", "mbpo": "dyna"}
+    valid_only = CONCRETE_TRAINING_ALGORITHMS | {"mbpo", "svg"}
+    only = None
+    if args.only is not None:
+        unknown = sorted(set(args.only) - valid_only - set(aliases))
+        if unknown:
+            parser.error(
+                "unknown --only algorithm(s): " + ", ".join(unknown)
+            )
+        only = {aliases.get(name, name) for name in args.only}
+        if "svg" in only:
+            only.update({"svg_final", "svg_uniform"})
+        if args.resume and only != {ITERATIVE_SIM2REAL_ALGORITHM}:
+            parser.error(
+                "--resume requires --only iterative_sim2real_sac with no other algorithms"
+            )
+    elif args.resume:
+        parser.error("--resume requires --only iterative_sim2real_sac")
+
+    run_iterative_sim2real = (
+        only is not None and ITERATIVE_SIM2REAL_ALGORITHM in only
+    )
+    if run_iterative_sim2real and not args.tracewin:
+        parser.error("--only iterative_sim2real_sac requires --tracewin INI")
+    if args.initial_policy and not run_iterative_sim2real:
+        parser.error(
+            "--initial-policy requires --only iterative_sim2real_sac"
+        )
 
     out_root = Path(args.output)
-    skip     = set(args.skip)
+    skip = (
+        CONCRETE_TRAINING_ALGORITHMS - only
+        if only is not None
+        else set(args.skip)
+    )
+    if "sb3_sac" in skip:
+        warnings.warn(
+            "'sb3_sac' is deprecated; use 'sac'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        skip.remove("sb3_sac")
+        skip.add("sac")
     enable_tensorboard = not args.no_tensorboard
     enable_learning_curve = not args.no_learning_curve
 
@@ -1150,8 +1385,10 @@ def main():
     base_ensemble_path = Path(args.base_ensemble)
     updated_ensemble_path = Path(args.updated_ensemble)
 
-    run_model_free = any(algo not in skip for algo in MODEL_FREE_ALGORITHMS)
-    run_sb3_sac = "sb3_sac" not in skip
+    run_custom = any(algo not in skip for algo in CUSTOM_MODEL_FREE_ALGORITHMS)
+    run_stable_baselines = any(
+        algo not in skip for algo in STABLE_BASELINES_ALGORITHMS
+    )
     run_dyna = "dyna" not in skip
     run_svg = "svg" not in skip and any(
         f"svg_{name}" not in skip for name in STAGE_WEIGHT_CONFIGS
@@ -1159,7 +1396,7 @@ def main():
     use_model_update = args.online_finetune and bool(args.tracewin)
 
     single_surrogate = None
-    if run_model_free or run_sb3_sac:
+    if run_custom or run_stable_baselines:
         single_surrogate = load_single_surrogate(single_surrogate_path)
 
     base_ensemble = None
@@ -1191,18 +1428,19 @@ def main():
     reward_regularization_kwargs = dict(
         distance_penalty_weight=args.distance_penalty_weight,
         action_penalty_weight=args.action_penalty_weight,
+        action_smoothness_penalty_weight=args.action_smoothness_penalty_weight,
         score_regression_penalty_weight=args.score_regression_penalty_weight,
     )
 
-    # ── Model-free RL ─────────────────────────────────────────────────────────
-    for algo in MODEL_FREE_ALGORITHMS:
+    # ── Custom model-free RL ──────────────────────────────────────────────────
+    for algo in CUSTOM_MODEL_FREE_ALGORITHMS:
         if algo in skip:
             print(f"\n[SKIP] {algo.upper()}")
             continue
         print(f"\n{'='*50}\nTraining {algo.upper()}  ({args.rl_steps} steps × {len(seeds)} seed)\n{'='*50}")
         scores[algo] = run_seeded(
             algo, out_root, seeds, [f"{algo}_agent.pt"],
-            lambda seed, out_dir, curves, algo=algo: train_rl(
+            lambda seed, out_dir, curves, algo=algo: train_custom(
                 algo, single_surrogate, dataset, args.rl_steps,
                 args.max_ep_steps, args.hidden, out_dir,
                 seed=seed, learning_curves=curves, **common_kwargs,
@@ -1211,15 +1449,31 @@ def main():
             learning_curves,
         )
 
-    # ── SB3-SAC ───────────────────────────────────────────────────────────────
-    if "sb3_sac" not in skip:
-        print(f"\n{'='*50}\nTraining SB3-SAC  ({args.rl_steps} steps × {len(seeds)} seed)\n{'='*50}")
-        scores["sb3_sac"] = run_seeded(
-            "sb3_sac", out_root, seeds, ["sb3_sac_agent.zip"],
-            lambda seed, out_dir, curves: train_sb3_sac(
-                single_surrogate, dataset, args.rl_steps,
-                args.max_ep_steps, args.hidden, out_dir,
-                seed=seed, learning_curves=curves, **common_kwargs,
+    # ── Stable Baselines3 model-free RL ───────────────────────────────────────
+    for algo in STABLE_BASELINES_ALGORITHMS:
+        if algo in skip:
+            print(f"\n[SKIP] {algo.upper()} (Stable Baselines3)")
+            continue
+        print(
+            f"\n{'='*50}\nTraining {algo.upper()} [Stable Baselines3]  "
+            f"({args.rl_steps} steps × {len(seeds)} seed)\n{'='*50}"
+        )
+        scores[algo] = run_seeded(
+            algo,
+            out_root,
+            seeds,
+            [f"{algo}_agent.zip"],
+            lambda seed, out_dir, curves, algo=algo: train_stable_baselines(
+                algo,
+                single_surrogate,
+                dataset,
+                args.rl_steps,
+                args.max_ep_steps,
+                args.hidden,
+                out_dir,
+                seed=seed,
+                learning_curves=curves,
+                **common_kwargs,
                 **reward_regularization_kwargs,
             ),
             learning_curves,
@@ -1245,6 +1499,9 @@ def main():
                 dyna_surrogate, dataset, args.rl_steps,
                 args.max_ep_steps, args.rollout_length, args.hidden, out_dir,
                 seed=seed,
+                n_synthetic_per_step=args.n_synthetic_per_step,
+                mbpo_min_real_samples=args.mbpo_min_real_samples,
+                model_train_freq=args.model_train_freq,
                 tracewin_project=args.tracewin,
                 online_finetune=args.online_finetune,
                 online_mix_ratio=args.online_mix_ratio,
@@ -1258,10 +1515,72 @@ def main():
             learning_curves,
         )
 
+    # ── Iterative Sim-to-Real SAC ────────────────────────────────────────────
+    if run_iterative_sim2real:
+        if len(seeds) > 1:
+            print(
+                "WARNING: Iterative Sim-to-Real SAC uses only the base seed "
+                f"{seeds[0]}; --n-seeds={len(seeds)} is not applied to real physics."
+            )
+        label = ITERATIVE_SIM2REAL_ALGORITHM
+        print(
+            f"\n{'='*50}\nTraining Iterative Sim-to-Real SAC "
+            f"({'pretrained SAC' if args.initial_policy else f'{args.initial_surrogate_steps} initial surrogate steps'}, "
+            f"{args.real_steps_per_cycle} TraceWin steps/cycle, "
+            f"{args.cycles} cycle, horizon={args.max_ep_steps})\n{'='*50}"
+        )
+        config = IterativeSim2RealSACConfig(
+            surrogate=str(single_surrogate_path),
+            dataset=str(args.dataset),
+            tracewin=str(args.tracewin),
+            output=str(out_root / label),
+            initial_policy=args.initial_policy,
+            cycles=args.cycles,
+            initial_surrogate_steps=args.initial_surrogate_steps,
+            subsequent_surrogate_steps=args.subsequent_surrogate_steps,
+            real_steps_per_cycle=args.real_steps_per_cycle,
+            real_learning_starts=args.real_learning_starts,
+            max_ep_steps=args.max_ep_steps,
+            online_mix_ratio=args.sim2real_online_mix_ratio,
+            surrogate_update_steps=args.surrogate_update_steps,
+            surrogate_update_batch_size=args.surrogate_update_batch_size,
+            surrogate_update_lr=args.surrogate_update_lr,
+            checkpoint_every_real_steps=args.checkpoint_every_real_steps,
+            checkpoint_every_surrogate_steps=args.checkpoint_every_surrogate_steps,
+            eval_every=args.eval_every,
+            eval_episodes=args.eval_episodes,
+            hidden=tuple(args.hidden),
+            seed=seeds[0],
+            distance_penalty_weight=args.distance_penalty_weight,
+            action_penalty_weight=args.action_penalty_weight,
+            action_smoothness_penalty_weight=args.action_smoothness_penalty_weight,
+            score_regression_penalty_weight=args.score_regression_penalty_weight,
+            tracewin_timeout=args.tracewin_timeout,
+            tracewin_threads=args.tracewin_threads,
+            kill_stale=not args.no_kill_stale,
+            resume=args.resume,
+            no_tensorboard=args.no_tensorboard,
+            enable_learning_curve=enable_learning_curve,
+        )
+        algorithm = IterativeSim2RealSAC(config)
+        result = algorithm.resume() if args.resume else algorithm.train()
+        rows = list(result.get("learning_curve", []))
+        if rows:
+            learning_curves[label] = rows
+        best_score = result.get("best_score")
+        best_score = 0.0 if best_score is None else float(best_score)
+        scores[label] = {
+            "best_score_mean": best_score,
+            "best_score_std": 0.0,
+            "best_seed": int(seeds[0]),
+            "per_seed": {str(seeds[0]): best_score},
+        }
+
     # ── SVGAgent ─────────────────────────────────────────────────────────────
     for name, weights in STAGE_WEIGHT_CONFIGS.items():
         label = f"svg_{name}"
-        if label in skip or "svg" in skip:
+        legacy_label = "svg_finale" if label == "svg_final" else None
+        if label in skip or legacy_label in skip or "svg" in skip:
             print(f"\n[SKIP] {label}")
             continue
         print(f"\n{'='*50}\nTraining SVGAgent [{name}]  ({args.svg_episodes} episodes × {len(seeds)} seed)\n{'='*50}")
@@ -1291,6 +1610,9 @@ def main():
                 "training_reward_regularization": {
                     "distance_penalty_weight": args.distance_penalty_weight,
                     "action_penalty_weight": args.action_penalty_weight,
+                    "action_smoothness_penalty_weight": (
+                        args.action_smoothness_penalty_weight
+                    ),
                     "score_regression_penalty_weight": args.score_regression_penalty_weight,
                 },
                 "score_function": score_function_metadata(),

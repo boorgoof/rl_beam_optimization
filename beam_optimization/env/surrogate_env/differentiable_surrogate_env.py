@@ -49,6 +49,7 @@ class DifferentiableBeamState:
     beam_states: List[torch.Tensor]
     step_count: int
     model_index: int
+    previous_action: Optional[torch.Tensor] = None
 
     def detach_for_next_step(self) -> "DifferentiableBeamState":
         """copy the state and detach all tensors from the current autograd graph"""
@@ -60,6 +61,11 @@ class DifferentiableBeamState:
             beam_states=[stage.detach() for stage in self.beam_states],
             step_count=self.step_count,
             model_index=self.model_index,
+            previous_action=(
+                None
+                if self.previous_action is None
+                else self.previous_action.detach()
+            ),
         )
 
 
@@ -82,6 +88,7 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         distance_penalty_weight: float = 0.0,
         action_penalty_weight: float = 0.0,
         score_regression_penalty_weight: float = 0.0,
+        action_smoothness_penalty_weight: float = 0.0,
     ):
         super().__init__(
             model=model,
@@ -91,6 +98,7 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             reset_scale=reset_scale,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
         )
         self.device = self.simulator.device
@@ -201,9 +209,19 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         terminated = bool(terminal_mask.detach().item())
         if terminated:
             zero = score_next.new_zeros(())
-            distance_penalty, action_penalty, regression_penalty = zero, zero, zero
+            (
+                distance_penalty,
+                action_penalty,
+                smoothness_penalty,
+                regression_penalty,
+            ) = zero, zero, zero, zero
         else:
-            distance_penalty, action_penalty, regression_penalty = self._differentiable_penalties(
+            (
+                distance_penalty,
+                action_penalty,
+                smoothness_penalty,
+                regression_penalty,
+            ) = self._differentiable_penalties(
                 state=state,
                 action=action,
                 params_next=params_next,
@@ -213,6 +231,7 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             score_next / REWARD_SCORE_SCALE
             - distance_penalty
             - action_penalty
+            - smoothness_penalty
             - regression_penalty
         )
         reward = torch.where(
@@ -230,6 +249,7 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             beam_states=beam_states,
             step_count=state.step_count + 1,
             model_index=state.model_index,
+            previous_action=action,
         )
         return next_state, reward, terminated
 
@@ -239,8 +259,8 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         action: torch.Tensor,
         params_next: torch.Tensor,
         score_next: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Torch equivalents of BaseBeamEnv's three reward regularizers.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Torch equivalents of BaseBeamEnv's four reward regularizers.
 
         The k-d tree selects neighbors from a detached query. Their distances
         are then recomputed in torch, so the value matches the normal Gym
@@ -271,12 +291,32 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             )
             action_penalty = self.action_penalty_weight * normalized_action.square().mean()
 
+        smoothness_penalty = zero
+        if (
+            self.action_smoothness_penalty_weight > 0.0
+            and state.previous_action is not None
+        ):
+            normalized_delta = torch.where(
+                self._action_step_t > 0.0,
+                (action - state.previous_action) / self._action_step_t,
+                torch.zeros_like(action),
+            )
+            smoothness_penalty = (
+                self.action_smoothness_penalty_weight
+                * normalized_delta.square().mean()
+            )
+
         regression_penalty = zero
         if self.score_regression_penalty_weight > 0.0:
             normalized_drop = torch.relu(state.score - score_next) / REWARD_SCORE_SCALE
             regression_penalty = self.score_regression_penalty_weight * normalized_drop
 
-        return distance_penalty, action_penalty, regression_penalty
+        return (
+            distance_penalty,
+            action_penalty,
+            smoothness_penalty,
+            regression_penalty,
+        )
 
     def _prepare_beam0(
         self,

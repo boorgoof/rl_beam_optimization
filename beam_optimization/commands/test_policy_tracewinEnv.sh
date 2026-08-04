@@ -1,22 +1,20 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test one trained policy step by step on the real TraceWin environment,
 # saving per-step renders (parameters/state/score + phase-space) and the
 # end-of-episode trend videos (params/state/score/phase-space GIFs).
 # Requires the local TraceWin setup described in README.md section 2
 # (TraceWin_workspace, licensed binary, SSH launcher).
 # See: beam_optimization/scripts/test.py, README.md section 4 ("test").
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
-if [ -f "beam_optimization/.venv/bin/activate" ]; then
-  source beam_optimization/.venv/bin/activate
-fi
+source beam_optimization/.venv/bin/activate
 
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/final_thesis_018_a030_s050/sac/sac_agent.zip \
   --env tracewin \
   --tracewin-project beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini \
   --calc-dir beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/tracewin_calc_test \
@@ -26,16 +24,17 @@ python -m beam_optimization test \
   --seed 42 \
   --reset-scale test \
   --deterministic-reset \
-  --output beam_optimization/results/test_RL/test.json \
+  --output beam_optimization/results/test_RL/final_thesis_tracewin/test.json \
   --render \
-  --render-dir beam_optimization/results/test_RL/renders \
+  --render-dir beam_optimization/results/test_RL/final_thesis_tracewin/renders \
   --render-every 1 \
   --dpi 130 \
   --episode-video \
   --episode-video-fps 2 \
   --tracewin-phase-space \
   --max-particles 40000 \
-  --bins 150
+  --bins 150 \
+  "$@"
   # --calc-dir avoids TraceWin_workspace/calc, currently owned by comunian
   # (0755) from a stale run: almalinux can't chmod/clean it. Fix that
   # directory (sudo -u comunian rm -rf .../calc/*) if you want to drop

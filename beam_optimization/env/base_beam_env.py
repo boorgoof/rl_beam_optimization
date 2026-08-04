@@ -55,6 +55,7 @@ class BaseBeamEnv(gym.Env, ABC):
         distance_penalty_weight: float = 0.0,
         action_penalty_weight: float = 0.0,
         score_regression_penalty_weight: float = 0.0,
+        action_smoothness_penalty_weight: float = 0.0,
     ):
         super().__init__()
 
@@ -64,10 +65,17 @@ class BaseBeamEnv(gym.Env, ABC):
         # exist unless explicitly enabled.
         self.distance_penalty_weight = float(distance_penalty_weight)
         self.action_penalty_weight = float(action_penalty_weight)
+        self.action_smoothness_penalty_weight = float(
+            action_smoothness_penalty_weight
+        )
         self.score_regression_penalty_weight = float(score_regression_penalty_weight)
         for name, value in (
             ("distance_penalty_weight", self.distance_penalty_weight),
             ("action_penalty_weight", self.action_penalty_weight),
+            (
+                "action_smoothness_penalty_weight",
+                self.action_smoothness_penalty_weight,
+            ),
             ("score_regression_penalty_weight", self.score_regression_penalty_weight),
         ):
             if not np.isfinite(value) or value < 0.0:
@@ -277,6 +285,11 @@ class BaseBeamEnv(gym.Env, ABC):
                 "reward": 0.0,
                 "step": self._step_count,
                 "best_score": self.best_score,
+                "score_reward": 0.0,
+                "distance_penalty": 0.0,
+                "action_penalty": 0.0,
+                "action_smoothness_penalty": 0.0,
+                "score_regression_penalty": 0.0,
                 "technical_failure": True,
                 "sim_result": result,
             }
@@ -290,17 +303,21 @@ class BaseBeamEnv(gym.Env, ABC):
         if extra["terminal_failure"]:
             distance_penalty = 0.0
             action_penalty = 0.0
+            action_smoothness_penalty = 0.0
             score_regression_penalty = 0.0
             reward = TERMINAL_FAILURE_REWARD
         else:
             distance_penalty = self._distance_penalty(self._current_params)
-            action_penalty, score_regression_penalty = self._control_penalties(
-                action, prev_score, score
-            )
+            (
+                action_penalty,
+                action_smoothness_penalty,
+                score_regression_penalty,
+            ) = self._control_penalties(action, prev_score, score)
             reward = (
                 score / REWARD_SCORE_SCALE
                 - distance_penalty
                 - action_penalty
+                - action_smoothness_penalty
                 - score_regression_penalty
             )
 
@@ -340,6 +357,11 @@ class BaseBeamEnv(gym.Env, ABC):
                 "action_penalty": (
                     0.0 if extra["terminal_failure"] else action_penalty
                 ),
+                "action_smoothness_penalty": (
+                    0.0
+                    if extra["terminal_failure"]
+                    else action_smoothness_penalty
+                ),
                 "score_regression_penalty": (
                     0.0 if extra["terminal_failure"] else score_regression_penalty
                 ),
@@ -354,8 +376,8 @@ class BaseBeamEnv(gym.Env, ABC):
         action: np.ndarray,
         prev_score: float,
         score: float,
-    ) -> tuple[float, float]:
-        """Return action-effort and score-regression reward costs.
+    ) -> tuple[float, float, float]:
+        """Return action-effort, smoothness, and score-regression costs.
 
         The quadratic action cost teaches a policy to emit zero once further
         corrections are not worth their effort. The regression cost makes an
@@ -378,6 +400,27 @@ class BaseBeamEnv(gym.Env, ABC):
                 np.mean(np.square(normalized_action))
             )
 
+        smoothness_penalty = 0.0
+        if (
+            self.action_smoothness_penalty_weight > 0.0
+            and self._last_action is not None
+        ):
+            scale = np.maximum(
+                np.abs(self.action_space.low),
+                np.abs(self.action_space.high),
+            )
+            normalized_delta = np.divide(
+                np.asarray(action, dtype=np.float64)
+                - np.asarray(self._last_action, dtype=np.float64),
+                scale,
+                out=np.zeros_like(scale, dtype=np.float64),
+                where=scale > 0.0,
+            )
+            smoothness_penalty = (
+                self.action_smoothness_penalty_weight
+                * float(np.mean(np.square(normalized_delta)))
+            )
+
         regression_penalty = 0.0
         if self.score_regression_penalty_weight > 0.0:
             normalized_drop = max(0.0, float(prev_score) - float(score)) / REWARD_SCORE_SCALE
@@ -385,7 +428,7 @@ class BaseBeamEnv(gym.Env, ABC):
                 self.score_regression_penalty_weight * normalized_drop
             )
 
-        return action_penalty, regression_penalty
+        return action_penalty, smoothness_penalty, regression_penalty
 
     def _distance_penalty(self, params: Dict[str, float]) -> float:
         """Linear penalty on how far `params` sit from the reference dataset
@@ -437,12 +480,17 @@ class BaseBeamEnv(gym.Env, ABC):
             fps: animation frame rate, only used when save_path is given.
 
         Returns:
-            {"params": Figure, "state": Figure, "score": Figure, "knn": Figure}
-            normally, plus {"params_video": Path, "state_video": Path,
-            "score_video": Path, "knn_video": Path} when save_path is given.
+            {"params": Figure, "state": Figure, "score": Figure, "knn": Figure,
+            "delta": Figure} normally, plus {"params_video": Path,
+            "state_video": Path, "score_video": Path, "knn_video": Path,
+            "delta_video": Path} when save_path is given.
             The "knn" figure is a dedicated pair of panels showing the
             episode's parameter-space KNN distance to the base dataset next
             to the score trend, so the two can be compared side by side.
+            The "delta" figure is one bar per beam feature (final observed
+            stage only) plus score, showing final - start over the episode
+            so far, green if that change is an improvement (see
+            _feature_improved), red if it is a regression, gray if unchanged.
         """
         import matplotlib.pyplot as plt
 
@@ -467,13 +515,12 @@ class BaseBeamEnv(gym.Env, ABC):
             line, = ax.plot(steps[:n_init], values[:n_init], color="tab:blue", marker="o", markersize=3)
             params_updaters.append(self._line_updater(line, steps, values))
             ax.set_xlim(0, self.max_steps)
-            ax.set_ylim(*self._series_ylim(values))
+            ax.set_ylim(*self._series_ylim(values, pad_factor=0.3))
             ax.set_title(spec.name, fontsize=9)
             ax.set_xlabel("step", fontsize=8)
             ax.set_ylabel("value", fontsize=8)
             ax.tick_params(labelsize=7)
             ax.grid(alpha=0.25)
-            ax.legend(fontsize=6, loc="upper left")
         for ax in params_axes.ravel()[n_params:]:
             ax.set_visible(False)
         params_fig.tight_layout(rect=(0, 0, 1, 0.96))
@@ -503,7 +550,7 @@ class BaseBeamEnv(gym.Env, ABC):
                 lc, points, segments = self._plot_colored_trend(ax, steps, values, n_init, feature=feature)
                 state_updaters.append(self._colored_trend_updater(lc, points, segments, steps, values))
                 ax.set_xlim(0, self.max_steps)
-                ax.set_ylim(*self._series_ylim(values, reference=reference))
+                ax.set_ylim(*self._series_ylim(values, reference=reference, pad_factor=0.3))
                 if row == 0:
                     ax.set_title(stage, fontsize=9)
                 if col == 0:
@@ -511,7 +558,6 @@ class BaseBeamEnv(gym.Env, ABC):
                 ax.set_xlabel("step", fontsize=8)
                 ax.tick_params(labelsize=7)
                 ax.grid(alpha=0.25)
-                ax.legend(fontsize=6, loc="upper left")
         state_fig.tight_layout(rect=(0, 0, 1, 0.97))
 
         # ── Score/reward figure: two panels, whole episode ──────────────────
@@ -543,7 +589,12 @@ class BaseBeamEnv(gym.Env, ABC):
         knn_history = [
             float(v)
             for v in param_knn_distance(
-                np.stack([params_to_vec(p) for p in self._params_history])
+                np.stack([params_to_vec(p) for p in self._params_history]),
+                dataset=getattr(
+                    self,
+                    "_distance_dataset",
+                    getattr(self.simulator, "dataset", None),
+                ),
             )
         ]
         knn_fig, knn_axes = plt.subplots(1, 2, figsize=(8.4, 3.2), squeeze=False)
@@ -567,9 +618,114 @@ class BaseBeamEnv(gym.Env, ABC):
             ax.legend(fontsize=6, loc="upper left")
         knn_fig.tight_layout(rect=(0, 0, 1, 0.86))
 
+        # ── Delta figure: final-stage feature + score change, start vs. now ─
+        # One small panel per beam feature (final observed stage only, not
+        # every stage — the trend panels above already cover intermediate
+        # stages) plus one for score. Each panel has its own y-scale (values
+        # span very different ranges: score deltas are tens, npart_ratio
+        # deltas are hundredths). For x0/y0/x'0/y'0 (features whose target is
+        # 0, see _OFFSET_ANGLE_FEATURES), the bar/label show the change in
+        # *distance to zero* (|final| - |start|) instead of the raw signed
+        # value change -- otherwise a value that moved from -0.4 to -0.09
+        # (a real improvement, closer to 0) would show as "+0.31" and look
+        # like a worsening. Colored the same way as the trend lines
+        # (_feature_improved), gray if unchanged; for these offset features
+        # the sign of the displayed delta and the color always agree
+        # (negative = closer to 0 = green).
+        final_stage_idx = n_stages - 1
+        delta_labels = list(BEAM_STATE_FEATURES) + ["score"]
+
+        def _delta_history(label: str) -> list[float]:
+            if label == "score":
+                start = self._score_history[0]
+                return [float(v) - start for v in self._score_history]
+            start = float(stage_frames[0].loc[final_stage_idx, label])
+            return [float(df.loc[final_stage_idx, label]) - start for df in stage_frames]
+
+        delta_start_values = {
+            label: (
+                self._score_history[0] if label == "score"
+                else float(stage_frames[0].loc[final_stage_idx, label])
+            )
+            for label in delta_labels
+        }
+        delta_histories = {label: _delta_history(label) for label in delta_labels}
+
+        def _display_history(label: str) -> list[float]:
+            """The delta actually plotted/labeled -- distance-to-zero change
+            for offset features, raw value change otherwise."""
+            if label not in self._OFFSET_ANGLE_FEATURES:
+                return delta_histories[label]
+            start = delta_start_values[label]
+            return [
+                abs(start + delta) - abs(start) for delta in delta_histories[label]
+            ]
+
+        display_histories = {label: _display_history(label) for label in delta_labels}
+
+        ncols = 5
+        nrows = -(-len(delta_labels) // ncols)  # ceil division
+        delta_fig, delta_axes = plt.subplots(
+            nrows, ncols, figsize=(3.0 * ncols, 3.0 * nrows), squeeze=False
+        )
+        delta_fig.suptitle(
+            f"Final stage ({stage_titles[final_stage_idx]}) + score: "
+            "change from start to now",
+            fontweight="bold",
+        )
+
+        delta_updaters: list = []
+        for ax, label in zip(delta_axes.ravel(), delta_labels):
+            history = delta_histories[label]
+            display_history = display_histories[label]
+            is_offset = label in self._OFFSET_ANGLE_FEATURES
+            bar = ax.bar([0], [0.0], width=0.5, color="tab:gray",
+                         edgecolor="0.3", linewidth=0.8, zorder=3)[0]
+            # xytext is an offset in points, not data units, and the label
+            # spans two lines (delta + %) -- a data-fraction pad (like the
+            # other trend panels use) would need to scale with font size, not
+            # the series range, so the gap to the bar tip is fixed in points
+            # instead, and ylim below gets extra headroom so it clears the title.
+            text = ax.annotate(
+                "", xy=(0, 0), xytext=(0, 6), textcoords="offset points",
+                ha="center", fontsize=8, zorder=4,
+            )
+            delta_updaters.append(
+                self._delta_bar_updater(
+                    bar, text, history, display_history, delta_start_values[label], label,
+                )
+            )
+            ax.axhline(0, color="0.3", lw=1, zorder=2)
+            ax.set_xlim(-1, 1)
+            ax.set_xticks([])
+            lo, hi = self._series_ylim(display_history)
+            headroom = 0.4 * max(hi - lo, 1e-6)
+            ax.set_ylim(lo - headroom, hi + headroom)
+            ax.set_title(label, fontsize=10)
+            ax.set_ylabel("Δ|value| vs. start" if is_offset else "Δ vs. start", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=0.25, axis="y", zorder=0)
+        for ax in delta_axes.ravel()[len(delta_labels):]:
+            ax.set_visible(False)
+
+        legend_handles = [
+            plt.Rectangle((0, 0), 1, 1, color=color, label=text)
+            for color, text in (
+                ("tab:green", "improved"), ("tab:red", "worsened"), ("tab:gray", "unchanged"),
+            )
+        ]
+        delta_fig.legend(handles=legend_handles, fontsize=8, loc="upper right", ncol=3)
+
+        for updater in delta_updaters:
+            updater(n_init - 1)
+        delta_fig.tight_layout(rect=(0, 0, 1, 0.90))
+
         if not animate:
             plt.show()
-            return {"params": params_fig, "state": state_fig, "score": score_fig, "knn": knn_fig}
+            return {
+                "params": params_fig, "state": state_fig, "score": score_fig,
+                "knn": knn_fig, "delta": delta_fig,
+            }
 
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -578,25 +734,30 @@ class BaseBeamEnv(gym.Env, ABC):
         state_path = save_path.with_name(f"{save_path.stem}_state{suffix}")
         score_path = save_path.with_name(f"{save_path.stem}_score{suffix}")
         knn_path = save_path.with_name(f"{save_path.stem}_knn{suffix}")
+        delta_path = save_path.with_name(f"{save_path.stem}_delta{suffix}")
 
         self._save_trend_animation(params_fig, params_updaters, n_frames, params_path, fps)
         self._save_trend_animation(state_fig, state_updaters, n_frames, state_path, fps)
         self._save_trend_animation(score_fig, score_updaters, n_frames, score_path, fps)
         self._save_trend_animation(knn_fig, knn_updaters, n_frames, knn_path, fps)
+        self._save_trend_animation(delta_fig, delta_updaters, n_frames, delta_path, fps)
         plt.close(params_fig)
         plt.close(state_fig)
         plt.close(score_fig)
         plt.close(knn_fig)
+        plt.close(delta_fig)
 
         return {
             "params": params_fig,
             "state": state_fig,
             "score": score_fig,
             "knn": knn_fig,
+            "delta": delta_fig,
             "params_video": params_path,
             "state_video": state_path,
             "score_video": score_path,
             "knn_video": knn_path,
+            "delta_video": delta_path,
         }
 
     @classmethod
@@ -659,6 +820,53 @@ class BaseBeamEnv(gym.Env, ABC):
         def update(frame_idx: int) -> None:
             lc.set_segments(segments[:frame_idx])
             points.set_data(steps[: frame_idx + 1], values[: frame_idx + 1])
+        return update
+
+    @classmethod
+    def _delta_bar_updater(
+        cls, bar, text, history: list[float], display_history: list[float],
+        start_value: float, label: str,
+    ):
+        """Animation updater for one panel of the delta bar chart.
+
+        `history[frame_idx]` is `value_at_frame_idx - value_at_reset` (see
+        render()'s _delta_history()) and always drives the green/red/gray
+        color, the same way trend segments are colored (_feature_improved) --
+        this needs the raw signed value to tell direction from a reference.
+        `display_history[frame_idx]` is what's actually drawn as the bar
+        height and the text label: for most features it's identical to
+        `history`, but for x0/y0/x'0/y'0 (see render()'s _display_history())
+        it's the *distance-to-zero* change instead, so the number on screen
+        never disagrees with the color (e.g. a bar that moved closer to 0
+        shows a negative number and is green, not a positive "raw" delta
+        that would look like a regression).
+        """
+        feature = None if label == "score" else label
+
+        def update(frame_idx: int) -> None:
+            delta = history[frame_idx]
+            display_value = display_history[frame_idx]
+            bar.set_height(display_value)
+            if np.isclose(delta, 0.0):
+                color = "tab:gray"
+            else:
+                current_value = start_value + delta
+                improved = (
+                    cls._feature_improved(feature, start_value, current_value)
+                    if feature is not None
+                    else current_value >= start_value
+                )
+                color = "tab:green" if improved else "tab:red"
+            bar.set_color(color)
+
+            text.set_text(f"{display_value:+.3g}")
+            # `xy` anchors to the bar tip in data coordinates; the label
+            # itself sits a fixed number of points above/below that anchor
+            # (set at creation via textcoords="offset points"), so the gap
+            # never shrinks to nothing regardless of the panel's data range.
+            text.xy = (0, display_value)
+            text.set_position((0, 6 if display_value >= 0 else -6))
+            text.set_va("bottom" if display_value >= 0 else "top")
         return update
 
     @staticmethod
@@ -815,14 +1023,20 @@ class BaseBeamEnv(gym.Env, ABC):
     _STATE_FEATURE_REFERENCE: Dict[str, float] = {**SCORE_REFERENCES, "npart_ratio": 1.0}
 
     @staticmethod
-    def _series_ylim(values, reference: float | None = None) -> tuple[float, float]:
+    def _series_ylim(
+        values, reference: float | None = None, pad_factor: float = 0.12
+    ) -> tuple[float, float]:
         """Y-axis limits for a full-episode line trend.
 
         Does not force zero into the range: a parameter or feature that
         never crosses zero (e.g. always negative) should not have its axis
         padded down to 0. `reference`, when given, is always included in the
         range (padded like any other point) so the target value stays
-        visible even if the episode never gets close to it.
+        visible even if the episode never gets close to it. `pad_factor`
+        controls how much headroom is added above/below the data range (as a
+        fraction of that range) -- the params/state panels use a larger
+        value than the default so late-episode oscillations read as small
+        relative to the full climb, instead of filling the whole axis.
         """
         values = np.asarray(values, dtype=float)
         values = values[np.isfinite(values)]
@@ -834,5 +1048,5 @@ class BaseBeamEnv(gym.Env, ABC):
         if np.isclose(lo, hi):
             pad = max(abs(hi) * 0.1, 1e-6)
             return lo - pad, hi + pad
-        pad = 0.12 * (hi - lo)
+        pad = pad_factor * (hi - lo)
         return lo - pad, hi + pad

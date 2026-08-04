@@ -81,7 +81,7 @@ DEFAULT_UPDATED_SURROGATE_DIR = PROJECT_ROOT / "env/surrogate_env/surrogate/trai
 
 def default_single_surrogate_model() -> Path:
     """Return one surrogate checkpoint for callers that need a single model
-    (not an ensemble) -- SB3-SAC training, Bayesian optimization.
+    (not an ensemble) -- model-free training and Bayesian optimization.
 
     Checkpoints are named surrogate_<dataset>_<index>.pt (dataset-qualified,
     see SurrogateTrainer._checkpoint_path()), so there's no fixed filename to

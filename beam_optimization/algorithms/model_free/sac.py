@@ -14,6 +14,7 @@ import numpy as np
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
 from beam_optimization.algorithms.networks.value_nets   import QNetwork
+from beam_optimization.algorithms.utils.atomic_save     import atomic_torch_save
 from beam_optimization.algorithms.utils.replay_buffer   import ReplayBuffer
 
 
@@ -160,8 +161,8 @@ class SAC:
 
         return critic_loss.item(), al.item(), ent_loss.item()
 
-    def save(self, path: str):
-        torch.save({
+    def save(self, path: str, include_replay: bool = False):
+        checkpoint = {
             "implementation_version": self.IMPLEMENTATION_VERSION,
             "action_representation": "normalized",
             "policy": self.policy.state_dict(),
@@ -171,7 +172,10 @@ class SAC:
             "a_opt": self.actor_opt.state_dict(),
             "c1_opt": self.critic1_opt.state_dict(), "c2_opt": self.critic2_opt.state_dict(),
             "al_opt": self.alpha_opt.state_dict(),
-        }, path)
+        }
+        if include_replay:
+            checkpoint["replay"] = self.replay.state_dict()
+        atomic_torch_save(checkpoint, path)
 
     def load(self, path: str, resume_training: bool = False):
         ck = torch.load(path, map_location="cpu")
@@ -182,6 +186,11 @@ class SAC:
                 "resume training with the normalized-action implementation. "
                 "They remain valid for deterministic policy evaluation."
             )
+        if resume_training and "replay" not in ck:
+            raise ValueError(
+                "This SAC checkpoint has no replay snapshot. Save with "
+                "include_replay=True before using resume_training=True."
+            )
         self.policy.load_state_dict(ck["policy"])
         self.critic1.load_state_dict(ck["c1"]); self.critic2.load_state_dict(ck["c2"])
         self.tc1.load_state_dict(ck["tc1"]);    self.tc2.load_state_dict(ck["tc2"])
@@ -189,4 +198,6 @@ class SAC:
         self.actor_opt.load_state_dict(ck["a_opt"])
         self.critic1_opt.load_state_dict(ck["c1_opt"]); self.critic2_opt.load_state_dict(ck["c2_opt"])
         self.alpha_opt.load_state_dict(ck["al_opt"])
+        if resume_training:
+            self.replay.load_state_dict(ck["replay"])
         self.loaded_checkpoint_version = version

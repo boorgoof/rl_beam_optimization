@@ -676,7 +676,10 @@ def main() -> int:
     print("\n[9/10] Algorithms")
 
     def _model_free_algorithms():
-        from beam_optimization.algorithms import MODEL_FREE_ALGORITHMS, make_agent
+        from beam_optimization.algorithms import (
+            CUSTOM_MODEL_FREE_ALGORITHMS,
+            make_custom_agent,
+        )
         from beam_optimization.config.adige import N_PARAMS, action_bounds, observation_dim
 
         obs_dim = observation_dim()
@@ -684,8 +687,8 @@ def main() -> int:
         action_bounds_tuple = (bounds[0].tolist(), bounds[1].tolist())
         dummy_obs = np.zeros(obs_dim, dtype=np.float32)
         checked = []
-        for name in MODEL_FREE_ALGORITHMS:
-            agent = make_agent(name, obs_dim, N_PARAMS, action_bounds_tuple)
+        for name in CUSTOM_MODEL_FREE_ALGORITHMS:
+            agent = make_custom_agent(name, obs_dim, N_PARAMS, action_bounds_tuple)
             action = _extract_action(agent.select_action(dummy_obs, training=False))
             if action.shape != (N_PARAMS,):
                 raise CheckFailure(
@@ -701,8 +704,11 @@ def main() -> int:
         default_action="Fix algorithm imports/constructors/select_action interfaces.",
     )
 
-    def _sb3_sac():
-        from beam_optimization.algorithms.model_free.sb3_sac import SB3SAC
+    def _stable_baselines():
+        from beam_optimization.algorithms import STABLE_BASELINES_ALGORITHMS
+        from beam_optimization.algorithms.model_free.stable_baselines import (
+            StableBaselinesAgent,
+        )
         from beam_optimization.env.surrogate_env import SurrogateEnv
 
         env = SurrogateEnv(
@@ -710,19 +716,35 @@ def main() -> int:
             dataset=state["dataset"],
             max_steps=1,
         )
-        agent = SB3SAC(env, hidden_dims=(32, 32), buffer_size=1024, batch_size=32)
-        if agent is None:
-            raise CheckFailure(
-                "SB3SAC constructor returned None.",
-                action="Fix SB3SAC wrapper construction.",
+        checked = []
+        for name in STABLE_BASELINES_ALGORITHMS:
+            model_kwargs = (
+                {"buffer_size": 1024, "batch_size": 32}
+                if name in {"sac", "td3", "ddpg"}
+                else None
             )
-        return "SB3SAC wrapper construction OK"
+            agent = StableBaselinesAgent(
+                name,
+                env,
+                hidden_dims=(32, 32),
+                model_kwargs=model_kwargs,
+            )
+            action = _extract_action(
+                agent.select_action(np.zeros(env.observation_space.shape, dtype=np.float32))
+            )
+            if action.shape != (N_PARAMS,):
+                raise CheckFailure(
+                    f"SB3 {name} action shape is {action.shape}, expected {(N_PARAMS,)}.",
+                    action="Fix StableBaselinesAgent construction or inference.",
+                )
+            checked.append(name)
+        return "checked Stable Baselines3 agents: " + ", ".join(checked)
 
     checker.check(
-        "Stable-Baselines3 SAC wrapper",
-        _sb3_sac,
+        "Stable-Baselines3 model-free wrappers",
+        _stable_baselines,
         default_action=(
-            "Install stable-baselines3 from requirements or fix the SB3SAC wrapper."
+            "Install stable-baselines3 from requirements or fix StableBaselinesAgent."
         ),
         default_path_command=INSTALL_COMMAND,
         skip_reason=None if (dataset_ok and surrogates_ok) else (
@@ -732,14 +754,16 @@ def main() -> int:
     )
 
     def _mbpo():
-        from beam_optimization.algorithms import make_agent
+        from beam_optimization.algorithms import make_custom_agent
         from beam_optimization.algorithms.model_based.mbpo import MBPO
         from beam_optimization.config.adige import N_PARAMS, action_bounds, observation_dim
 
         obs_dim = observation_dim()
         bounds = action_bounds()
         action_bounds_tuple = (bounds[0].tolist(), bounds[1].tolist())
-        inner = make_agent("sac", obs_dim, N_PARAMS, action_bounds_tuple)
+        inner = make_custom_agent(
+            "sac_custom", obs_dim, N_PARAMS, action_bounds_tuple
+        )
         agent = MBPO(
             agent=inner,
             surrogates=state["surrogates"],

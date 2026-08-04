@@ -74,9 +74,9 @@ class _SequenceSimulator(BeamSimulator):
 
 
 class _Env(BaseBeamEnv):
-    def __init__(self, results, *, max_steps=20):
+    def __init__(self, results, *, max_steps=20, **kwargs):
         self.results = results
-        super().__init__(max_steps=max_steps)
+        super().__init__(max_steps=max_steps, **kwargs)
 
     def _build_simulator(self):
         return _SequenceSimulator(self.results)
@@ -282,7 +282,10 @@ class TerminalFailureTests(unittest.TestCase):
                 self.assertEqual(env.simulator.calls, 1)
 
     def test_technical_step_restores_state_and_truncates_neutrally(self):
-        env = _Env([_valid_result(), _technical_failure_result()])
+        env = _Env(
+            [_valid_result(), _technical_failure_result()],
+            action_smoothness_penalty_weight=0.25,
+        )
         obs_before, _ = env.reset(options={"randomize_params": False})
         params_before = env.current_params
 
@@ -296,6 +299,20 @@ class TerminalFailureTests(unittest.TestCase):
         self.assertFalse(terminated)
         self.assertTrue(truncated)
         self.assertTrue(info["technical_failure"])
+        self.assertEqual(info["action_smoothness_penalty"], 0.0)
+
+    def test_terminal_failure_has_zero_smoothness_penalty(self):
+        env = _Env(
+            [_valid_result(), _valid_result(), _physics_failure_result()],
+            action_smoothness_penalty_weight=0.25,
+        )
+        env.reset(options={"randomize_params": False})
+        env.step(env.action_space.high)
+
+        _, _, terminated, _, info = env.step(env.action_space.low)
+
+        self.assertTrue(terminated)
+        self.assertEqual(info["action_smoothness_penalty"], 0.0)
 
     def test_technical_reset_raises_without_resampling(self):
         env = _Env([_technical_failure_result()])

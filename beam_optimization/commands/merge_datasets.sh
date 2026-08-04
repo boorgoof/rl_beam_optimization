@@ -1,22 +1,19 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Merge dataset_all.pt files and create fresh 80/10/10 splits.
 # Pass --allow-running to take stable snapshots of builds still in progress.
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
-if [ -f "beam_optimization/.venv/bin/activate" ]; then
-  source beam_optimization/.venv/bin/activate
-fi
+source beam_optimization/.venv/bin/activate
 
 python -m beam_optimization merge_datasets \
   --inputs \
-    beam_optimization/env/dataset/001/dataset_all.pt \
-    beam_optimization/env/dataset/002/dataset_all.pt \
-    beam_optimization/env/dataset/003/dataset_all.pt \
-    beam_optimization/env/dataset/004/dataset_all.pt \
-  --output-dir beam_optimization/env/dataset/005 \
+    beam_optimization/env/dataset/020/dataset_all.pt \
+    beam_optimization/env/dataset/021/dataset_all.pt \
+    beam_optimization/env/dataset/022/dataset_all.pt \
+  --output-dir beam_optimization/env/dataset/024 \
   --seed 123 \
   "$@"
   # --allow-running is off by default (see header comment)

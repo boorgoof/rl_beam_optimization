@@ -1,13 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Calculate TraceWin parameter bounds and save the JSON report under results/.
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../../.."
 
-if [ -f "beam_optimization/.venv/bin/activate" ]; then
-  source beam_optimization/.venv/bin/activate
-fi
+source beam_optimization/.venv/bin/activate
 
 python -m beam_optimization parameter_bounds_calculation \
   --tracewin-particles 10000 \

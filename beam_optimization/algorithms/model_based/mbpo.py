@@ -79,7 +79,16 @@ class MBPO:
         distance_penalty_weight: float = 0.0,
         action_penalty_weight: float = 0.0,
         score_regression_penalty_weight: float = 0.0,
+        action_smoothness_penalty_weight: float = 0.0,
     ):
+        if int(rollout_length) <= 0:
+            raise ValueError("rollout_length must be positive")
+        if int(n_synthetic_per_step) <= 0:
+            raise ValueError("n_synthetic_per_step must be positive")
+        if int(n_grad_updates) <= 0:
+            raise ValueError("n_grad_updates must be positive")
+        if int(min_real_samples) <= 0:
+            raise ValueError("min_real_samples must be positive")
         self.agent            = agent
         self.rollout_length   = int(rollout_length)
         self.n_synthetic_per_step = int(n_synthetic_per_step)
@@ -96,6 +105,7 @@ class MBPO:
             reset_scale=TRAIN_RESET_SCALE,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
         )
 

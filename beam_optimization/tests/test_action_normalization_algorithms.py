@@ -17,7 +17,11 @@ from beam_optimization.algorithms.model_free.ppo import PPO
 from beam_optimization.algorithms.model_free.reinforce import REINFORCE
 from beam_optimization.algorithms.model_free.td3 import TD3
 from beam_optimization.algorithms.model_free.trpo import TRPO
-from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
+from beam_optimization.algorithms.networks.policy_nets import (
+    DeterministicPolicyNetwork,
+    GaussianPolicyNetwork,
+)
+from beam_optimization.algorithms.utils.trpo_utils import get_flat_params
 
 
 BOUNDS = ([-2.0, 10.0], [2.0, 20.0])
@@ -143,7 +147,9 @@ class DeterministicCheckpointCompatibilityTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     current_path = Path(temp_dir) / "current.pt"
                     legacy_path = Path(temp_dir) / "legacy.pt"
-                    make_deterministic_agent(cls).save(str(current_path))
+                    make_deterministic_agent(cls).save(
+                        str(current_path), include_replay=True
+                    )
 
                     payload = torch.load(current_path, map_location="cpu")
                     self.assertEqual(
@@ -169,6 +175,62 @@ class DeterministicCheckpointCompatibilityTests(unittest.TestCase):
                         make_deterministic_agent(cls).load(
                             str(legacy_path), resume_training=True
                         )
+
+    def test_ddpg_checkpoint_restores_exploration_noise_schedule(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "ddpg.pt"
+            agent = make_deterministic_agent(DDPG)
+            for _ in range(37):
+                agent.noise.update()
+            expected_step = agent.noise.step_count
+            expected_ratio = agent.noise.noise_ratio
+            agent.store(
+                STATE,
+                np.array([0.5, 12.0], dtype=np.float32),
+                1.0,
+                NEXT_STATE,
+                False,
+            )
+            agent.save(str(checkpoint), include_replay=True)
+
+            restored = make_deterministic_agent(DDPG)
+            restored.load(str(checkpoint), resume_training=True)
+
+            self.assertEqual(restored.noise.step_count, expected_step)
+            self.assertAlmostEqual(restored.noise.noise_ratio, expected_ratio)
+            self.assertEqual(len(restored.replay), 1)
+            np.testing.assert_allclose(
+                restored.replay.states[0],
+                STATE,
+            )
+
+    def test_compact_checkpoint_rejects_training_resume(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "compact.pt"
+            make_deterministic_agent(TD3).save(str(checkpoint))
+
+            with self.assertRaisesRegex(ValueError, "include_replay=True"):
+                make_deterministic_agent(TD3).load(
+                    str(checkpoint), resume_training=True
+                )
+
+
+class PolicyInputFormattingTests(unittest.TestCase):
+    def test_tensor_observations_are_batched_and_cast_to_float32(self):
+        policies = (
+            GaussianPolicyNetwork(3, BOUNDS, hidden_dims=(8, 8)),
+            DeterministicPolicyNetwork(
+                3, 2, BOUNDS, hidden_dims=(8, 8)
+            ),
+        )
+        state = torch.zeros(3, dtype=torch.float64)
+
+        for policy in policies:
+            with self.subTest(policy=type(policy).__name__):
+                action = policy.select_action(state)
+                self.assertEqual(action.shape, (2,))
+                self.assertEqual(action.dtype, np.float32)
+                self.assertTrue(np.isfinite(action).all())
 
 
 class OnPolicyLogProbabilityTests(unittest.TestCase):
@@ -263,6 +325,65 @@ class OnPolicyLogProbabilityTests(unittest.TestCase):
                     )
                 losses = agent.optimize(last_value=0.0)
                 self.assertTrue(all(np.isfinite(value) for value in losses))
+
+    def test_single_transition_episode_keeps_on_policy_agents_finite(self):
+        for cls in (PPO, A2C, TRPO):
+            with self.subTest(algorithm=cls.__name__):
+                torch.manual_seed(37)
+                np.random.seed(37)
+                agent = cls(
+                    obs_dim=3,
+                    act_dim=2,
+                    action_bounds=BOUNDS,
+                    hidden_dims=(8, 8),
+                    device="cpu",
+                )
+                action, logpa, value = agent.select_action(STATE, training=True)
+                agent.store(
+                    STATE,
+                    action,
+                    1.0,
+                    value,
+                    float(logpa),
+                    1.0,
+                )
+
+                losses = agent.optimize(last_value=0.0)
+                policy = getattr(agent, "policy", None) or agent.policy_network
+                self.assertTrue(all(np.isfinite(value) for value in losses))
+                self.assertTrue(
+                    all(torch.isfinite(param).all() for param in policy.parameters())
+                )
+
+    def test_trpo_applies_valid_line_search_update(self):
+        torch.manual_seed(0)
+        np.random.seed(0)
+        agent = TRPO(
+            obs_dim=3,
+            act_dim=2,
+            action_bounds=BOUNDS,
+            hidden_dims=(8, 8),
+            device="cpu",
+        )
+        for index in range(20):
+            state = np.random.randn(3).astype(np.float32)
+            action, logpa, value = agent.select_action(state, training=True)
+            agent.store(
+                state,
+                action,
+                float(np.random.randn()),
+                value,
+                float(logpa),
+                float(index == 19),
+            )
+
+        before = get_flat_params(agent.policy_network).clone()
+        agent.optimize(last_value=0.0)
+        update_norm = torch.linalg.vector_norm(
+            get_flat_params(agent.policy_network) - before
+        )
+
+        self.assertGreater(float(update_norm), 0.0)
 
 
 if __name__ == "__main__":

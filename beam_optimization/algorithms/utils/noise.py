@@ -39,3 +39,21 @@ class NormalNoiseDecayStrategy:
         fraction = min(self.step_count / self.decay_steps, 1.0)
         self.noise_ratio = (self.init_noise_ratio
                             - fraction * (self.init_noise_ratio - self.min_noise_ratio))
+
+    def state_dict(self):
+        """Return the mutable schedule state needed to resume exploration."""
+        return {
+            "step_count": int(self.step_count),
+            "noise_ratio": float(self.noise_ratio),
+        }
+
+    def load_state_dict(self, state):
+        """Restore a state produced by state_dict(), validating its range."""
+        step_count = int(state["step_count"])
+        noise_ratio = float(state["noise_ratio"])
+        if step_count < 0:
+            raise ValueError("Noise step_count must be non-negative")
+        if not np.isfinite(noise_ratio):
+            raise ValueError("Noise ratio must be finite")
+        self.step_count = step_count
+        self.noise_ratio = noise_ratio

@@ -11,10 +11,12 @@ def format_input(x, device=None):
     """Convert numpy/list input to a batched float32 tensor, optionally moved to `device`."""
     if not isinstance(x, torch.Tensor):
         x = torch.tensor(x, dtype=torch.float32)
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
+    else:
+        x = x.to(dtype=torch.float32)
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
     if device is not None:
-        x = x.to(device)
+        x = x.to(device=device)
     return x
 
 

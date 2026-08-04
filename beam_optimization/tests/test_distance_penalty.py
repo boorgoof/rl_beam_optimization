@@ -89,6 +89,21 @@ class DistancePenaltyDisabledTests(unittest.TestCase):
 
 
 class DistancePenaltyEnabledTests(unittest.TestCase):
+    def test_render_uses_explicit_distance_dataset(self):
+        sentinel_dataset = object()
+        env = _Env([_valid_result()], dataset=None)
+        env._distance_dataset = sentinel_dataset
+        env.reset(options={"randomize_params": False})
+
+        with mock.patch(
+            "beam_optimization.env.base_beam_env.param_knn_distance",
+            return_value=np.array([1.0]),
+        ) as mocked:
+            env.render()
+
+        _, kwargs = mocked.call_args
+        self.assertIs(kwargs["dataset"], sentinel_dataset)
+
     def test_penalty_subtracted_proportionally_to_distance(self):
         env = _Env(
             [_valid_result(), _valid_result(score=20.0, npart_ratio=1.0)],

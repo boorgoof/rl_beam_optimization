@@ -173,10 +173,11 @@ RL_MIN_NPART_RATIO: float = 0.10
 # numerical range.
 REWARD_SCORE_SCALE: float = 100.0
 
-# Default reward regularizers used by custom model-free agents and SB3-SAC.
+# Default reward regularizers used by all model-free and model-based trainers.
 # The action term discourages needless control motion; the regression term
 # penalizes score decreases and therefore overshoot/correction cycles.
 ACTION_PENALTY_WEIGHT: float = 0.02
+ACTION_SMOOTHNESS_PENALTY_WEIGHT: float = 0.0
 SCORE_REGRESSION_PENALTY_WEIGHT: float = 1.0
 
 # A physical beam-loss transition ends the episode and receives this RL reward.

@@ -32,6 +32,11 @@ class BenchmarkModeTests(unittest.TestCase):
                 "--tracewin-only",
                 "--tracewin",
                 "project.ini",
+                "--no-kill-stale",
+                "--tracewin-threads",
+                "6",
+                "--tracewin-timeout",
+                "180",
                 "--sac",
                 "sac_agent.pt",
                 "--output",
@@ -60,6 +65,13 @@ class BenchmarkModeTests(unittest.TestCase):
             self.assertEqual(call.kwargs["tag"], "_tracewin")
             self.assertEqual(call.kwargs["episodes"], 5)
             self.assertTrue(call.kwargs["env_factory"])
+            with patch(
+                "beam_optimization.env.tracewin_env.TraceWinEnv"
+            ) as tracewin_env:
+                call.kwargs["env_factory"]()
+            self.assertFalse(tracewin_env.call_args.kwargs["kill_stale"])
+            self.assertEqual(tracewin_env.call_args.kwargs["num_threads"], 6)
+            self.assertEqual(tracewin_env.call_args.kwargs["timeout"], 180.0)
 
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(

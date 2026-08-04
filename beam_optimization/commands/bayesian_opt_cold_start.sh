@@ -1,24 +1,22 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Cold-start Bayesian Optimization: 64 Sobol points followed by 100
 # Gaussian-Process-guided TraceWin evaluations. No dataset is loaded.
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."
 
-if [ -f "beam_optimization/.venv/bin/activate" ]; then
-  source beam_optimization/.venv/bin/activate
-fi
+source beam_optimization/.venv/bin/activate
 
 python -m beam_optimization bayesian_opt_cold_start \
   --initial-points 64 \
   --guided-calls 100 \
-  --bounds-scale 0.35 \
+  --bounds-scale 0.6 \
   --tracewin-particles 10000 \
   --timeout 180.0 \
   --retries 2 \
-  --output beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_2.json \
-  --samples-output beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_samples.pt \
+  --output beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_018.json \
+  --samples-output beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_018_samples.pt \
   "$@"
   # --workspace/--tracewin default to DEFAULT_TRACEWIN_INI (mutually exclusive)
   # --calc-dir defaults to a dedicated calc folder inside the resolved workspace

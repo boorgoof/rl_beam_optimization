@@ -28,6 +28,7 @@ class _FailingTraceWin:
     calls = 0
     stdout = ""
     stderr = ""
+    last_run_kwargs = {}
 
     def __init__(self, project, outpath):
         self.last_stdout = self.stdout
@@ -35,6 +36,7 @@ class _FailingTraceWin:
 
     def run(self, **kwargs):
         type(self).calls += 1
+        type(self).last_run_kwargs = dict(kwargs)
         return False
 
     def results(self):
@@ -121,6 +123,13 @@ class TraceWinRetryTests(unittest.TestCase):
         self.assertEqual(calls, 3)
         self.assertEqual(output.count("retrying"), 2)
         self.assertIn("Qt platform plugin xcb failed", result.error)
+
+    def test_concurrent_mode_disables_global_timeout_cleanup(self):
+        self._run_failure("Qt platform plugin xcb failed")
+
+        self.assertFalse(
+            _FailingTraceWin.last_run_kwargs["kill_remote_on_timeout"]
+        )
 
     def test_physics_failure_uses_cached_real_beam0(self):
         with tempfile.TemporaryDirectory() as directory:

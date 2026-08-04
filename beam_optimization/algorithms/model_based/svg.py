@@ -40,6 +40,7 @@ import torch
 import torch.optim as optim
 
 from beam_optimization.algorithms.networks.policy_nets import GaussianPolicyNetwork
+from beam_optimization.algorithms.utils.atomic_save import atomic_torch_save
 from beam_optimization.config.adige import (
     TRAIN_RESET_SCALE,
 )
@@ -63,6 +64,9 @@ class SVGResult:
 
     # Policy gradient norm after clipping.
     grad_norm: float = 0.0
+
+    # Mean per-step action smoothness cost used in this rollout.
+    action_smoothness_penalty: float = 0.0
 
 
 class SVGAgent:
@@ -107,6 +111,7 @@ class SVGAgent:
         distance_penalty_weight: float = 0.0,
         action_penalty_weight: float = 0.0,
         score_regression_penalty_weight: float = 0.0,
+        action_smoothness_penalty_weight: float = 0.0,
     ):
         self.dataset = dataset
         self.n_step = n_step
@@ -128,6 +133,7 @@ class SVGAgent:
             reset_scale=TRAIN_RESET_SCALE,
             distance_penalty_weight=distance_penalty_weight,
             action_penalty_weight=action_penalty_weight,
+            action_smoothness_penalty_weight=action_smoothness_penalty_weight,
             score_regression_penalty_weight=score_regression_penalty_weight,
         )
 
@@ -181,6 +187,7 @@ class SVGAgent:
 
         total_loss = torch.zeros(1, device=self.device)
         score_history: List[float] = []
+        smoothness_penalties: List[float] = []
 
         self.policy.train()
         self.optimizer.zero_grad() # clear previous gradients before starting the episode
@@ -195,6 +202,24 @@ class SVGAgent:
                 # Differentiable env step. The returned reward keeps the path:
                 # reward -> score -> surrogate -> params -> action -> policy.
                 next_state, reward, terminated = self.env.step_torch(state, action)
+                smoothness_penalty = 0.0
+                if not terminated and state.previous_action is not None:
+                    normalized_delta = torch.where(
+                        self.env._action_step_t > 0.0,
+                        (
+                            next_state.previous_action
+                            - state.previous_action
+                        )
+                        / self.env._action_step_t,
+                        torch.zeros_like(next_state.previous_action),
+                    )
+                    smoothness_penalty = float(
+                        (
+                            self.env.action_smoothness_penalty_weight
+                            * normalized_delta.square().mean()
+                        ).detach()
+                    )
+                smoothness_penalties.append(smoothness_penalty)
 
                 # Maximize reward with an entropy bonus:
                 #   objective = reward - alpha * log_prob
@@ -229,6 +254,11 @@ class SVGAgent:
             final_score=final_score,
             score_history=score_history,
             grad_norm=grad_norm,
+            action_smoothness_penalty=(
+                float(np.mean(smoothness_penalties))
+                if smoothness_penalties
+                else 0.0
+            ),
         )
 
 
@@ -256,10 +286,11 @@ class SVGAgent:
 
     def save(self, path: str):
         """Save only the policy-side state; surrogate weights are external."""
-        torch.save({
+        atomic_torch_save({
             "policy":    self.policy.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "best_score": self.best_score,
+            "best_params": self.best_params,
             "train_steps": self.train_steps,
         }, path)
 
@@ -269,6 +300,11 @@ class SVGAgent:
         self.policy.load_state_dict(ck["policy"])
         self.optimizer.load_state_dict(ck["optimizer"])
         self.best_score  = ck.get("best_score", -float("inf"))
+        if "best_params" in ck:
+            self.best_params = {
+                str(key): float(value)
+                for key, value in ck["best_params"].items()
+            }
         self.train_steps = ck.get("train_steps", 0)
 
     #Internal helper 

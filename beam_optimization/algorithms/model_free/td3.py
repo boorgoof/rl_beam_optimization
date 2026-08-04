@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from beam_optimization.algorithms.networks.policy_nets import DeterministicPolicyNetwork
 from beam_optimization.algorithms.networks.value_nets   import TwinQNetwork
+from beam_optimization.algorithms.utils.atomic_save     import atomic_torch_save
 from beam_optimization.algorithms.utils.replay_buffer   import ReplayBuffer
 
 
@@ -127,15 +128,18 @@ class TD3:
 
         return cl.item(), al, None
 
-    def save(self, path: str):
-        torch.save({
+    def save(self, path: str, include_replay: bool = False):
+        checkpoint = {
             "implementation_version": self.IMPLEMENTATION_VERSION,
             "action_representation": "normalized",
             "actor": self.actor.state_dict(), "critic": self.critic.state_dict(),
             "ta": self.target_actor.state_dict(), "tc": self.target_critic.state_dict(),
             "ao": self.actor_opt.state_dict(), "co": self.critic_opt.state_dict(),
             "steps": self.update_count,
-        }, path)
+        }
+        if include_replay:
+            checkpoint["replay"] = self.replay.state_dict()
+        atomic_torch_save(checkpoint, path)
 
     def load(self, path: str, resume_training: bool = False):
         ck = torch.load(path, map_location="cpu")
@@ -146,8 +150,15 @@ class TD3:
                 "resume training with the normalized-action implementation. "
                 "They remain valid for deterministic policy evaluation."
             )
+        if resume_training and "replay" not in ck:
+            raise ValueError(
+                "This TD3 checkpoint has no replay snapshot. Save with "
+                "include_replay=True before using resume_training=True."
+            )
         self.actor.load_state_dict(ck["actor"]); self.critic.load_state_dict(ck["critic"])
         self.target_actor.load_state_dict(ck["ta"]); self.target_critic.load_state_dict(ck["tc"])
         self.actor_opt.load_state_dict(ck["ao"]); self.critic_opt.load_state_dict(ck["co"])
         self.update_count = ck["steps"]
+        if resume_training:
+            self.replay.load_state_dict(ck["replay"])
         self.loaded_checkpoint_version = version

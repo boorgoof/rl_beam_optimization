@@ -19,27 +19,34 @@ def set_global_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-# Fixed entity → (color, linestyle) mapping used by ALL figures (learning
-# curves, convergence, policy benchmark), so an algorithm keeps the same
-# visual identity everywhere. Colorblind-validated 8-hue palette; algorithm
+# Fixed entity → (color, linestyle) mapping used by comparison figures.
+# Learning curves reuse these colors but deliberately draw every series with
+# a solid line. Colorblind-validated 8-hue palette; elsewhere algorithm
 # families share a hue and differ by linestyle (composite encoding).
 ALGO_STYLES: dict[str, tuple[str, str]] = {
     # SAC family (blue)
     "sac":          ("#2a78d6", "-"),
-    "sb3_sac":      ("#2a78d6", "--"),
+    "sac_custom":   ("#2a78d6", "--"),
+    "sb3_sac":      ("#2a78d6", "-"),  # deprecated alias
     # deterministic actor-critic family (aqua)
     "td3":          ("#1baf7a", "-"),
-    "ddpg":         ("#1baf7a", "--"),
+    "td3_custom":   ("#1baf7a", "--"),
+    "ddpg":         ("#008c73", "-"),
+    "ddpg_custom":  ("#008c73", "--"),
     # trust-region family (yellow)
     "ppo":          ("#eda100", "-"),
-    "trpo":         ("#eda100", "--"),
+    "ppo_custom":   ("#eda100", "--"),
+    "trpo_custom":  ("#c98300", ":"),
     # vanilla policy-gradient family (orange)
     "a2c":          ("#eb6834", "-"),
-    "reinforce":    ("#eb6834", "--"),
+    "a2c_custom":   ("#eb6834", "--"),
+    "reinforce_custom": ("#c94f23", ":"),
     # model-based (green / violet); "dyna" is the training/run-dir label of MBPO
     "mbpo":         ("#008300", "-"),
     "dyna":         ("#008300", "-"),
-    "svg_finale":   ("#4a3aa7", "-"),
+    "iterative_sim2real_sac": ("#00a6a6", "-"),
+    "svg_final":    ("#4a3aa7", "-"),
+    "svg_finale":   ("#4a3aa7", "-"),  # legacy alias
     "svg_uniform":  ("#4a3aa7", "--"),
     # optimization baseline (red)
     "bayesian_opt": ("#e34948", "-"),

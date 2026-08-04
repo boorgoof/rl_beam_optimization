@@ -459,7 +459,7 @@ merge_datasets      merge BeamDataset files and regenerate train/val/test splits
 train_surrogate     train new base surrogate checkpoints from an existing dataset
 evaluate_surrogate  evaluate beam-feature and final-score accuracy on a test BeamDataset
 check               procedural onboarding check, including real TraceWin reset+step
-train_policies      train RL agents on SurrogateEnv, optionally with TraceWin MBPO
+train_policies      train RL agents, including opt-in Iterative Sim-to-Real SAC
 benchmark           compare Bayesian optimization, SVG, and optional RL checkpoints
 test                run one trained policy for one qualitative episode
 ```
@@ -908,7 +908,7 @@ real simulator.
 Surrogate usage during training:
 
 ```text
---single-surrogate    used by SAC, TD3, PPO, DDPG, A2C, REINFORCE, TRPO, SB3-SAC
+--single-surrogate    used by all Stable Baselines3 and custom model-free agents
 --base-ensemble       used by SVG and MBPO
 --updated-ensemble    working ensemble used by MBPOWithModelUpdate
 ```
@@ -918,20 +918,23 @@ to run only custom SAC and Stable-Baselines3 SAC:
 
 ```bash
 python -m beam_optimization train_policies \
-  --skip td3 ppo ddpg a2c reinforce trpo dyna svg_finale svg_uniform \
+  --skip ppo td3 ddpg a2c td3_custom ppo_custom ddpg_custom a2c_custom \
+         reinforce_custom trpo_custom dyna svg \
   --output beam_optimization/results/train/sac_compare
 ```
 
 Useful `--skip` names:
 
 ```text
-sac td3 ppo ddpg a2c reinforce trpo sb3_sac dyna svg svg_finale svg_uniform
+sac ppo td3 ddpg a2c
+sac_custom ppo_custom td3_custom ddpg_custom a2c_custom reinforce_custom trpo_custom
+dyna svg svg_final svg_uniform
 ```
 
 All options:
 
 ```text
---single-surrogate PATH   surrogate used by SAC/TD3/PPO/DDPG/A2C/REINFORCE/TRPO/SB3-SAC
+--single-surrogate PATH   surrogate used by every model-free algorithm
                           (default: first surrogate_*.pt in the base model folder)
 --base-ensemble PATH      folder with surrogate_*.pt used by SVG and MBPO
                           (default: DEFAULT_BASE_SURROGATE_DIR)
@@ -943,7 +946,12 @@ All options:
 --rl-steps N              env steps for model-free algorithms and MBPO (default: 200000)
 --svg-episodes N          episodes for SVGAgent (default: 1000)
 --svg-horizon N           SVGAgent rollout horizon (default: 20)
---rollout-length N        MBPO synthetic rollout length, 1=Dyna, >1=MBPO (default: 1)
+--rollout-length N        MBPO synthetic rollout length (default: 5)
+--n-synthetic-per-step N  synthetic rollouts generated per real step (default: 40)
+--mbpo-min-real-samples N real transitions required before synthetic rollouts start
+                          (default: min(256, rl_steps/4))
+--model-train-freq N      online surrogate update period in real TraceWin steps
+                          (default: 50)
 --max-ep-steps N          max steps per episode (default: 20)
 --hidden N [N ...]        hidden layer sizes for all networks (default: 256 256)
 --seed N                  base random seed (default: 42)
@@ -956,6 +964,8 @@ All options:
 --no-learning-curve       disable periodic evaluation and learning curve plots
 --no-tensorboard          disable TensorBoard/metrics.csv logging
 --skip NAME [NAME ...]    algorithms to skip (see list above)
+--only NAME [NAME ...]    train only selected algorithms; use
+                          iterative_sim2real_sac to enable real Sim-to-Real training
 --tracewin [INI]          use TraceWin as the real MBPO env; without a value, uses the
                           project default path (default: disabled, i.e. None)
 --online-finetune         fine-tune the surrogate ensemble on real data during training
@@ -966,6 +976,41 @@ All options:
 --update-dataset PATH     where to save the merged offline+online dataset from
                           MBPOWithModelUpdate (default: same path as --dataset)
 ```
+
+### Iterative Sim-to-Real SAC
+
+This workflow is separate from MBPO. It preserves one Stable Baselines3 SAC
+while switching its environment:
+
+```text
+200000 SurrogateEnv steps (20-step episodes)
+→ clear replay
+→ 2000 TraceWinEnv steps (20-step episodes)
+→ fine-tune and save a working surrogate
+```
+
+Additional cycles use 50000 steps on the updated surrogate before the next
+real block. Base datasets and models are copied/read only; every updated
+artifact is written below the selected output directory. Run it through the
+shared policy trainer:
+
+```bash
+python -m beam_optimization train_policies \
+  --only iterative_sim2real_sac \
+  --single-surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_018_0.pt \
+  --dataset beam_optimization/env/dataset/018/dataset_train.pt \
+  --tracewin beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace_2/CB_newMRMS_RFQ_Fields_1.ini \
+  --output beam_optimization/results/train/rl/sim2real_018
+```
+
+The policy, replay buffer and cumulative TraceWin dataset are checkpointed
+during real training. Resume with the same configuration plus:
+
+```bash
+--resume
+```
+
+TraceWin evaluation and benchmarking remain separate commands.
 
 TraceWin + online surrogate fine-tuning:
 
@@ -1042,13 +1087,13 @@ python -m beam_optimization benchmark --quick
 ```
 
 Full benchmark (identical to `commands/benchmark_policies_surrogateEnv.sh`):
-BO/SVG plus the final custom-SAC policy benchmark:
+BO/SVG plus the final Stable Baselines3 SAC policy benchmark:
 
 ```bash
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
   --dataset beam_optimization/env/dataset/004/dataset_all.pt \
-  --sac beam_optimization/results/train/rl/all/sac/sac_agent.pt \
+  --sac beam_optimization/results/train/rl/all/sac/sac_agent.zip \
   --n-runs 3 \
   --eval-budget 200 \
   --svg-episodes 500 \
@@ -1057,7 +1102,7 @@ python -m beam_optimization benchmark \
   --output beam_optimization/results/benchmark/benchmark_surrogate.json
 ```
 
-Real-physics validation of the custom SAC (identical to
+Real-physics validation of Stable Baselines3 SAC (identical to
 `commands/benchmark_policies_tracewinEnv.sh`, ~30 s per TraceWin step). This
 command also executes the surrogate BO/SVG and policy benchmark before the
 additional TraceWin episodes:
@@ -1066,7 +1111,7 @@ additional TraceWin episodes:
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base/surrogate_004_0.pt \
   --dataset beam_optimization/env/dataset/004/dataset_all.pt \
-  --sac beam_optimization/results/train/rl/all/sac/sac_agent.pt \
+  --sac beam_optimization/results/train/rl/all/sac/sac_agent.zip \
   --n-runs 3 \
   --eval-budget 200 \
   --svg-episodes 500 \
@@ -1128,16 +1173,15 @@ All options:
 --hidden N [N ...]   hidden layer sizes used to load custom policy checkpoints
 --no-policy-plots    disable policy bar plot and boxplot generation
 --quick              reduced budget for a fast smoke test
---sac CKPT           optional trained SAC checkpoint
---td3 CKPT           optional trained TD3 checkpoint
---ppo CKPT           optional trained PPO checkpoint
---ddpg CKPT          optional trained DDPG checkpoint
---a2c CKPT           optional trained A2C checkpoint
---reinforce CKPT     optional trained REINFORCE checkpoint
---trpo CKPT          optional trained TRPO checkpoint
---sb3-sac CKPT       optional trained Stable-Baselines3 SAC checkpoint
+--sac/--ppo/--td3/--ddpg/--a2c CKPT
+                     optional Stable Baselines3 .zip checkpoint
+--sac-custom/--ppo-custom/--td3-custom/--ddpg-custom/--a2c-custom CKPT
+                     optional project implementation .pt checkpoint
+--reinforce-custom/--trpo-custom CKPT
+                     optional custom policy-gradient .pt checkpoint
+--sb3-sac CKPT       deprecated alias for --sac
 --mbpo CKPT          optional trained MBPO/Dyna inner SAC checkpoint
---svg-finale CKPT    optional trained SVG final-stage checkpoint
+--svg-final CKPT     optional trained SVG final-stage checkpoint
 --svg-uniform CKPT   optional trained SVG uniform-stage checkpoint
 ```
 
@@ -1151,7 +1195,7 @@ Test on the surrogate without rendering:
 ```bash
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.zip \
   --env surrogate \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base \
   --dataset beam_optimization/env/dataset/001/dataset_all.pt
@@ -1162,7 +1206,7 @@ Test on the surrogate with render images:
 ```bash
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.zip \
   --env surrogate \
   --render
 ```
@@ -1172,7 +1216,7 @@ Test on real TraceWin with rendering:
 ```bash
 python -m beam_optimization test \
   --algo sac \
-  --policy beam_optimization/results/train/rl/all/sac/sac_agent.pt \
+  --policy beam_optimization/results/train/rl/all/sac/sac_agent.zip \
   --env tracewin \
   --render \
   --episode-video
@@ -1181,7 +1225,8 @@ python -m beam_optimization test \
 Supported `--algo` values:
 
 ```text
-sac td3 ppo ddpg a2c reinforce trpo sb3_sac
+sac ppo td3 ddpg a2c
+sac_custom ppo_custom td3_custom ddpg_custom a2c_custom reinforce_custom trpo_custom
 ```
 
 All options:

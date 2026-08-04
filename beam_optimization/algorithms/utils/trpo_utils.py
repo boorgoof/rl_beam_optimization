@@ -102,18 +102,31 @@ def _surrogate(policy, states, actions, advantages, old_log_probs):
 
 
 def line_search(policy, states, actions, advantages, old_log_probs,
-                old_dist_params, full_step, max_kl,
+                old_dist_params, full_step, expected_improve, max_kl,
                 max_backtracks=10, accept_ratio=0.1) -> bool:
     """Backtracking line search to enforce KL ≤ max_kl and surrogate improvement."""
     old_params  = get_flat_params(policy)
     surr_before = _surrogate(policy, states, actions, advantages, old_log_probs).item()
+    expected_improve = float(expected_improve)
+    if not torch.isfinite(torch.as_tensor(expected_improve)) or expected_improve <= 0.0:
+        return False
+
     step_size   = 1.0
     for _ in range(max_backtracks):
         set_flat_params(policy, old_params + step_size * full_step)
         with torch.no_grad():
             kl   = compute_kl_divergence(policy, states, old_dist_params).item()
             surr = _surrogate(policy, states, actions, advantages, old_log_probs).item()
-        if kl <= max_kl and surr - surr_before > accept_ratio * step_size:
+        actual_improve = surr - surr_before
+        expected_at_step = step_size * expected_improve
+        improvement_ratio = actual_improve / expected_at_step
+        if (
+            torch.isfinite(torch.as_tensor(kl))
+            and torch.isfinite(torch.as_tensor(improvement_ratio))
+            and kl <= max_kl
+            and actual_improve > 0.0
+            and improvement_ratio >= accept_ratio
+        ):
             return True
         step_size *= 0.5
     set_flat_params(policy, old_params)
