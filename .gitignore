@@ -43,7 +43,9 @@ Thumbs.db
 
 # Training artifacts
 beam_optimization/runs/
-beam_optimization/results/
+beam_optimization/results/*
+!beam_optimization/results/benchmark_results_summary.ipynb
+!beam_optimization/results/test_policy.ipynb
 beam_optimization/**/calc/
 beam_optimization/**/sensitivity_calc/
 checkpoints/

@@ -16,6 +16,7 @@ from beam_optimization.algorithms.utils.logger import Logger
 try:
     from stable_baselines3 import A2C, DDPG, PPO, SAC, TD3
     from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.utils import FloatSchedule
 
     _SB3_CLASSES = {
         "sac": SAC,
@@ -226,6 +227,49 @@ class StableBaselinesAgent:
         if timestep < 0:
             raise ValueError("timestep must be non-negative")
         self._model.learning_starts = timestep
+
+    def configure_off_policy_updates(
+        self,
+        *,
+        learning_rate: float,
+        gradient_steps: int = 1,
+    ) -> None:
+        """Change off-policy optimizer settings without recreating the model.
+
+        Iterative Sim-to-Real uses the normal SAC rate on the surrogate and a
+        much smaller rate on TraceWin.  Updating both ``learning_rate`` and
+        ``lr_schedule`` is required because SB3 reapplies the schedule to the
+        actor, critic, and entropy optimizers before every gradient block.
+        ``gradient_steps=0`` is intentionally supported so a callback can
+        collect an exact number of environment steps while enabling one
+        update only at a configured real-step interval.
+        """
+        if self.algorithm not in {"sac", "td3", "ddpg"}:
+            raise TypeError(
+                "configure_off_policy_updates is available only for "
+                "off-policy algorithms"
+            )
+        learning_rate = float(learning_rate)
+        gradient_steps = int(gradient_steps)
+        if not np.isfinite(learning_rate) or learning_rate <= 0.0:
+            raise ValueError("learning_rate must be finite and positive")
+        if gradient_steps < 0:
+            raise ValueError("gradient_steps must be non-negative")
+        self._model.learning_rate = learning_rate
+        self._model.lr_schedule = FloatSchedule(learning_rate)
+        self._model.gradient_steps = gradient_steps
+
+    def set_off_policy_gradient_steps(self, gradient_steps: int) -> None:
+        """Set updates after the next rollout while preserving exact step budgets."""
+        if self.algorithm not in {"sac", "td3", "ddpg"}:
+            raise TypeError(
+                "set_off_policy_gradient_steps is available only for "
+                "off-policy algorithms"
+            )
+        gradient_steps = int(gradient_steps)
+        if gradient_steps < 0:
+            raise ValueError("gradient_steps must be non-negative")
+        self._model.gradient_steps = gradient_steps
 
     def save_replay_buffer(self, path: str | Path) -> None:
         """Persist replay separately from the SB3 policy archive."""

@@ -1,6 +1,7 @@
 """Iterative SurrogateEnv/TraceWinEnv SAC workflow tests."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ from beam_optimization.algorithms.model_based.iterative_sim2real_sac import (
     IterativeSim2RealSAC,
     IterativeSim2RealSACConfig,
     TraceWinExperienceCollector,
+    _phase_checkpoint_hook,
 )
 
 
@@ -154,6 +156,29 @@ class StableBaselinesContinuationTests(unittest.TestCase):
         target = agent.delay_learning(7)
         self.assertEqual(target, agent.num_timesteps + 7)
 
+    def test_phase_specific_sac_rate_and_gradient_steps_are_mutable(self):
+        agent = StableBaselinesAgent(
+            "sac",
+            _ContinuousEnv(),
+            hidden_dims=(8, 8),
+            seed=3,
+            model_kwargs={"buffer_size": 32, "batch_size": 2},
+        )
+        model_id = id(agent._model)
+        policy_id = id(agent._model.policy)
+
+        agent.configure_off_policy_updates(
+            learning_rate=1e-5,
+            gradient_steps=0,
+        )
+        self.assertEqual(agent._model.learning_rate, 1e-5)
+        self.assertEqual(agent._model.lr_schedule(0.5), 1e-5)
+        self.assertEqual(agent._model.gradient_steps, 0)
+        agent.set_off_policy_gradient_steps(1)
+        self.assertEqual(agent._model.gradient_steps, 1)
+        self.assertEqual(id(agent._model), model_id)
+        self.assertEqual(id(agent._model.policy), policy_id)
+
 
 class TraceWinCollectorTests(unittest.TestCase):
     def test_reset_and_step_results_are_collected_once(self):
@@ -168,6 +193,30 @@ class TraceWinCollectorTests(unittest.TestCase):
 
 
 class IterativeWorkflowTests(unittest.TestCase):
+    def test_real_update_interval_enables_one_update_every_twenty_steps(self):
+        updates = []
+        agent = SimpleNamespace(
+            set_off_policy_gradient_steps=lambda value: updates.append(value)
+        )
+        updater = SimpleNamespace(n_online_samples=0)
+        state = {"phase_steps_completed": 0}
+        with TemporaryDirectory() as tmp:
+            hook = _phase_checkpoint_hook(
+                output=Path(tmp),
+                agent=agent,
+                updater=updater,
+                state=state,
+                starting_steps=0,
+                interval=10_000,
+                budget=40,
+                gradient_update_interval=20,
+            )
+            for step in range(1, 41):
+                hook(step, step, [])
+
+        self.assertEqual([i + 1 for i, value in enumerate(updates) if value], [20, 40])
+        self.assertEqual(state["phase_steps_completed"], 40)
+
     def _args(self, root: Path, *, cycles: int):
         dataset_path = root / "dataset.pt"
         surrogate_path = root / "surrogate.pt"
@@ -264,6 +313,20 @@ class IterativeWorkflowTests(unittest.TestCase):
 
             resume_tracewin_calls = 0
 
+            # A checkpoint written by the earlier workflow does not contain
+            # the phase-specific tuning controls.  It must remain resumable
+            # and adopt the new conservative defaults without relaxing checks
+            # for any option that was already persisted.
+            state_path = output / "state.json"
+            legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+            for key in (
+                "surrogate_learning_rate",
+                "real_learning_rate",
+                "real_update_interval",
+            ):
+                legacy_state["config"].pop(key)
+            state_path.write_text(json.dumps(legacy_state), encoding="utf-8")
+
             def forbidden_tracewin_factory(**kwargs):
                 nonlocal resume_tracewin_calls
                 resume_tracewin_calls += 1
@@ -275,6 +338,9 @@ class IterativeWorkflowTests(unittest.TestCase):
             ).resume()
             self.assertEqual(resumed["status"], "complete")
             self.assertEqual(resume_tracewin_calls, 0)
+            upgraded_state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(upgraded_state["config"]["real_learning_rate"], 1e-5)
+            self.assertEqual(upgraded_state["config"]["real_update_interval"], 20)
 
     def test_initial_policy_skips_initial_surrogate_and_starts_on_tracewin(self):
         with TemporaryDirectory() as tmp:
@@ -365,9 +431,12 @@ class IterativeWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(args.cycles, 1)
         self.assertEqual(args.initial_surrogate_steps, 200_000)
-        self.assertEqual(args.subsequent_surrogate_steps, 50_000)
+        self.assertEqual(args.subsequent_surrogate_steps, 20_000)
         self.assertEqual(args.real_steps_per_cycle, 2_000)
-        self.assertEqual(args.real_learning_starts, 256)
+        self.assertEqual(args.real_learning_starts, 1_000)
+        self.assertEqual(args.surrogate_learning_rate, 3e-4)
+        self.assertEqual(args.real_learning_rate, 1e-5)
+        self.assertEqual(args.real_update_interval, 20)
         self.assertEqual(args.max_ep_steps, 20)
         self.assertIsNone(args.initial_policy)
         self.assertIn("iterative_sim2real_sac", MODEL_BASED_ALGORITHMS)
@@ -421,6 +490,9 @@ class TrainPoliciesIntegrationTests(unittest.TestCase):
             self.assertEqual(config.max_ep_steps, 20)
             self.assertEqual(config.initial_surrogate_steps, 200)
             self.assertEqual(config.real_steps_per_cycle, 2)
+            self.assertEqual(config.real_learning_starts, 1)
+            self.assertEqual(config.real_learning_rate, 1e-5)
+            self.assertEqual(config.real_update_interval, 1)
             self.assertEqual(config.seed, 42)
             self.assertEqual(config.initial_policy, str(initial_policy))
             self.assertFalse(config.kill_stale)

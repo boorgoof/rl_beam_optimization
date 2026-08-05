@@ -967,7 +967,8 @@ All options:
 --only NAME [NAME ...]    train only selected algorithms; use
                           iterative_sim2real_sac to enable real Sim-to-Real training
 --tracewin [INI]          use TraceWin as the real MBPO env; without a value, uses the
-                          project default path (default: disabled, i.e. None)
+                          project default path; also required by iterative_sim2real_sac
+                          (default: disabled, i.e. None)
 --online-finetune         fine-tune the surrogate ensemble on real data during training
                           (MBPOWithModelUpdate); requires --tracewin
 --online-mix-ratio FLOAT  target share (0-1) of each fine-tuning batch taken from online
@@ -989,8 +990,11 @@ while switching its environment:
 → fine-tune and save a working surrogate
 ```
 
-Additional cycles use 50000 steps on the updated surrogate before the next
-real block. Base datasets and models are copied/read only; every updated
+Additional cycles use 20000 steps on the updated surrogate before the next
+real block. Each TraceWin block first collects 1000 real transitions without
+updates, then uses learning rate 1e-5 and performs one SAC gradient update
+every 20 real steps. Surrogate phases use the normal 3e-4 learning rate.
+Base datasets and models are copied/read only; every updated
 artifact is written below the selected output directory. Run it through the
 shared policy trainer:
 
@@ -1011,6 +1015,10 @@ during real training. Resume with the same configuration plus:
 ```
 
 TraceWin evaluation and benchmarking remain separate commands.
+
+The phase-specific controls are exposed as
+`--real-learning-starts`, `--sim2real-surrogate-learning-rate`,
+`--sim2real-real-learning-rate`, and `--sim2real-real-update-interval`.
 
 TraceWin + online surrogate fine-tuning:
 

@@ -1288,9 +1288,21 @@ def build_parser() -> argparse.ArgumentParser:
               "the initial surrogate pretraining and starts at TraceWin cycle 1."),
     )
     parser.add_argument("--initial-surrogate-steps", type=int, default=200_000)
-    parser.add_argument("--subsequent-surrogate-steps", type=int, default=50_000)
+    parser.add_argument("--subsequent-surrogate-steps", type=int, default=20_000)
     parser.add_argument("--real-steps-per-cycle", type=int, default=2_000)
-    parser.add_argument("--real-learning-starts", type=int, default=256)
+    parser.add_argument("--real-learning-starts", type=int, default=1_000)
+    parser.add_argument(
+        "--sim2real-surrogate-learning-rate", type=float, default=3e-4,
+        help="SAC learning rate during surrogate phases (default: 3e-4).",
+    )
+    parser.add_argument(
+        "--sim2real-real-learning-rate", type=float, default=1e-5,
+        help="Conservative SAC learning rate during TraceWin phases (default: 1e-5).",
+    )
+    parser.add_argument(
+        "--sim2real-real-update-interval", type=int, default=20, metavar="N",
+        help="Run one SAC gradient update every N TraceWin steps (default: 20).",
+    )
     parser.add_argument("--sim2real-online-mix-ratio", type=float, default=0.25)
     parser.add_argument("--surrogate-update-steps", type=int, default=200)
     parser.add_argument("--surrogate-update-batch-size", type=int, default=128)
@@ -1316,6 +1328,7 @@ def main():
         args.subsequent_surrogate_steps = 100
         args.real_steps_per_cycle = 2
         args.real_learning_starts = 1
+        args.sim2real_real_update_interval = 1
         args.surrogate_update_steps = 1
         args.checkpoint_every_real_steps = 1
         args.checkpoint_every_surrogate_steps = 100
@@ -1540,6 +1553,9 @@ def main():
             subsequent_surrogate_steps=args.subsequent_surrogate_steps,
             real_steps_per_cycle=args.real_steps_per_cycle,
             real_learning_starts=args.real_learning_starts,
+            surrogate_learning_rate=args.sim2real_surrogate_learning_rate,
+            real_learning_rate=args.sim2real_real_learning_rate,
+            real_update_interval=args.sim2real_real_update_interval,
             max_ep_steps=args.max_ep_steps,
             online_mix_ratio=args.sim2real_online_mix_ratio,
             surrogate_update_steps=args.surrogate_update_steps,

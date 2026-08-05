@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -33,6 +34,11 @@ POLICY_RELATIVE_PATH = Path("sac/sac_agent.zip")
 REPLAY_RELATIVE_PATH = Path("sac/replay_buffer.pkl")
 ONLINE_RELATIVE_PATH = Path("cumulative_online_dataset.pt")
 WORKING_SURROGATE_RELATIVE_PATH = Path("working_surrogate/surrogate_0.pt")
+LEGACY_OPTIONAL_CONFIG_KEYS = {
+    "surrogate_learning_rate",
+    "real_learning_rate",
+    "real_update_interval",
+}
 
 
 @dataclass
@@ -46,9 +52,12 @@ class IterativeSim2RealSACConfig:
     initial_policy: Optional[str] = None
     cycles: int = 1
     initial_surrogate_steps: int = 200_000
-    subsequent_surrogate_steps: int = 50_000
+    subsequent_surrogate_steps: int = 20_000
     real_steps_per_cycle: int = 2_000
-    real_learning_starts: int = 256
+    real_learning_starts: int = 1_000
+    surrogate_learning_rate: float = 3e-4
+    real_learning_rate: float = 1e-5
+    real_update_interval: int = 20
     max_ep_steps: int = 20
     online_mix_ratio: float = 0.25
     surrogate_update_steps: int = 200
@@ -204,6 +213,12 @@ def _validate_config(config: IterativeSim2RealSACConfig) -> None:
     errors = [f"{name} must be positive" for name, value in positive.items() if value <= 0]
     if config.real_learning_starts < 0:
         errors.append("real_learning_starts must be non-negative")
+    if not math.isfinite(config.surrogate_learning_rate) or config.surrogate_learning_rate <= 0.0:
+        errors.append("surrogate_learning_rate must be positive")
+    if not math.isfinite(config.real_learning_rate) or config.real_learning_rate <= 0.0:
+        errors.append("real_learning_rate must be positive")
+    if config.real_update_interval <= 0:
+        errors.append("real_update_interval must be positive")
     if not 0.0 <= config.online_mix_ratio <= 1.0:
         errors.append("online_mix_ratio must be between 0 and 1")
     if config.surrogate_update_lr <= 0.0:
@@ -285,10 +300,15 @@ def _phase_checkpoint_hook(
     interval: int,
     budget: int,
     progress_label: Optional[str] = None,
+    gradient_update_interval: Optional[int] = None,
 ) -> Callable[[int, int, list[dict]], None]:
     def hook(local_steps: int, _global_steps: int, infos: list[dict]) -> None:
         completed = starting_steps + int(local_steps)
         state["phase_steps_completed"] = completed
+        if gradient_update_interval is not None:
+            agent.set_off_policy_gradient_steps(
+                1 if completed % gradient_update_interval == 0 else 0
+            )
         if progress_label is not None:
             info = infos[-1] if infos else {}
             score = info.get("score")
@@ -324,11 +344,18 @@ def _train_phase(
     eval_every: int = 1000,
     eval_episodes: int = 5,
     progress_label: Optional[str] = None,
+    learning_rate: Optional[float] = None,
+    gradient_update_interval: Optional[int] = None,
 ) -> None:
     completed = int(state["phase_steps_completed"])
     remaining = int(budget) - completed
     if remaining <= 0:
         return
+    if learning_rate is not None:
+        agent.configure_off_policy_updates(
+            learning_rate=learning_rate,
+            gradient_steps=0 if gradient_update_interval is not None else 1,
+        )
     hook = _phase_checkpoint_hook(
         output=output,
         agent=agent,
@@ -338,6 +365,7 @@ def _train_phase(
         interval=checkpoint_interval,
         budget=budget,
         progress_label=progress_label,
+        gradient_update_interval=gradient_update_interval,
     )
     agent.train(
         env,
@@ -409,6 +437,7 @@ def _run_workflow(
             key: (saved_config.get(key), value)
             for key, value in current_config.items()
             if saved_config.get(key) != value
+            and not (key in LEGACY_OPTIONAL_CONFIG_KEYS and key not in saved_config)
         }
         if mismatches:
             details = ", ".join(
@@ -416,6 +445,16 @@ def _run_workflow(
                 for key, (old, new) in sorted(mismatches.items())
             )
             raise ValueError(f"Resume configuration does not match state.json: {details}")
+        # Checkpoints created before phase-specific SAC tuning existed do not
+        # contain these keys. Adopt the explicitly requested/default values
+        # without weakening mismatch checks for any pre-existing option.
+        missing_legacy_keys = LEGACY_OPTIONAL_CONFIG_KEYS - saved_config.keys()
+        if missing_legacy_keys:
+            state["config"] = {
+                **saved_config,
+                **{key: current_config[key] for key in missing_legacy_keys},
+            }
+            _atomic_json(output / "state.json", state)
     else:
         if output.exists():
             raise FileExistsError(
@@ -563,7 +602,12 @@ def _run_workflow(
             hidden_dims=tuple(args.hidden),
             seed=args.seed,
             tensorboard_log=None if args.no_tensorboard else str(output / "tensorboard"),
-            model_kwargs={"buffer_size": replay_capacity},
+            model_kwargs={
+                "buffer_size": replay_capacity,
+                "learning_rate": args.surrogate_learning_rate,
+                "train_freq": 1,
+                "gradient_steps": 1,
+            },
         )
         _save_checkpoint(output=output, agent=agent, updater=updater, state=state)
 
@@ -582,7 +626,8 @@ def _run_workflow(
             if phase == "initial_surrogate":
                 print(
                     f"Training SAC on the base SurrogateEnv for "
-                    f"{args.initial_surrogate_steps} total phase steps."
+                    f"{args.initial_surrogate_steps} total phase steps "
+                    f"(learning_rate={args.surrogate_learning_rate:g})."
                 )
                 env = make_surrogate_env()
                 _train_phase(
@@ -600,6 +645,7 @@ def _run_workflow(
                     ),
                     eval_every=args.eval_every,
                     eval_episodes=args.eval_episodes,
+                    learning_rate=args.surrogate_learning_rate,
                 )
                 env.close()
                 agent.reset_replay_buffer()
@@ -624,6 +670,7 @@ def _run_workflow(
                 print(
                     f"Continuing the same SAC on the updated SurrogateEnv for "
                     f"{args.subsequent_surrogate_steps} total phase steps; "
+                    f"learning_rate={args.surrogate_learning_rate:g}; "
                     "the real replay is retained during this phase."
                 )
                 env = make_surrogate_env()
@@ -642,6 +689,7 @@ def _run_workflow(
                     ),
                     eval_every=args.eval_every,
                     eval_episodes=args.eval_episodes,
+                    learning_rate=args.surrogate_learning_rate,
                 )
                 env.close()
                 agent.reset_replay_buffer()
@@ -664,6 +712,9 @@ def _run_workflow(
                 print(
                     f"Continuing the same SAC on TraceWinEnv for "
                     f"{args.real_steps_per_cycle} total phase steps. "
+                    f"learning_rate={args.real_learning_rate:g}; one gradient "
+                    f"update every {args.real_update_interval} real steps after "
+                    f"the {args.real_learning_starts}-step collection window. "
                     "No TraceWin evaluation episodes will be run."
                 )
                 tracewin_kwargs = dict(
@@ -696,6 +747,8 @@ def _run_workflow(
                     checkpoint_interval=args.checkpoint_every_real_steps,
                     reset_num_timesteps=False,
                     progress_label=f"cycle={cycle}/{args.cycles}",
+                    learning_rate=args.real_learning_rate,
+                    gradient_update_interval=args.real_update_interval,
                 )
                 env.close()
                 state.update(
