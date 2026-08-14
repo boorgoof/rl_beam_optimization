@@ -56,7 +56,7 @@ class ResetScaleTests(unittest.TestCase):
         env = _Env(reset_scale=TEST_RESET_SCALE)
         _, info = env.reset(seed=7, options={"randomize_params": False})
         self.assertFalse(info["reset_randomized"])
-        self.assertEqual(env._current_params, default_params())
+        self.assertEqual(env.state.current_params, default_params())
 
     def test_explicit_reset_uses_exact_hardware_valid_parameters(self):
         env = _Env(reset_scale=TEST_RESET_SCALE)
@@ -84,7 +84,7 @@ class ResetScaleTests(unittest.TestCase):
         env = _Env(reset_scale=1e6)
         env.reset(seed=3)
         for spec in PARAMETERS:
-            value = env._current_params[spec.key]
+            value = env.state.current_params[spec.key]
             if spec.hw_min is not None:
                 self.assertGreaterEqual(value, spec.hw_min)
             if spec.hw_max is not None:

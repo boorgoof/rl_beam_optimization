@@ -8,6 +8,7 @@ in the backend simulator that produces the beam states and score for a given set
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -32,6 +33,34 @@ from beam_optimization.env.simulation import (
     BeamSimulator,
     canonical_physics_failure_reason,
 )
+
+
+@dataclass(eq=False)
+class EpisodeState:
+    """All per-episode mutable state for BaseBeamEnv: current step, best-of-episode,
+    and the render() history. Reconstructed wholesale by __init__/reset()."""
+
+    # Current step
+    step_count: int = 0
+    current_params: Dict[str, float] = field(default_factory=default_params)
+    current_obs: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+    current_score: float = ERROR_SCORE
+    current_result: BeamSimulationResult | None = None
+    previous_obs: np.ndarray | None = None
+    last_action: np.ndarray | None = None
+    last_reward: float = 0.0
+
+    # Best-of-episode
+    best_score: float = ERROR_SCORE
+    best_params: Dict[str, float] = field(default_factory=default_params)
+    best_step: int = 0
+
+    # Per-episode history for render(): index 0 is the state right after
+    # reset(), index k is the state after the k-th step().
+    params_history: list = field(default_factory=list)
+    obs_history: list = field(default_factory=list)
+    score_history: list = field(default_factory=list)
+    reward_history: list = field(default_factory=list)
 
 
 class BaseBeamEnv(gym.Env, ABC):
@@ -108,33 +137,15 @@ class BaseBeamEnv(gym.Env, ABC):
         self.reset_scale = float(reset_scale)
         self._reset_std = reset_std_vec(self.reset_scale).astype(np.float32)
 
-        # Episode state
-        self._step_count     = 0
-        self._current_params = default_params()
-        self._current_obs    = np.zeros(obs_dim, dtype=np.float32)
-        self._current_score  = ERROR_SCORE
-        self._current_result: BeamSimulationResult | None = None
-        self._previous_obs   = None
-        self._last_action    = None
-        self._last_reward    = 0.0
-        self.best_score      = ERROR_SCORE
-        self.best_params     = default_params()
-        self.best_step       = 0
-
-        # Per-episode history for render(): index 0 is the state right
-        # after reset(), index k is the state after the k-th step().
-        # KNN distances are derived from _params_history lazily in render(),
-        # so training steps never pay the k-d tree query (nor force the
-        # default dataset file to exist).
-        self._params_history: list[dict] = []
-        self._obs_history: list[np.ndarray] = []
-        self._score_history: list[float] = []
-        self._reward_history: list[float] = []
+        # Episode state (current step, best-of-episode, render() history).
+        # KNN distances are derived from state.params_history lazily in
+        # render(), so training steps never pay the k-d tree query (nor
+        # force the default dataset file to exist).
+        self.state = EpisodeState(current_obs=np.zeros(obs_dim, dtype=np.float32))
 
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self._step_count = 0
 
         options = dict(options or {})
         explicit_params = options.get("initial_params")
@@ -210,23 +221,21 @@ class BaseBeamEnv(gym.Env, ABC):
             )
 
         obs, score, extra = self._result_to_obs_score_info(result)
-        self._current_params = params
-        self._current_obs    = obs
-        self._current_score  = score
-        self._current_result = result
-        self._previous_obs   = None
-        self._last_action    = None
-        self._last_reward   = 0.0
-
-        self._params_history = [dict(self._current_params)]
-        self._obs_history = [obs.copy()]
-        self._score_history = [float(score)]
-        self._reward_history = [0.0]
         # Best-of-episode state must be reset here, not only in __init__:
         # benchmark environments are reused for multiple independent episodes.
-        self.best_score = float(score)
-        self.best_params = dict(self._current_params)
-        self.best_step = 0
+        self.state = EpisodeState(
+            current_params=params,
+            current_obs=obs,
+            current_score=score,
+            current_result=result,
+            params_history=[dict(params)],
+            obs_history=[obs.copy()],
+            score_history=[float(score)],
+            reward_history=[0.0],
+            best_score=float(score),
+            best_params=dict(params),
+            best_step=0,
+        )
 
         info = {
             "score": score,
@@ -243,48 +252,48 @@ class BaseBeamEnv(gym.Env, ABC):
     @property
     def current_params(self) -> Dict[str, float]:
         """Return a defensive copy of the parameters at the current episode step."""
-        return dict(self._current_params)
+        return dict(self.state.current_params)
 
     def step(self, action: np.ndarray):
 
-        previous_params = dict(self._current_params)
+        previous_params = dict(self.state.current_params)
 
-        # action to perform. It is a delta to apply to the current parameters. 
+        # action to perform. It is a delta to apply to the current parameters.
         # The action is clipped to the action space bounds.
         action = np.clip(action, self.action_space.low, self.action_space.high)
-        prev_obs = self._current_obs.copy()
+        prev_obs = self.state.current_obs.copy()
 
-        # modify parameter with deltas to the current parameters. 
+        # modify parameter with deltas to the current parameters.
         for key, delta in zip(PARAM_KEYS, action):
-            self._current_params[key] = float(self._current_params[key]) + float(delta)
-        self._current_params = clip_params_to_hw(self._current_params)
+            self.state.current_params[key] = float(self.state.current_params[key]) + float(delta)
+        self.state.current_params = clip_params_to_hw(self.state.current_params)
 
         # perform concretely the action (the simulation) and get the new observation and final score.
-        prev_score = self._current_score
-        result = self.simulator.simulate(self._current_params)
+        prev_score = self.state.current_score
+        result = self.simulator.simulate(self.state.current_params)
 
         # Infrastructure failures are not physical transitions. Restore the
         # last usable state, add no reward, and truncate this rollout so the
         # replay buffer never learns from an SSH/Qt/timeout artifact.
         if self._is_technical_failure(result):
-            self._current_params = previous_params
-            self._current_result = result
-            self._previous_obs = prev_obs
-            self._last_action = action.copy()
-            self._last_reward = 0.0
-            self._step_count += 1
+            self.state.current_params = previous_params
+            self.state.current_result = result
+            self.state.previous_obs = prev_obs
+            self.state.last_action = action.copy()
+            self.state.last_reward = 0.0
+            self.state.step_count += 1
 
-            self._params_history.append(dict(self._current_params))
-            self._obs_history.append(prev_obs.copy())
-            self._score_history.append(float(prev_score))
-            self._reward_history.append(0.0)
+            self.state.params_history.append(dict(self.state.current_params))
+            self.state.obs_history.append(prev_obs.copy())
+            self.state.score_history.append(float(prev_score))
+            self.state.reward_history.append(0.0)
 
             info = {
                 "score": prev_score,
                 "prev_score": prev_score,
                 "reward": 0.0,
-                "step": self._step_count,
-                "best_score": self.best_score,
+                "step": self.state.step_count,
+                "best_score": self.state.best_score,
                 "score_reward": 0.0,
                 "distance_penalty": 0.0,
                 "action_penalty": 0.0,
@@ -307,7 +316,7 @@ class BaseBeamEnv(gym.Env, ABC):
             score_regression_penalty = 0.0
             reward = TERMINAL_FAILURE_REWARD
         else:
-            distance_penalty = self._distance_penalty(self._current_params)
+            distance_penalty = self._distance_penalty(self.state.current_params)
             (
                 action_penalty,
                 action_smoothness_penalty,
@@ -322,32 +331,32 @@ class BaseBeamEnv(gym.Env, ABC):
             )
 
         # update episode state
-        self._current_obs    = obs
-        self._current_score  = score
-        self._current_result = result
-        self._previous_obs   = prev_obs
-        self._last_action    = action.copy()
-        self._last_reward    = float(reward)
+        self.state.current_obs    = obs
+        self.state.current_score  = score
+        self.state.current_result = result
+        self.state.previous_obs   = prev_obs
+        self.state.last_action    = action.copy()
+        self.state.last_reward    = float(reward)
 
-        self._params_history.append(dict(self._current_params))
-        self._obs_history.append(obs.copy())
-        self._score_history.append(float(score))
-        self._reward_history.append(float(reward))
+        self.state.params_history.append(dict(self.state.current_params))
+        self.state.obs_history.append(obs.copy())
+        self.state.score_history.append(float(score))
+        self.state.reward_history.append(float(reward))
 
         # update best score and best parameters if the current score is better than the best score so far.
-        if score > self.best_score:
-            self.best_score  = score
-            self.best_params = self._current_params.copy()
-            self.best_step   = self._step_count + 1
+        if score > self.state.best_score:
+            self.state.best_score  = score
+            self.state.best_params = self.state.current_params.copy()
+            self.state.best_step   = self.state.step_count + 1
 
         # update step count
-        self._step_count += 1
+        self.state.step_count += 1
         terminated = bool(extra["terminal_failure"])
-        truncated = False if terminated else self._step_count >= self.max_steps
+        truncated = False if terminated else self.state.step_count >= self.max_steps
 
         info = {"score": score, "prev_score": prev_score, "reward": reward,
-                "step": self._step_count,
-                "best_score": self.best_score,
+                "step": self.state.step_count,
+                "best_score": self.state.best_score,
                 "score_reward": (
                     0.0 if extra["terminal_failure"] else score / REWARD_SCORE_SCALE
                 ),
@@ -403,7 +412,7 @@ class BaseBeamEnv(gym.Env, ABC):
         smoothness_penalty = 0.0
         if (
             self.action_smoothness_penalty_weight > 0.0
-            and self._last_action is not None
+            and self.state.last_action is not None
         ):
             scale = np.maximum(
                 np.abs(self.action_space.low),
@@ -411,7 +420,7 @@ class BaseBeamEnv(gym.Env, ABC):
             )
             normalized_delta = np.divide(
                 np.asarray(action, dtype=np.float64)
-                - np.asarray(self._last_action, dtype=np.float64),
+                - np.asarray(self.state.last_action, dtype=np.float64),
                 scale,
                 out=np.zeros_like(scale, dtype=np.float64),
                 where=scale > 0.0,
@@ -494,7 +503,8 @@ class BaseBeamEnv(gym.Env, ABC):
         """
         import matplotlib.pyplot as plt
 
-        n_frames = len(self._obs_history)
+        state = self.state
+        n_frames = len(state.obs_history)
         steps = np.arange(n_frames)
         animate = save_path is not None
         n_init = 1 if animate else n_frames
@@ -510,7 +520,7 @@ class BaseBeamEnv(gym.Env, ABC):
 
         params_updaters: list = []
         for ax, spec in zip(params_axes.ravel(), PARAMETERS):
-            values = [float(p[spec.key]) for p in self._params_history]
+            values = [float(p[spec.key]) for p in state.params_history]
             ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
             line, = ax.plot(steps[:n_init], values[:n_init], color="tab:blue", marker="o", markersize=3)
             params_updaters.append(self._line_updater(line, steps, values))
@@ -528,7 +538,7 @@ class BaseBeamEnv(gym.Env, ABC):
         # ── Beam-feature figure: one panel per (feature, observed stage) ────
         stage_titles = [f"stage {idx}" for idx in observation_stage_indices()]
         n_stages = len(stage_titles)
-        stage_frames = [self._obs_to_stage_frame(obs) for obs in self._obs_history]
+        stage_frames = [self._obs_to_stage_frame(obs) for obs in state.obs_history]
 
         state_fig, state_axes = plt.subplots(
             len(BEAM_STATE_FEATURES), n_stages,
@@ -568,7 +578,7 @@ class BaseBeamEnv(gym.Env, ABC):
         for ax, key, values in zip(
             score_axes.ravel(),
             ("score", "reward"),
-            (self._score_history, self._reward_history),
+            (state.score_history, state.reward_history),
         ):
             ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
             lc, points, segments = self._plot_colored_trend(ax, steps, values, n_init, feature=None)
@@ -589,7 +599,7 @@ class BaseBeamEnv(gym.Env, ABC):
         knn_history = [
             float(v)
             for v in param_knn_distance(
-                np.stack([params_to_vec(p) for p in self._params_history]),
+                np.stack([params_to_vec(p) for p in state.params_history]),
                 dataset=getattr(
                     self,
                     "_distance_dataset",
@@ -603,7 +613,7 @@ class BaseBeamEnv(gym.Env, ABC):
         knn_updaters: list = []
         for ax, key, values, feature in (
             (knn_axes[0, 0], "knn_distance", knn_history, "knn_distance"),
-            (knn_axes[0, 1], "score", self._score_history, None),
+            (knn_axes[0, 1], "score", state.score_history, None),
         ):
             ax.axhline(values[0], color="0.4", lw=1, linestyle="--", label="start")
             lc, points, segments = self._plot_colored_trend(ax, steps, values, n_init, feature=feature)
@@ -637,14 +647,14 @@ class BaseBeamEnv(gym.Env, ABC):
 
         def _delta_history(label: str) -> list[float]:
             if label == "score":
-                start = self._score_history[0]
-                return [float(v) - start for v in self._score_history]
+                start = state.score_history[0]
+                return [float(v) - start for v in state.score_history]
             start = float(stage_frames[0].loc[final_stage_idx, label])
             return [float(df.loc[final_stage_idx, label]) - start for df in stage_frames]
 
         delta_start_values = {
             label: (
-                self._score_history[0] if label == "score"
+                state.score_history[0] if label == "score"
                 else float(stage_frames[0].loc[final_stage_idx, label])
             )
             for label in delta_labels

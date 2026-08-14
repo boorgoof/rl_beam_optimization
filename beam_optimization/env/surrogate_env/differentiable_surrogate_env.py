@@ -74,7 +74,7 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
 
     reset()/step() remain the inherited Gym/numpy API. reset_torch()/step_torch()
     use an explicit DifferentiableBeamState and do not mutate the Gym episode
-    fields such as _current_params, _current_obs, or _current_score.
+    state (self.state.current_params/current_obs/current_score, ...).
     """
 
     def __init__(

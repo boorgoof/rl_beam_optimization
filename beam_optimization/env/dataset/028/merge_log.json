@@ -1,0 +1,104 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-08-10T16:20:20.603353+00:00",
+      "mode": "merge",
+      "inputs": [
+        {
+          "path": "beam_optimization/env/dataset/001/dataset_all.pt",
+          "num_samples": 4000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/002/dataset_all.pt",
+          "num_samples": 4000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/003/dataset_all.pt",
+          "num_samples": 4000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/004/dataset_all.pt",
+          "num_samples": 4000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/006/dataset_all.pt",
+          "num_samples": 4000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/007/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/008/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/009/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/011/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/019/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/020/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/021/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/022/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/023/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/024/dataset_all.pt",
+          "num_samples": 10000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/025/dataset_all.pt",
+          "num_samples": 10000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/026/dataset_all.pt",
+          "num_samples": 10000,
+          "running_snapshot": false
+        }
+      ],
+      "seed": 123,
+      "allow_running": false,
+      "num_samples": 95000,
+      "split_counts": {
+        "all": 95000,
+        "train": 76000,
+        "val": 9500,
+        "test": 9500
+      }
+    }
+  ]
+}

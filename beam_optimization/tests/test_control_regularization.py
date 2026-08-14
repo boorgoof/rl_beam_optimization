@@ -172,14 +172,14 @@ class ControlRegularizationTests(unittest.TestCase):
         env.reset(options={"randomize_params": False})
         env.step(np.zeros_like(env.action_space.high))
 
-        self.assertEqual(env.best_score, 30.0)
-        self.assertEqual(env.best_step, 1)
+        self.assertEqual(env.state.best_score, 30.0)
+        self.assertEqual(env.state.best_step, 1)
 
         env.reset(options={"randomize_params": False})
 
-        self.assertEqual(env.best_score, 20.0)
-        self.assertEqual(env.best_step, 0)
-        self.assertEqual(env.best_params, env.current_params)
+        self.assertEqual(env.state.best_score, 20.0)
+        self.assertEqual(env.state.best_step, 0)
+        self.assertEqual(env.state.best_params, env.current_params)
 
     def test_negative_or_nonfinite_weights_are_rejected(self):
         with self.assertRaises(ValueError):

@@ -9,6 +9,7 @@ from unittest import mock
 import numpy as np
 
 from beam_optimization.config.adige import BEAM_STATE_FEATURES
+from beam_optimization.env.base_beam_env import EpisodeState
 from beam_optimization.env.tracewin_env.tracewin_env import TraceWinEnv
 
 
@@ -33,11 +34,11 @@ class TraceWinDistributionRenderTests(unittest.TestCase):
             (calc_dir / "AD.BI.04.dst").touch()
             env = TraceWinEnv.__new__(TraceWinEnv)
             env.simulator = SimpleNamespace(calc_dir=str(calc_dir))
-            env._current_result = SimpleNamespace(
+            env.state = EpisodeState(current_result=SimpleNamespace(
                 success=True,
                 final_beam={feature: 1.0 for feature in BEAM_STATE_FEATURES},
                 score_val=10.0,
-            )
+            ))
 
             with mock.patch(
                 "beam_optimization.env.tracewin_env.tracewin.visualization."
@@ -64,13 +65,12 @@ class TraceWinDistributionRenderTests(unittest.TestCase):
             (calc_dir / "part_dtl1.dst").touch()
             env = TraceWinEnv.__new__(TraceWinEnv)
             env.simulator = SimpleNamespace(calc_dir=str(calc_dir))
-            env._step_count = 0
-            env._current_result = SimpleNamespace(
+            env.state = EpisodeState(step_count=0, current_result=SimpleNamespace(
                 success=True,
                 final_beam=beam_state,
                 score_val=12.5,
                 metadata={"sim_count": 1},
-            )
+            ))
 
             with (
                 mock.patch(
@@ -117,13 +117,12 @@ class TraceWinDistributionRenderTests(unittest.TestCase):
             (calc_dir / "part_dtl1.dst").touch()
             env = TraceWinEnv.__new__(TraceWinEnv)
             env.simulator = SimpleNamespace(calc_dir=str(calc_dir))
-            env._step_count = 0
-            env._current_result = SimpleNamespace(
+            env.state = EpisodeState(step_count=0, current_result=SimpleNamespace(
                 success=True,
                 final_beam=beam_state,
                 score_val=0.0,
                 metadata={"sim_count": 1},
-            )
+            ))
 
             with (
                 mock.patch(

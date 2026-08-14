@@ -18,7 +18,7 @@ from beam_optimization.config.adige import (
     action_step_vec,
 )
 from beam_optimization.env.dataset import BeamDataset
-from beam_optimization.env.base_beam_env import BaseBeamEnv
+from beam_optimization.env.base_beam_env import BaseBeamEnv, EpisodeState
 from beam_optimization.env.surrogate_env.differentiable_surrogate_env import (
     DifferentiableBeamState,
     DifferentiableSurrogateEnv,
@@ -208,7 +208,7 @@ class DifferentiableRegularizationTests(unittest.TestCase):
         gym_env.action_penalty_weight = 0.0
         gym_env.action_smoothness_penalty_weight = weight
         gym_env.score_regression_penalty_weight = 0.0
-        gym_env._last_action = -step
+        gym_env.state = EpisodeState(last_action=-step)
         _, gym_penalty, _ = gym_env._control_penalties(
             0.5 * step,
             20.0,

@@ -235,7 +235,7 @@ def run_policy_episode(env, agent, algo: str, seed: int, episode_idx: int) -> di
     final_ex = float(features.get("ex", np.nan))
     final_ey = float(features.get("ey", np.nan))
     best_params = {
-        key: float(env.best_params[key])
+        key: float(env.state.best_params[key])
         for key in PARAM_KEYS
     }
     return {
@@ -251,8 +251,8 @@ def run_policy_episode(env, agent, algo: str, seed: int, episode_idx: int) -> di
         # Private aggregation fields: summarize_policy_episodes() promotes only
         # the global winner to the public summary. They are removed before the
         # per-episode JSON/CSV is persisted.
-        "_best_observed_score": float(env.best_score),
-        "_best_observed_step": int(env.best_step),
+        "_best_observed_score": float(env.state.best_score),
+        "_best_observed_step": int(env.state.best_step),
         "_best_observed_params": best_params,
     }
 

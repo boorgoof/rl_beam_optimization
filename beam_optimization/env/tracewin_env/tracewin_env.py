@@ -149,7 +149,7 @@ class TraceWinEnv(BaseBeamEnv):
         )
 
         dst_path = find_final_tracewin_dst_path(self.simulator.calc_dir)
-        result = self._current_result
+        result = self.state.current_result
         if dst_path is None or result is None or not result.success or result.final_beam is None:
             return None
 
@@ -228,7 +228,7 @@ class TraceWinEnv(BaseBeamEnv):
             )
             return None
 
-        result = self._current_result
+        result = self.state.current_result
         if result is None or not result.success or result.final_beam is None:
             print(
                 "TraceWin final beam distribution render skipped for this step: "
@@ -254,7 +254,7 @@ class TraceWinEnv(BaseBeamEnv):
             distribution,
             result.final_beam,
             result.score_val,
-            state_source=f"environment step {self._step_count}",
+            state_source=f"environment step {self.state.step_count}",
             title=(
                 f"{type(self).__name__} final beam distribution | "
                 f"{dst_path.name} | {len(distribution['x']):,} plotted particles"
