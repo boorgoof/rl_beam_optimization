@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 
 import torch
+import torch.nn.functional as F
 
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM,
@@ -18,7 +19,7 @@ _IDX = {name: i for i, name in enumerate(BEAM_STATE_FEATURES)}
 
 
 class PhysicalBoundsTests(unittest.TestCase):
-    def test_out_of_range_nonnegative_features_are_clamped(self):
+    def test_out_of_range_nonnegative_features_use_softplus(self):
         raw = torch.zeros((1, len(BEAM_STATE_FEATURES)))
         raw[0, _IDX["SizeX"]] = -3.0
         raw[0, _IDX["ex"]] = -0.2
@@ -26,18 +27,29 @@ class PhysicalBoundsTests(unittest.TestCase):
 
         bounded = ModularMLP._apply_physical_bounds(raw)
 
-        self.assertAlmostEqual(bounded[0, _IDX["SizeX"]].item(), 0.0)
-        self.assertAlmostEqual(bounded[0, _IDX["ex"]].item(), 0.0)
+        expected_sizex = F.softplus(torch.tensor(-3.0)).item()
+        expected_ex = F.softplus(torch.tensor(-0.2)).item()
+        self.assertAlmostEqual(bounded[0, _IDX["SizeX"]].item(), expected_sizex, places=6)
+        self.assertAlmostEqual(bounded[0, _IDX["ex"]].item(), expected_ex, places=6)
+        # softplus is asymptotic, never exactly 0, unlike the old clamp behavior
+        self.assertGreater(bounded[0, _IDX["SizeX"]].item(), 0.0)
+        self.assertGreater(bounded[0, _IDX["ex"]].item(), 0.0)
         self.assertAlmostEqual(bounded[0, _IDX["x0"]].item(), -7.0)
 
-    def test_in_range_nonnegative_values_are_left_untouched(self):
+    def test_in_range_nonnegative_values_follow_softplus_not_identity(self):
+        # softplus is not identity-preserving even for positive inputs (unlike
+        # clamp(min=0.0), which was a no-op above 0) -- assert against the
+        # actual softplus value, and confirm it is NOT the old clamp-identity
+        # value.
         raw = torch.zeros((1, len(BEAM_STATE_FEATURES)))
         raw[0, _IDX["SizeY"]] = 3.3
         raw[0, _IDX["y0"]] = -12.5
 
         bounded = ModularMLP._apply_physical_bounds(raw)
 
-        self.assertAlmostEqual(bounded[0, _IDX["SizeY"]].item(), 3.3, places=5)
+        expected_sizey = F.softplus(torch.tensor(3.3)).item()
+        self.assertAlmostEqual(bounded[0, _IDX["SizeY"]].item(), expected_sizey, places=5)
+        self.assertNotAlmostEqual(bounded[0, _IDX["SizeY"]].item(), 3.3, places=2)
         self.assertAlmostEqual(bounded[0, _IDX["y0"]].item(), -12.5, places=5)
 
     def test_npart_ratio_uses_sigmoid_not_a_clamp(self):
@@ -72,6 +84,18 @@ class PhysicalBoundsTests(unittest.TestCase):
         raw[0, _IDX["SizeX"]] = -3.0
         ModularMLP._apply_physical_bounds(raw)
         self.assertAlmostEqual(raw[0, _IDX["SizeX"]].item(), -3.0)
+
+    def test_softplus_features_propagate_gradient_even_when_deeply_negative(self):
+        # clamp(min=0.0) would give exactly zero gradient here; softplus must not.
+        values = [0.0] * len(BEAM_STATE_FEATURES)
+        values[_IDX["SizeX"]] = -50.0
+        raw = torch.tensor([values], requires_grad=True)
+
+        bounded = ModularMLP._apply_physical_bounds(raw)
+        bounded[0, _IDX["SizeX"]].backward()
+
+        self.assertIsNotNone(raw.grad)
+        self.assertGreater(raw.grad[0, _IDX["SizeX"]].item(), 0.0)
 
 
 class ForwardOutputBoundsTests(unittest.TestCase):

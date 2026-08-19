@@ -986,17 +986,28 @@ while switching its environment:
 ```text
 200000 SurrogateEnv steps (20-step episodes)
 → clear replay
-→ 2000 TraceWinEnv steps (20-step episodes)
-→ fine-tune and save a working surrogate
+→ freeze the SAC entropy coefficient learned during pretraining
+→ collect 1000 TraceWinEnv warm-up transitions
+→ continuous TraceWin-only fine-tuning
 ```
 
-Additional cycles use 20000 steps on the updated surrogate before the next
-real block. Each TraceWin block first collects 1000 real transitions without
-updates, then uses learning rate 1e-5 and performs one SAC gradient update
-every 20 real steps. Surrogate phases use the normal 3e-4 learning rate.
-Base datasets and models are copied/read only; every updated
-artifact is written below the selected output directory. Run it through the
-shared policy trainer:
+By default, additional cycles are contiguous TraceWin checkpoint blocks: the
+real replay buffer is retained, warm-up happens only once, and SAC never
+returns to the surrogate. Real fine-tuning uses learning rate 1e-5 and one
+gradient update every 20 TraceWin steps. The old alternating surrogate-refresh
+workflow remains available with `--sim2real-surrogate-refresh`.
+
+The best surrogate-validation checkpoint is restored before entering the real
+phase. That checkpoint, its immutable real-phase copy, the rolling-best real
+checkpoint and the latest checkpoint are written as
+`sac/best_surrogate_agent.zip`, `sac/pretrained_agent.zip`,
+`sac/best_tracewin_agent.zip`, and `sac/latest_agent.zip`. The canonical
+`sac/sac_agent.zip` continues to point to the latest policy for compatibility.
+The best real checkpoint is selected using a rolling window of final scores
+from collected TraceWin episodes (`--sim2real-best-window`, default 5).
+
+Base datasets and models are read only; every generated artifact is written
+below the selected output directory. Run it through the shared policy trainer:
 
 ```bash
 python -m beam_optimization train_policies \
@@ -1019,6 +1030,9 @@ TraceWin evaluation and benchmarking remain separate commands.
 The phase-specific controls are exposed as
 `--real-learning-starts`, `--sim2real-surrogate-learning-rate`,
 `--sim2real-real-learning-rate`, and `--sim2real-real-update-interval`.
+Use `--sim2real-auto-entropy` to opt out of entropy freezing, or
+`--sim2real-fixed-entropy-coefficient FLOAT` to choose the fixed value instead
+of inheriting it from the pretrained policy.
 
 TraceWin + online surrogate fine-tuning:
 

@@ -77,6 +77,7 @@ def evaluate_surrogate(
     plot_prefix: str = "surrogate",
     classifier: Optional[FailureClassifier] = None,
     classifier_threshold: float = 0.5,
+    filter_score_plots_to_rl_valid: bool = False,
 ) -> dict:
     """Evaluate one surrogate on a dataset.
 
@@ -90,6 +91,13 @@ def evaluate_surrogate(
     classifier's gate (see surrogate_simulator.run_surrogate_forward) had
     been applied -- purely diagnostic, does not change the default
     ("score_metrics") behavior.
+
+    `filter_score_plots_to_rl_valid` restricts the score_scatter/score_residuals
+    plots (only those two -- the RMSE/NRMSE heatmaps stay over all samples) to
+    samples with true `npart_ratio >= RL_MIN_NPART_RATIO`, and annotates them
+    with `score_metrics_rl_valid` instead of `score_metrics`. It never changes
+    any returned metric, only which samples the two score plots are drawn
+    from -- the default (False) draws them over every sample, unchanged.
     """
     if len(dataset) == 0:
         raise ValueError("Cannot evaluate a surrogate on an empty dataset")
@@ -352,17 +360,34 @@ def evaluate_surrogate(
             classifier_proba=classifier_proba_all,
             classifier_threshold=classifier_threshold,
         )
-
-    if plots_dir is not None:
-        plots = _save_evaluation_plots(
+        results["ok_criterion_comparison"] = _ok_criterion_comparison(
+            true_npart_ratio=true_npart_ratio,
+            predicted_npart_ratio=predicted_npart_ratio,
+            classifier_proba=classifier_proba_all,
             true_scores=true_scores,
             predicted_scores=predicted_scores,
+            classifier_threshold=classifier_threshold,
+        )
+
+    if plots_dir is not None:
+        if filter_score_plots_to_rl_valid:
+            score_plot_mask = ~true_rl_terminal
+            score_plot_metrics = score_metrics_rl_valid
+            score_title_suffix = f" (npart_ratio >= {RL_MIN_NPART_RATIO:g})"
+        else:
+            score_plot_mask = np.ones(true_scores.shape, dtype=bool)
+            score_plot_metrics = score_metrics
+            score_title_suffix = ""
+        plots = _save_evaluation_plots(
+            true_scores=true_scores[score_plot_mask],
+            predicted_scores=predicted_scores[score_plot_mask],
             rmse_stage_feature=rmse_stage_feature,
             nrmse_stage_feature=nrmse_stage_feature,
-            failure_labels=failure_labels,
+            failure_labels=failure_labels[score_plot_mask],
             output_dir=Path(plots_dir),
             prefix=plot_prefix,
-            score_metrics=score_metrics,
+            score_metrics=score_plot_metrics,
+            score_title_suffix=score_title_suffix,
         )
         if classifier_proba_all is not None:
             plots.update(_save_classifier_plots(
@@ -465,6 +490,99 @@ def _score_metrics(
         n_resamples=bootstrap_samples,
     )
     return metrics
+
+
+def _ok_criterion_comparison(
+    *,
+    true_npart_ratio: np.ndarray,
+    predicted_npart_ratio: np.ndarray,
+    classifier_proba: np.ndarray,
+    true_scores: np.ndarray,
+    predicted_scores: np.ndarray,
+    classifier_threshold: float,
+) -> dict:
+    """Compare the classifier-OK and predicted-transmission-OK selections.
+
+    The reference definition of an operationally valid RL sample comes from
+    the held-out TraceWin target: true final npart_ratio >=
+    RL_MIN_NPART_RATIO. Score-regression errors are reported only over the
+    samples accepted by each inference-time criterion.
+    """
+    true_ok = np.asarray(true_npart_ratio) >= RL_MIN_NPART_RATIO
+    classifier_ok = np.asarray(classifier_proba) <= classifier_threshold
+    transmission_ok = np.asarray(predicted_npart_ratio) >= RL_MIN_NPART_RATIO
+
+    def _ratio(numerator: int, denominator: int) -> Optional[float]:
+        return float(numerator / denominator) if denominator else None
+
+    def _selection(mask: np.ndarray) -> dict:
+        mask = np.asarray(mask, dtype=bool)
+        tp = int(np.sum(mask & true_ok))
+        fp = int(np.sum(mask & ~true_ok))
+        fn = int(np.sum(~mask & true_ok))
+        tn = int(np.sum(~mask & ~true_ok))
+        score_values = _score_metrics(
+            np.asarray(true_scores)[mask],
+            np.asarray(predicted_scores)[mask],
+            bootstrap_samples=0,
+        )
+        ratio_mae = (
+            float(np.mean(np.abs(
+                np.asarray(predicted_npart_ratio)[mask]
+                - np.asarray(true_npart_ratio)[mask]
+            )))
+            if np.any(mask)
+            else None
+        )
+        return {
+            "n_accepted": int(np.sum(mask)),
+            "accepted_fraction": float(np.mean(mask)),
+            "true_rl_valid_fraction_among_accepted": _ratio(tp, tp + fp),
+            "n_unsafe_accepted": fp,
+            "true_rl_valid_recall": _ratio(tp, tp + fn),
+            "decision_accuracy": _ratio(tp + tn, mask.size),
+            "score_metrics_on_accepted": score_values,
+            "npart_ratio_mae_on_accepted": ratio_mae,
+        }
+
+    agreement = {}
+    for name, mask in {
+        "both_ok": classifier_ok & transmission_ok,
+        "classifier_only_ok": classifier_ok & ~transmission_ok,
+        "transmission_only_ok": ~classifier_ok & transmission_ok,
+        "both_reject": ~classifier_ok & ~transmission_ok,
+    }.items():
+        count = int(np.sum(mask))
+        agreement[name] = {
+            "n_samples": count,
+            "fraction": float(count / true_ok.size),
+            "true_rl_valid_fraction": float(np.mean(true_ok[mask])) if count else None,
+            "true_npart_ratio_mean": (
+                float(np.mean(np.asarray(true_npart_ratio)[mask])) if count else None
+            ),
+            "predicted_npart_ratio_mean": (
+                float(np.mean(np.asarray(predicted_npart_ratio)[mask])) if count else None
+            ),
+            "classifier_probability_mean": (
+                float(np.mean(np.asarray(classifier_proba)[mask])) if count else None
+            ),
+        }
+
+    return {
+        "reference": {
+            "definition": "true final npart_ratio >= RL_MIN_NPART_RATIO",
+            "rl_min_npart_ratio": float(RL_MIN_NPART_RATIO),
+            "classifier_threshold": float(classifier_threshold),
+            "n_samples": int(true_ok.size),
+            "n_true_rl_valid": int(np.sum(true_ok)),
+        },
+        "criteria": {
+            "classifier_ok": _selection(classifier_ok),
+            "predicted_transmission_ok": _selection(transmission_ok),
+            "both_ok": _selection(classifier_ok & transmission_ok),
+        },
+        "agreement": agreement,
+    }
 
 
 def _bootstrap_score_intervals(
@@ -748,6 +866,7 @@ def _save_evaluation_plots(
     output_dir: Path,
     prefix: str,
     score_metrics: dict,
+    score_title_suffix: str = "",
 ) -> dict[str, str]:
     configure_matplotlib_cache()
     import matplotlib.pyplot as plt
@@ -778,7 +897,7 @@ def _save_evaluation_plots(
         axis.plot([lo, hi], [lo, hi], "--", color="black", linewidth=1, label="ideal")
         axis.set_xlabel("True TraceWin score")
         axis.set_ylabel("Predicted surrogate score")
-        axis.set_title(f"{prefix}: true vs predicted final score")
+        axis.set_title(f"{prefix}: true vs predicted final score{score_title_suffix}")
         axis.grid(alpha=0.25)
         # Legend sits above the title, in the figure margin: data points are
         # always confined inside the axes rectangle, so nothing plotted can
@@ -814,7 +933,7 @@ def _save_evaluation_plots(
         axis.axhline(0.0, linestyle="--", color="black", linewidth=1)
         axis.set_xlabel("True TraceWin score")
         axis.set_ylabel("Residual (predicted − true)")
-        axis.set_title(f"{prefix}: final-score residuals")
+        axis.set_title(f"{prefix}: final-score residuals{score_title_suffix}")
         axis.grid(alpha=0.25)
         fig.tight_layout()
         residual_path = output_dir / f"{prefix}_score_residuals.png"

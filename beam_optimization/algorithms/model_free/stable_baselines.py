@@ -259,6 +259,38 @@ class StableBaselinesAgent:
         self._model.lr_schedule = FloatSchedule(learning_rate)
         self._model.gradient_steps = gradient_steps
 
+    def entropy_coefficient(self) -> Optional[float]:
+        """Return SAC's current entropy coefficient, if available."""
+        if self.algorithm != "sac":
+            return None
+        log_ent_coef = getattr(self._model, "log_ent_coef", None)
+        if log_ent_coef is not None:
+            import torch
+
+            return float(torch.exp(log_ent_coef.detach()).cpu())
+        ent_coef_tensor = getattr(self._model, "ent_coef_tensor", None)
+        if ent_coef_tensor is not None:
+            return float(ent_coef_tensor.detach().cpu())
+        ent_coef = getattr(self._model, "ent_coef", None)
+        return float(ent_coef) if isinstance(ent_coef, (int, float)) else None
+
+    def freeze_entropy_coefficient(self, value: Optional[float] = None) -> float:
+        """Convert SAC's automatic entropy coefficient to a fixed value."""
+        if self.algorithm != "sac":
+            raise TypeError("Entropy-coefficient control is available only for SAC")
+        import torch
+
+        coefficient = self.entropy_coefficient() if value is None else float(value)
+        if coefficient is None or not np.isfinite(coefficient) or coefficient <= 0.0:
+            raise ValueError("entropy coefficient must be finite and positive")
+        self._model.ent_coef = float(coefficient)
+        self._model.ent_coef_optimizer = None
+        self._model.log_ent_coef = None
+        self._model.ent_coef_tensor = torch.tensor(
+            float(coefficient), dtype=torch.float32, device=self._model.device
+        )
+        return float(coefficient)
+
     def set_off_policy_gradient_steps(self, gradient_steps: int) -> None:
         """Set updates after the next rollout while preserving exact step budgets."""
         if self.algorithm not in {"sac", "td3", "ddpg"}:

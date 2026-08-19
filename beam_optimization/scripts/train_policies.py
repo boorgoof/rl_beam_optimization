@@ -1288,7 +1288,10 @@ def build_parser() -> argparse.ArgumentParser:
               "the initial surrogate pretraining and starts at TraceWin cycle 1."),
     )
     parser.add_argument("--initial-surrogate-steps", type=int, default=200_000)
-    parser.add_argument("--subsequent-surrogate-steps", type=int, default=20_000)
+    parser.add_argument(
+        "--subsequent-surrogate-steps", type=int, default=20_000,
+        help="Synthetic refresh budget used only with --sim2real-surrogate-refresh.",
+    )
     parser.add_argument("--real-steps-per-cycle", type=int, default=2_000)
     parser.add_argument("--real-learning-starts", type=int, default=1_000)
     parser.add_argument(
@@ -1302,6 +1305,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sim2real-real-update-interval", type=int, default=20, metavar="N",
         help="Run one SAC gradient update every N TraceWin steps (default: 20).",
+    )
+    parser.add_argument(
+        "--sim2real-surrogate-refresh", action="store_true",
+        help=(
+            "Use the legacy alternating workflow and retrain SAC on the updated "
+            "surrogate between TraceWin blocks. By default, pretraining is "
+            "followed by continuous TraceWin-only fine-tuning."
+        ),
+    )
+    parser.add_argument(
+        "--sim2real-auto-entropy", action="store_true",
+        help=(
+            "Keep SAC automatic entropy tuning active on TraceWin. By default "
+            "the coefficient learned during pretraining is frozen."
+        ),
+    )
+    parser.add_argument(
+        "--sim2real-fixed-entropy-coefficient", type=float, default=None,
+        help=(
+            "Positive entropy coefficient to freeze at the TraceWin transition. "
+            "Default: freeze the value learned by the pretrained policy."
+        ),
+    )
+    parser.add_argument(
+        "--sim2real-best-window", type=int, default=5, metavar="N",
+        help="Rolling number of real episode final scores used for best_tracewin (default: 5).",
     )
     parser.add_argument("--sim2real-online-mix-ratio", type=float, default=0.25)
     parser.add_argument("--surrogate-update-steps", type=int, default=200)
@@ -1540,7 +1569,9 @@ def main():
             f"\n{'='*50}\nTraining Iterative Sim-to-Real SAC "
             f"({'pretrained SAC' if args.initial_policy else f'{args.initial_surrogate_steps} initial surrogate steps'}, "
             f"{args.real_steps_per_cycle} TraceWin steps/cycle, "
-            f"{args.cycles} cycle, horizon={args.max_ep_steps})\n{'='*50}"
+            f"{args.cycles} cycle, "
+            f"{'legacy surrogate refresh' if args.sim2real_surrogate_refresh else 'TraceWin-only fine-tuning'}, "
+            f"horizon={args.max_ep_steps})\n{'='*50}"
         )
         config = IterativeSim2RealSACConfig(
             surrogate=str(single_surrogate_path),
@@ -1556,6 +1587,10 @@ def main():
             surrogate_learning_rate=args.sim2real_surrogate_learning_rate,
             real_learning_rate=args.sim2real_real_learning_rate,
             real_update_interval=args.sim2real_real_update_interval,
+            surrogate_refresh=args.sim2real_surrogate_refresh,
+            freeze_entropy_on_tracewin=not args.sim2real_auto_entropy,
+            fixed_entropy_coefficient=args.sim2real_fixed_entropy_coefficient,
+            best_tracewin_window=args.sim2real_best_window,
             max_ep_steps=args.max_ep_steps,
             online_mix_ratio=args.sim2real_online_mix_ratio,
             surrogate_update_steps=args.surrogate_update_steps,

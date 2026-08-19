@@ -31,6 +31,10 @@ from beam_optimization.scripts.common import evaluate_policy
 STATE_VERSION = 1
 EVAL_SEED = 10_000
 POLICY_RELATIVE_PATH = Path("sac/sac_agent.zip")
+LATEST_POLICY_RELATIVE_PATH = Path("sac/latest_agent.zip")
+PRETRAINED_POLICY_RELATIVE_PATH = Path("sac/pretrained_agent.zip")
+BEST_SURROGATE_POLICY_RELATIVE_PATH = Path("sac/best_surrogate_agent.zip")
+BEST_TRACEWIN_POLICY_RELATIVE_PATH = Path("sac/best_tracewin_agent.zip")
 REPLAY_RELATIVE_PATH = Path("sac/replay_buffer.pkl")
 ONLINE_RELATIVE_PATH = Path("cumulative_online_dataset.pt")
 WORKING_SURROGATE_RELATIVE_PATH = Path("working_surrogate/surrogate_0.pt")
@@ -38,6 +42,10 @@ LEGACY_OPTIONAL_CONFIG_KEYS = {
     "surrogate_learning_rate",
     "real_learning_rate",
     "real_update_interval",
+    "surrogate_refresh",
+    "freeze_entropy_on_tracewin",
+    "fixed_entropy_coefficient",
+    "best_tracewin_window",
 }
 
 
@@ -58,6 +66,10 @@ class IterativeSim2RealSACConfig:
     surrogate_learning_rate: float = 3e-4
     real_learning_rate: float = 1e-5
     real_update_interval: int = 20
+    surrogate_refresh: bool = False
+    freeze_entropy_on_tracewin: bool = True
+    fixed_entropy_coefficient: Optional[float] = None
+    best_tracewin_window: int = 5
     max_ep_steps: int = 20
     online_mix_ratio: float = 0.25
     surrogate_update_steps: int = 200
@@ -158,6 +170,7 @@ class TraceWinExperienceCollector(gym.Wrapper):
         self.updater = updater
         self.accepted_reset_samples = 0
         self.accepted_step_samples = 0
+        self.episode_reward = 0.0
 
     def _collect(self, info: dict, *, reset: bool) -> None:
         result = info.get("sim_result")
@@ -171,12 +184,19 @@ class TraceWinExperienceCollector(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+        self.episode_reward = 0.0
         self._collect(info, reset=True)
         return obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._collect(info, reset=False)
+        self.episode_reward += float(reward)
+        if (terminated or truncated) and not info.get("technical_failure", False):
+            info["tracewin_episode_final_score"] = float(
+                info.get("score", float("nan"))
+            )
+            info["tracewin_episode_reward"] = float(self.episode_reward)
         return obs, reward, terminated, truncated, info
 
 
@@ -209,6 +229,7 @@ def _validate_config(config: IterativeSim2RealSACConfig) -> None:
         "checkpoint_every_surrogate_steps": config.checkpoint_every_surrogate_steps,
         "eval_every": config.eval_every,
         "eval_episodes": config.eval_episodes,
+        "best_tracewin_window": config.best_tracewin_window,
     }
     errors = [f"{name} must be positive" for name, value in positive.items() if value <= 0]
     if config.real_learning_starts < 0:
@@ -219,6 +240,14 @@ def _validate_config(config: IterativeSim2RealSACConfig) -> None:
         errors.append("real_learning_rate must be positive")
     if config.real_update_interval <= 0:
         errors.append("real_update_interval must be positive")
+    if (
+        config.fixed_entropy_coefficient is not None
+        and (
+            not math.isfinite(config.fixed_entropy_coefficient)
+            or config.fixed_entropy_coefficient <= 0.0
+        )
+    ):
+        errors.append("fixed_entropy_coefficient must be positive when provided")
     if not 0.0 <= config.online_mix_ratio <= 1.0:
         errors.append("online_mix_ratio must be between 0 and 1")
     if config.surrogate_update_lr <= 0.0:
@@ -241,6 +270,12 @@ def _new_state(args: IterativeSim2RealSACConfig) -> dict:
         "real_learning_start_timestep": None,
         "online_samples": 0,
         "policy_path": str(POLICY_RELATIVE_PATH),
+        "latest_policy_path": str(LATEST_POLICY_RELATIVE_PATH),
+        "pretrained_policy_path": None,
+        "best_surrogate_policy_path": None,
+        "best_tracewin_policy_path": None,
+        "best_tracewin_score": None,
+        "recent_tracewin_final_scores": [],
         "replay_buffer_path": str(REPLAY_RELATIVE_PATH),
         "online_dataset_path": str(ONLINE_RELATIVE_PATH),
         "working_surrogate_path": str(WORKING_SURROGATE_RELATIVE_PATH),
@@ -283,11 +318,48 @@ def _save_checkpoint(
     online_path = output / ONLINE_RELATIVE_PATH
 
     agent.save(str(policy_path))
+    _atomic_copy(policy_path, output / LATEST_POLICY_RELATIVE_PATH)
     agent.save_replay_buffer(replay_path)
     _atomic_dataset(updater.online_dataset, online_path)
     state["global_sac_steps"] = agent.num_timesteps
     state["online_samples"] = updater.n_online_samples
     _atomic_json(output / "state.json", state)
+
+
+def _save_pretrained_policy(output: Path, agent: StableBaselinesAgent, state: dict) -> None:
+    """Save the immutable policy used at the start of real fine-tuning."""
+    path = output / PRETRAINED_POLICY_RELATIVE_PATH
+    if not path.is_file():
+        agent.save(str(path))
+    state["pretrained_policy_path"] = str(PRETRAINED_POLICY_RELATIVE_PATH)
+
+
+def _consider_best_tracewin_policy(
+    *, output: Path, agent: StableBaselinesAgent, state: dict, infos: list[dict]
+) -> None:
+    """Select a protected checkpoint by rolling real-episode final score."""
+    scores = [
+        float(info["tracewin_episode_final_score"])
+        for info in infos
+        if "tracewin_episode_final_score" in info
+        and math.isfinite(float(info["tracewin_episode_final_score"]))
+    ]
+    if not scores:
+        return
+    window = int(state["config"].get("best_tracewin_window", 5))
+    recent = list(state.get("recent_tracewin_final_scores", []))
+    recent.extend(scores)
+    recent = recent[-window:]
+    state["recent_tracewin_final_scores"] = recent
+    metric = float(sum(recent) / len(recent))
+    previous_best = state.get("best_tracewin_score")
+    if previous_best is not None and metric <= float(previous_best):
+        return
+    agent.save(str(output / BEST_TRACEWIN_POLICY_RELATIVE_PATH))
+    state["best_tracewin_score"] = metric
+    state["best_tracewin_final_score"] = float(scores[-1])
+    state["best_tracewin_step"] = int(agent.num_timesteps)
+    state["best_tracewin_policy_path"] = str(BEST_TRACEWIN_POLICY_RELATIVE_PATH)
 
 
 def _phase_checkpoint_hook(
@@ -317,6 +389,9 @@ def _phase_checkpoint_hook(
                 f"{progress_label} real_step={completed}/{budget} "
                 f"score={score_text} online_samples={updater.n_online_samples}",
                 flush=True,
+            )
+            _consider_best_tracewin_policy(
+                output=output, agent=agent, state=state, infos=infos
             )
         if local_steps % interval == 0:
             _save_checkpoint(
@@ -433,6 +508,18 @@ def _run_workflow(
         state = _load_state(output)
         saved_config = state.get("config", {})
         current_config = _config_payload(args)
+        # States created before TraceWin-only mode alternated through a
+        # surrogate refresh and left SAC entropy automatic. Preserve those
+        # semantics when resuming an old in-progress run.
+        legacy_runtime = {}
+        if "surrogate_refresh" not in saved_config:
+            legacy_runtime["surrogate_refresh"] = True
+            current_config["surrogate_refresh"] = True
+        if "freeze_entropy_on_tracewin" not in saved_config:
+            legacy_runtime["freeze_entropy_on_tracewin"] = False
+            current_config["freeze_entropy_on_tracewin"] = False
+        if legacy_runtime:
+            args = replace(args, **legacy_runtime)
         mismatches = {
             key: (saved_config.get(key), value)
             for key, value in current_config.items()
@@ -561,6 +648,16 @@ def _run_workflow(
 
     def record_surrogate_eval(step: int, metrics: dict) -> None:
         recorder.add(step=step, episode=0, metrics=metrics)
+        mean_score = float(metrics["mean_score"])
+        previous = state.get("best_surrogate_validation_score")
+        if previous is not None and mean_score <= float(previous):
+            return
+        agent.save(str(output / BEST_SURROGATE_POLICY_RELATIVE_PATH))
+        state["best_surrogate_validation_score"] = mean_score
+        state["best_surrogate_step"] = int(step)
+        state["best_surrogate_policy_path"] = str(
+            BEST_SURROGATE_POLICY_RELATIVE_PATH
+        )
     policy_path = output / POLICY_RELATIVE_PATH
     replay_path = output / REPLAY_RELATIVE_PATH
     if args.resume:
@@ -577,6 +674,11 @@ def _run_workflow(
             "sac", str(initial_policy_path), env=initial_env
         )
         agent.reset_replay_buffer()
+        _save_pretrained_policy(output, agent, state)
+        if args.freeze_entropy_on_tracewin:
+            state["frozen_entropy_coefficient"] = agent.freeze_entropy_coefficient(
+                args.fixed_entropy_coefficient
+            )
         state["real_learning_start_timestep"] = agent.delay_learning(
             args.real_learning_starts
         )
@@ -648,7 +750,26 @@ def _run_workflow(
                     learning_rate=args.surrogate_learning_rate,
                 )
                 env.close()
+                best_surrogate_path = output / BEST_SURROGATE_POLICY_RELATIVE_PATH
+                if best_surrogate_path.is_file():
+                    completed_surrogate_steps = agent.num_timesteps
+                    selected_agent = StableBaselinesAgent.load(
+                        "sac", str(best_surrogate_path), env=initial_env
+                    )
+                    # Keep the workflow's monotonic global counter while
+                    # restoring the weights/optimizers/entropy from the best
+                    # validation point.
+                    selected_agent._model.num_timesteps = completed_surrogate_steps
+                    agent = selected_agent
+                    state["selected_surrogate_step"] = state.get(
+                        "best_surrogate_step"
+                    )
                 agent.reset_replay_buffer()
+                _save_pretrained_policy(output, agent, state)
+                if args.freeze_entropy_on_tracewin:
+                    state["frozen_entropy_coefficient"] = agent.freeze_entropy_coefficient(
+                        args.fixed_entropy_coefficient
+                    )
                 print(
                     "Synthetic replay cleared before TraceWin; "
                     f"real learning starts after {args.real_learning_starts} new steps."
@@ -751,10 +872,26 @@ def _run_workflow(
                     gradient_update_interval=args.real_update_interval,
                 )
                 env.close()
-                state.update(
-                    phase="surrogate_update",
-                    phase_steps_completed=0,
-                )
+                if not args.surrogate_refresh:
+                    if cycle >= args.cycles:
+                        state.update(
+                            phase="complete",
+                            phase_steps_completed=0,
+                            real_learning_start_timestep=None,
+                        )
+                    else:
+                        # TraceWin-only cycles are contiguous checkpoint blocks:
+                        # retain all real replay and do not repeat warm-up.
+                        state.update(
+                            phase="real",
+                            cycle=cycle + 1,
+                            phase_steps_completed=0,
+                        )
+                else:
+                    state.update(
+                        phase="surrogate_update",
+                        phase_steps_completed=0,
+                    )
                 _save_checkpoint(
                     output=output, agent=agent, updater=updater, state=state
                 )
@@ -806,6 +943,12 @@ def _run_workflow(
         if callable(close):
             close()
 
+    best_surrogate_score = (
+        max(row["eval_best_score"] for row in recorder.rows)
+        if recorder.rows
+        else None
+    )
+    best_tracewin_score = state.get("best_tracewin_score")
     summary = {
         "status": "complete",
         "cycles": args.cycles,
@@ -813,13 +956,39 @@ def _run_workflow(
         "global_sac_steps": agent.num_timesteps,
         "online_samples": updater.n_online_samples,
         "policy": str(output / POLICY_RELATIVE_PATH),
-        "replay_buffer": str(output / REPLAY_RELATIVE_PATH),
-        "working_surrogate": str(output / WORKING_SURROGATE_RELATIVE_PATH),
-        "best_score": (
-            max(row["eval_best_score"] for row in recorder.rows)
-            if recorder.rows
+        "latest_policy": str(output / LATEST_POLICY_RELATIVE_PATH),
+        "pretrained_policy": (
+            str(output / PRETRAINED_POLICY_RELATIVE_PATH)
+            if (output / PRETRAINED_POLICY_RELATIVE_PATH).is_file()
             else None
         ),
+        "best_surrogate_policy": (
+            str(output / BEST_SURROGATE_POLICY_RELATIVE_PATH)
+            if (output / BEST_SURROGATE_POLICY_RELATIVE_PATH).is_file()
+            else None
+        ),
+        "best_surrogate_validation_score": state.get(
+            "best_surrogate_validation_score"
+        ),
+        "selected_surrogate_step": state.get("selected_surrogate_step"),
+        "best_tracewin_policy": (
+            str(output / BEST_TRACEWIN_POLICY_RELATIVE_PATH)
+            if (output / BEST_TRACEWIN_POLICY_RELATIVE_PATH).is_file()
+            else None
+        ),
+        "best_tracewin_score": best_tracewin_score,
+        "best_tracewin_step": state.get("best_tracewin_step"),
+        "frozen_entropy_coefficient": state.get("frozen_entropy_coefficient"),
+        "replay_buffer": str(output / REPLAY_RELATIVE_PATH),
+        "working_surrogate": str(output / WORKING_SURROGATE_RELATIVE_PATH),
+        # Public training summaries should describe the real phase when one
+        # has completed, not a historical surrogate-only maximum.
+        "best_score": (
+            best_tracewin_score
+            if best_tracewin_score is not None
+            else best_surrogate_score
+        ),
+        "best_surrogate_score": best_surrogate_score,
         "learning_curve": list(recorder.rows),
     }
     _atomic_json(output / "summary.json", summary)

@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM, BEAM_STATE_FEATURES, STAGE_PARAM_SIZES, N_OUTPUT_STAGES,
@@ -142,7 +143,7 @@ class ModularMLP(nn.Module):
     @staticmethod
     def _apply_physical_bounds(beam: torch.Tensor) -> torch.Tensor:
         """Reconstruct predicted beam-state features (raw physical units) into
-        what is physically possible: npart_ratio in (0, 1), sizes/emittances >= 0.
+        what is physically possible: npart_ratio in (0, 1), sizes/emittances > 0.
 
         npart_ratio: sigmoid(), not a clamp. compute_normalization_metadata()
         (trainer.py) computes this column's mean/std at output stages in
@@ -153,10 +154,16 @@ class ModularMLP(nn.Module):
         noisy negative prediction into an artificial exact 0 ("all particles
         lost" per score()) and discards how wrong the prediction actually was.
 
-        sizes/emittances: still a plain clamp(min=0.0) -- unconstrained MSE
-        regression can otherwise predict impossible negative values that
-        score() then turns into arbitrarily large rewards/penalties instead
-        of a bounded, physically-meaningful error.
+        sizes/emittances: softplus(), not a clamp. Unconstrained MSE
+        regression can otherwise predict impossible negative values; softplus
+        enforces strict positivity (output always > 0, never exactly 0) while
+        staying smooth and differentiable everywhere, including below the raw
+        pre-activation's zero-crossing, so the positivity constraint
+        contributes real training gradient instead of a dead zone the way
+        clamp's exactly-zero gradient below 0 did. This is enforced
+        identically in training and inference because _apply_physical_bounds
+        runs inside forward(), which both the training loss (trainer.py) and
+        inference call directly -- no separate post-hoc step exists.
         """
         # Rebuild out-of-place (unbind + transform + stack) rather than assigning
         # into slices in place: repeated in-place writes to the same tensor break
@@ -164,7 +171,7 @@ class ModularMLP(nn.Module):
         columns = list(torch.unbind(beam, dim=1))
         columns[_NPART_RATIO_INDEX] = torch.sigmoid(columns[_NPART_RATIO_INDEX])
         for index in _NONNEGATIVE_INDICES:
-            columns[index] = columns[index].clamp(min=0.0)
+            columns[index] = F.softplus(columns[index])
         return torch.stack(columns, dim=1)
 
     # ── Forward ────────────────────────────────────────────────────────────────
@@ -201,6 +208,10 @@ class ModularMLP(nn.Module):
 
     # ── Checkpoint I/O ─────────────────────────────────────────────────────────
 
+    # NOTE: the _apply_physical_bounds() transform (sigmoid/softplus choice) is
+    # a code-level architectural decision, not serialized here. A checkpoint
+    # trained under a different transform is not self-describing and must be
+    # retrained, not silently reused, after that transform changes.
     _CONFIG_KEYS = ("hidden_sizes", "dropout", "latent_dim", "out_hidden", "out_dropout")
 
     def save(self, path: str, extra: Optional[dict] = None):

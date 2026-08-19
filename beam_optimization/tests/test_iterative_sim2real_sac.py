@@ -179,6 +179,27 @@ class StableBaselinesContinuationTests(unittest.TestCase):
         self.assertEqual(id(agent._model), model_id)
         self.assertEqual(id(agent._model.policy), policy_id)
 
+    def test_sac_entropy_can_be_frozen_and_survives_save_load(self):
+        env = _ContinuousEnv()
+        agent = StableBaselinesAgent(
+            "sac",
+            env,
+            hidden_dims=(8, 8),
+            seed=3,
+            model_kwargs={"buffer_size": 32, "batch_size": 2},
+        )
+        frozen = agent.freeze_entropy_coefficient(0.0125)
+        self.assertAlmostEqual(frozen, 0.0125)
+        self.assertAlmostEqual(agent.entropy_coefficient(), 0.0125)
+        self.assertIsNone(agent._model.ent_coef_optimizer)
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "agent.zip"
+            agent.save(str(path))
+            loaded = StableBaselinesAgent.load("sac", str(path), env=env)
+            self.assertAlmostEqual(loaded.entropy_coefficient(), 0.0125)
+            self.assertIsNone(loaded._model.ent_coef_optimizer)
+
 
 class TraceWinCollectorTests(unittest.TestCase):
     def test_reset_and_step_results_are_collected_once(self):
@@ -257,6 +278,7 @@ class IterativeWorkflowTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             args = self._args(root, cycles=2)
+            args.surrogate_refresh = True
             base_bytes = Path(args.surrogate).read_bytes()
             trace_model = ModularMLP.load(args.surrogate)
 
@@ -293,6 +315,8 @@ class IterativeWorkflowTests(unittest.TestCase):
             self.assertTrue((output / "cycle_01/updated_surrogate/surrogate_0.pt").is_file())
             self.assertTrue((output / "cycle_02/updated_surrogate/surrogate_0.pt").is_file())
             self.assertTrue((output / "sac/sac_agent.zip").is_file())
+            self.assertTrue((output / "sac/best_surrogate_agent.zip").is_file())
+            self.assertIsNotNone(summary["selected_surrogate_step"])
             self.assertTrue((output / "sac/replay_buffer.pkl").is_file())
             self.assertTrue((output / "sac/learning_curve.png").is_file())
             self.assertEqual(Path(args.surrogate).read_bytes(), base_bytes)
@@ -341,6 +365,60 @@ class IterativeWorkflowTests(unittest.TestCase):
             upgraded_state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(upgraded_state["config"]["real_learning_rate"], 1e-5)
             self.assertEqual(upgraded_state["config"]["real_update_interval"], 20)
+
+    def test_tracewin_only_pretrains_once_and_retains_real_replay(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self._args(root, cycles=2)
+            args.enable_learning_curve = False
+            trace_model = ModularMLP.load(args.surrogate)
+
+            class FakeTraceWinEnv(SurrogateEnv):
+                def reset(self, **kwargs):
+                    obs, info = super().reset(**kwargs)
+                    info["sim_result"].source = "tracewin"
+                    return obs, info
+
+                def step(self, action):
+                    obs, reward, terminated, truncated, info = super().step(action)
+                    info["sim_result"].source = "tracewin"
+                    return obs, reward, terminated, truncated, info
+
+            def tracewin_factory(**kwargs):
+                return FakeTraceWinEnv(
+                    model=trace_model,
+                    dataset=kwargs["distance_dataset"],
+                    max_steps=kwargs["max_steps"],
+                    reset_scale=kwargs["reset_scale"],
+                )
+
+            summary = IterativeSim2RealSAC(
+                args, tracewin_env_factory=tracewin_factory
+            ).train()
+
+            output = Path(args.output)
+            # Two surrogate pretraining steps followed by two contiguous
+            # two-step real blocks; no synthetic refresh is inserted.
+            self.assertEqual(summary["global_sac_steps"], 6)
+            self.assertEqual(summary["online_samples"], 8)
+            self.assertFalse((output / "cycle_01").exists())
+            self.assertTrue((output / "sac/pretrained_agent.zip").is_file())
+            self.assertTrue((output / "sac/best_tracewin_agent.zip").is_file())
+            self.assertTrue((output / "sac/latest_agent.zip").is_file())
+            self.assertEqual(summary["best_score"], summary["best_tracewin_score"])
+
+            dataset = BeamDataset.load(args.dataset)
+            eval_env = SurrogateEnv(
+                model=ModularMLP.load(args.surrogate),
+                dataset=dataset,
+                max_steps=args.max_ep_steps,
+            )
+            loaded = StableBaselinesAgent.load(
+                "sac", str(output / "sac/sac_agent.zip"), env=eval_env
+            )
+            loaded.load_replay_buffer(output / "sac/replay_buffer.pkl")
+            self.assertEqual(loaded._model.replay_buffer.size(), 4)
+            eval_env.close()
 
     def test_initial_policy_skips_initial_surrogate_and_starts_on_tracewin(self):
         with TemporaryDirectory() as tmp:
@@ -410,12 +488,16 @@ class IterativeWorkflowTests(unittest.TestCase):
                     tracewin_env_factory=tracewin_factory,
                 ).train()
 
-            # 7 checkpoint steps + cycle 1 real (2) + cycle 2 refresh (2)
-            # + cycle 2 real (2). There is no initial surrogate phase.
-            self.assertEqual(summary["global_sac_steps"], 13)
+            # 7 checkpoint steps + two contiguous two-step TraceWin blocks.
+            # There is no initial or subsequent surrogate phase.
+            self.assertEqual(summary["global_sac_steps"], 11)
             self.assertEqual(summary["initial_policy"], str(policy_dir))
-            self.assertEqual(surrogate_env_calls, 2)
+            self.assertEqual(surrogate_env_calls, 1)
             self.assertEqual(initial_policy.read_bytes(), policy_bytes)
+            self.assertTrue(Path(summary["pretrained_policy"]).is_file())
+            self.assertTrue(Path(summary["latest_policy"]).is_file())
+            self.assertTrue(Path(summary["best_tracewin_policy"]).is_file())
+            self.assertEqual(summary["frozen_entropy_coefficient"], 1.0)
             self.assertIn(
                 "cycle=1/2 real_step=1/2 score=", stdout.getvalue()
             )
@@ -437,6 +519,10 @@ class IterativeWorkflowTests(unittest.TestCase):
         self.assertEqual(args.surrogate_learning_rate, 3e-4)
         self.assertEqual(args.real_learning_rate, 1e-5)
         self.assertEqual(args.real_update_interval, 20)
+        self.assertFalse(args.surrogate_refresh)
+        self.assertTrue(args.freeze_entropy_on_tracewin)
+        self.assertIsNone(args.fixed_entropy_coefficient)
+        self.assertEqual(args.best_tracewin_window, 5)
         self.assertEqual(args.max_ep_steps, 20)
         self.assertIsNone(args.initial_policy)
         self.assertIn("iterative_sim2real_sac", MODEL_BASED_ALGORITHMS)
@@ -493,6 +579,10 @@ class TrainPoliciesIntegrationTests(unittest.TestCase):
             self.assertEqual(config.real_learning_starts, 1)
             self.assertEqual(config.real_learning_rate, 1e-5)
             self.assertEqual(config.real_update_interval, 1)
+            self.assertFalse(config.surrogate_refresh)
+            self.assertTrue(config.freeze_entropy_on_tracewin)
+            self.assertIsNone(config.fixed_entropy_coefficient)
+            self.assertEqual(config.best_tracewin_window, 5)
             self.assertEqual(config.seed, 42)
             self.assertEqual(config.initial_policy, str(initial_policy))
             self.assertFalse(config.kill_stale)

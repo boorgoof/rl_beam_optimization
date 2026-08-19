@@ -21,6 +21,7 @@ from beam_optimization.env.surrogate_env.surrogate.model.evaluator import (
     _binary_metrics,
     _classifier_diagnostics,
     _npart_ratio_band_metrics,
+    _ok_criterion_comparison,
     _score_metrics,
     evaluate_surrogate,
 )
@@ -253,6 +254,31 @@ class SurrogateEvaluatorTests(unittest.TestCase):
         self.assertEqual(
             by_name["rl_valid_near_boundary"]["pipeline_terminal_rate"], 1.0
         )
+
+    def test_ok_criterion_comparison_separates_classifier_and_transmission(self):
+        result = _ok_criterion_comparison(
+            true_npart_ratio=np.array([0.0, 0.05, 0.10, 0.20]),
+            predicted_npart_ratio=np.array([0.20, 0.05, 0.11, 0.08]),
+            classifier_proba=np.array([0.90, 0.10, 0.20, 0.80]),
+            true_scores=np.array([-999.0, 5.0, 10.0, 20.0]),
+            predicted_scores=np.array([3.0, 6.0, 11.0, 19.0]),
+            classifier_threshold=0.5,
+        )
+
+        classifier_ok = result["criteria"]["classifier_ok"]
+        self.assertEqual(classifier_ok["n_accepted"], 2)
+        self.assertEqual(classifier_ok["n_unsafe_accepted"], 1)
+        self.assertAlmostEqual(
+            classifier_ok["true_rl_valid_fraction_among_accepted"], 0.5
+        )
+
+        both_ok = result["criteria"]["both_ok"]
+        self.assertEqual(both_ok["n_accepted"], 1)
+        self.assertEqual(both_ok["n_unsafe_accepted"], 0)
+        self.assertAlmostEqual(both_ok["decision_accuracy"], 0.75)
+
+        self.assertEqual(result["agreement"]["classifier_only_ok"]["n_samples"], 1)
+        self.assertEqual(result["agreement"]["transmission_only_ok"]["n_samples"], 1)
 
     def test_cli_defaults_to_test_and_launcher_forwards_arguments(self):
         package_root = Path(__file__).resolve().parents[1]
