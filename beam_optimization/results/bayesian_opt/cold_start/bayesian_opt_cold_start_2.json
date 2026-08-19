@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "mode": "tracewin_cold_start",
+  "status": "running",
+  "created_at": "2026-07-24T10:39:46.118976+00:00",
+  "updated_at": "2026-07-24T10:39:46.118993+00:00",
+  "config": {
+    "project": "/mnt/meneghetti/FEDERICO_TESI/rl_beam_optimization/beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/CB_newMRMS_RFQ_Fields_1.ini",
+    "calc_root": "/mnt/meneghetti/FEDERICO_TESI/rl_beam_optimization/beam_optimization/env/tracewin_env/tracewin/TraceWin_workspace/tracewin_bayesian_d495b50f0110",
+    "initial_points": 64,
+    "guided_calls": 100,
+    "total_calls": 164,
+    "initial_point_generator": "sobol",
+    "bounds_scale": 0.35,
+    "bounds": {
+      "AD.SO.01": [
+        0.4308446618226562,
+        0.4314189194532994
+      ],
+      "AD.SO.02": [
+        0.10010800937885159,
+        0.10211499527588389
+      ],
+      "AD.MS.03.X": [
+        -4.702842769538266e-05,
+        5.516981720122088e-05
+      ],
+      "AD.MS.03.Y": [
+        -1.596863001769405e-05,
+        1.5631616988846957e-06
+      ],
+      "AD.1EQ.01": [
+        184.03568180615497,
+        200.58075068141073
+      ],
+      "AD.MS.04.X": [
+        -0.00016482847606228036,
+        0.0001510206742759683
+      ],
+      "AD.MS.04.Y": [
+        -5.420887880955816e-05,
+        5.7065494086041635e-05
+      ],
+      "AD.1EQ.02": [
+        -12.801930231218599,
+        -3.063374011827941
+      ],
+      "AD.D.02": [
+        -0.04628270961196328,
+        -0.04612497643233954
+      ],
+      "AD.EM.6": [
+        -3846.5835940864717,
+        3377.3793105942405
+      ],
+      "AD.EM.8": [
+        -2161.8026575343406,
+        -1426.4925076867394
+      ],
+      "AD.EM.10": [
+        -805.1538375196674,
+        -386.6353584894668
+      ],
+      "AD.EM.12": [
+        -498.24320026173405,
+        495.0496335119785
+      ],
+      "AD.D.03": [
+        0.04619929220375797,
+        0.046211548044314946
+      ],
+      "AD.1EQ.03": [
+        1.1235854994808498,
+        10.00597054802449
+      ],
+      "AD.MS.05.X": [
+        -0.00018125457306568765,
+        0.00013831706578534389
+      ],
+      "AD.MS.05.Y": [
+        -0.00014398620982103167,
+        0.0001493258612525722
+      ],
+      "AD.1EQ.04": [
+        -212.60211513775272,
+        -173.75804710476928
+      ]
+    },
+    "seed": 506042772,
+    "tracewin_seed_base": null,
+    "tracewin_particles": 10000,
+    "tracewin_threads": null,
+    "timeout": 180.0,
+    "retries": 2,
+    "samples_output": "/mnt/meneghetti/FEDERICO_TESI/rl_beam_optimization/beam_optimization/results/bayesian_opt/bayesian_opt_cold_start_samples.pt"
+  },
+  "warm_start": [],
+  "runs": [],
+  "best_result": null,
+  "score_function": {
+    "name": "adige_linear_beam_quality",
+    "version": 1,
+    "formula": "ERROR_SCORE if npart_ratio < MIN_NPART_RATIO; otherwise linear transmission reward minus emittance, offset, angle, and size penalties",
+    "beam_state_features": [
+      "npart_ratio",
+      "x0",
+      "y0",
+      "SizeX",
+      "SizeY",
+      "ex",
+      "ey",
+      "x'0",
+      "y'0"
+    ],
+    "min_npart_ratio": 0.01,
+    "error_score": -999.0,
+    "weights": {
+      "npart_ratio": 100.0,
+      "emittance": 10.0,
+      "offset": 1.0,
+      "angle": 1.0,
+      "size": 1.0
+    },
+    "references": {
+      "ex": 0.05,
+      "ey": 0.05,
+      "x0": 0.0,
+      "y0": 0.0,
+      "x'0": 0.0,
+      "y'0": 0.0,
+      "SizeX": 5.0,
+      "SizeY": 5.0
+    },
+    "implementation_sha256": "2dd84ea23ccf1f5fbbbeba3aae3fcfc92e71268d7d6f030d90711642ace52da7",
+    "sha256": "67754b501533c32b0b81a53b59f3659eda8f3e5c03562d06aa1dd743f1fe4538"
+  },
+  "default_result": {
+    "params": {
+      "ele[2][5]": 0.4311317906379778,
+      "ele[29][5]": 0.10111150232736774,
+      "ele[38][1]": 4.0706947529191115e-06,
+      "ele[38][2]": -7.202734159404677e-06,
+      "ele[151][2]": 192.30821624378285,
+      "ele[162][1]": -6.903900893156021e-06,
+      "ele[162][2]": 1.4283076382417385e-06,
+      "ele[195][2]": -7.93265212152327,
+      "ele[197][5]": -0.04620384302215141,
+      "ele[200][6]": -234.60214174611588,
+      "ele[201][6]": -1794.14758261054,
+      "ele[202][6]": -595.8945980045671,
+      "ele[203][6]": -1.5967833748777753,
+      "ele[205][5]": 0.04620542012403646,
+      "ele[225][2]": 5.56477802375267,
+      "ele[261][1]": -2.146875364017188e-05,
+      "ele[261][2]": 2.669825715770255e-06,
+      "ele[280][2]": -193.180081121261
+    },
+    "score": 47.534859000000004,
+    "success": true,
+    "error": null,
+    "timestamp": "2026-07-24T12:40:06.266317"
+  }
+}
