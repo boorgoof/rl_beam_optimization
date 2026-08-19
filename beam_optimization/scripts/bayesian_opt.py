@@ -708,28 +708,25 @@ def save_convergence_plot(
     for run_index, history in enumerate(histories):
         best_so_far = np.maximum.accumulate(np.asarray(history, dtype=float))
         evaluations = np.arange(1, len(history) + 1)
+        final_best = float(best_so_far[-1])
+        final_bests.append(final_best)
         line, = axis.plot(
             evaluations,
             best_so_far,
             linewidth=1.8,
-            label=f"run {run_index + 1}",
+            # The final score lives in the legend, not as an on-plot text
+            # label: runs routinely converge to nearly the same score, and
+            # per-point annotate() calls at a fixed offset then stack into an
+            # unreadable pile at the top-right corner instead of showing
+            # anything useful.
+            label=f"run {run_index + 1} (final={final_best:.4g})",
         )
-        final_best = float(best_so_far[-1])
-        final_bests.append(final_best)
         axis.scatter(
             evaluations[-1],
             final_best,
             s=46,
             color=line.get_color(),
             zorder=4,
-        )
-        axis.annotate(
-            f"{final_best:.6g}",
-            xy=(evaluations[-1], final_best),
-            xytext=(6, 7),
-            textcoords="offset points",
-            fontsize=8.5,
-            fontweight="bold",
         )
     axis.set_xlabel("New TraceWin evaluations")
     axis.set_ylabel("Best observed score")
@@ -738,7 +735,7 @@ def save_convergence_plot(
         f"Global best score = {max(final_bests):.6g}"
     )
     axis.grid(alpha=0.25)
-    axis.legend()
+    axis.legend(fontsize=8.5)
     figure.tight_layout()
     path = Path(output_json).parent / f"{prefix}_convergence.png"
     figure.savefig(path, dpi=160)
