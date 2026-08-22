@@ -207,91 +207,18 @@ class SchedulerAndEarlyStoppingTests(unittest.TestCase):
             )
         self.assertEqual(mock_step.call_count, len(history))
 
-
-class FailureClassifierTrainingTests(unittest.TestCase):
-    """SurrogateTrainer._train_classifier(): a single, shared classifier,
-    early-stopped on validation F1 rather than loss."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.TemporaryDirectory()
-        self.train_path = Path(self.tmpdir.name) / "train.pt"
-        self.val_path = Path(self.tmpdir.name) / "val.pt"
-        _make_synthetic_dataset(self.train_path, n=16, seed=1)
-        _make_synthetic_dataset(self.val_path, n=8, seed=2)
-
-    def tearDown(self):
-        self.tmpdir.cleanup()
-
-    def _build_trainer(self, **overrides) -> SurrogateTrainer:
-        kwargs = dict(
-            train_dataset_path=self.train_path,
-            val_dataset_path=self.val_path,
-            output_dir=Path(self.tmpdir.name) / "out",
-            max_epochs=50,
-            batch_size=8,
-            n_models=2,
-            patience=None,
-            classifier_patience=3,
-            model_kwargs=_TINY_MODEL_KWARGS,
-            enable_tensorboard=False,
-        )
-        kwargs.update(overrides)
-        return SurrogateTrainer(**kwargs)
-
-    def _train_classifier_with_mocked_val(self, trainer, val_results):
-        train_dataset = BeamDataset.load(self.train_path)
-        val_dataset = BeamDataset.load(self.val_path)
-        norm_stats = compute_normalization_metadata(train_dataset)
-        with mock.patch.object(trainer, "_evaluate_classifier", side_effect=val_results):
-            return trainer._train_classifier(train_dataset, val_dataset, norm_stats)
-
-    def test_stops_after_patience_epochs_without_f1_improvement(self):
-        trainer = self._build_trainer(classifier_patience=3)
-        # improves at epoch 2 (f1=0.6), then plateaus at 0.5 for 3 straight
-        # epochs -> stop at epoch 5.
-        val_results = [
-            (10.0, {"precision": 0.4, "recall": 0.4, "f1": 0.4}),
-            (8.0, {"precision": 0.6, "recall": 0.6, "f1": 0.6}),
-            (8.0, {"precision": 0.5, "recall": 0.5, "f1": 0.5}),
-            (8.0, {"precision": 0.5, "recall": 0.5, "f1": 0.5}),
-            (8.0, {"precision": 0.5, "recall": 0.5, "f1": 0.5}),
-            (8.0, {"precision": 0.5, "recall": 0.5, "f1": 0.5}),
-            (8.0, {"precision": 0.5, "recall": 0.5, "f1": 0.5}),
-        ]
-        _, history, _ = self._train_classifier_with_mocked_val(trainer, val_results)
-
-        self.assertEqual(len(history), 5)
-
-    def test_classifier_patience_none_runs_full_max_epochs(self):
-        trainer = self._build_trainer(classifier_patience=None, max_epochs=4)
-        val_results = [
-            (10.0, {"precision": 0.4, "recall": 0.4, "f1": 0.4}),
-            (11.0, {"precision": 0.4, "recall": 0.4, "f1": 0.4}),
-            (12.0, {"precision": 0.4, "recall": 0.4, "f1": 0.4}),
-            (13.0, {"precision": 0.4, "recall": 0.4, "f1": 0.4}),
-        ]
-        _, history, _ = self._train_classifier_with_mocked_val(trainer, val_results)
-
-        self.assertEqual(len(history), 4)
-
-    def test_train_saves_exactly_one_shared_classifier_regardless_of_n_models(self):
-        trainer = self._build_trainer(n_models=2, max_epochs=2, classifier_patience=None)
+    def test_train_saves_only_requested_surrogate_checkpoints(self):
+        trainer = self._build_trainer(n_models=2, max_epochs=1, patience=None)
 
         summary = trainer.train()
 
-        classifier_files = list(trainer.output_dir.glob("failure_classifier_*.pt"))
-        surrogate_files = list(trainer.output_dir.glob("surrogate_*.pt"))
-        self.assertEqual(len(classifier_files), 1)
-        self.assertEqual(len(surrogate_files), 2)
-        self.assertEqual(summary["classifier"]["path"], str(classifier_files[0]))
+        saved_files = sorted(trainer.output_dir.glob("*.pt"))
+        self.assertEqual(len(saved_files), 2)
+        self.assertTrue(all(path.name.startswith("surrogate_") for path in saved_files))
+        self.assertEqual(len(summary["checkpoints"]), 2)
+        self.assertEqual(set(summary), {"output_dir", "n_models", "checkpoints"})
 
-    def test_skip_classifier_trains_no_classifier_file(self):
-        trainer = self._build_trainer(n_models=1, max_epochs=2, train_classifier=False)
 
-        summary = trainer.train()
-
-        self.assertNotIn("classifier", summary)
-        self.assertEqual(list(trainer.output_dir.glob("failure_classifier_*.pt")), [])
 
 
 if __name__ == "__main__":

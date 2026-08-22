@@ -95,8 +95,8 @@ def main() -> None:
             "use the current DATASET_SCALE from adige.py, same as before this "
             "flag existed. A larger value widens the perturbation and pulls in "
             "more failure/near-boundary samples -- e.g. useful for a dataset "
-            "dedicated to training the FailureClassifier with a higher, more "
-            "balanced failure rate than the default ~20%%."
+            "intended to improve surrogate coverage near the physical failure "
+            "boundary."
         ),
     )
     parser.add_argument("--timeout", type=float, default=180.0)

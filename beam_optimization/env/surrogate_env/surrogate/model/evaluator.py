@@ -1,16 +1,8 @@
 """Offline surrogate evaluation on an independent BeamDataset split.
 
-Besides native and target-standardized regression metrics by stage/feature,
+Reports native and target-standardized regression metrics by stage/feature,
 valid-vs-failure score decomposition, bootstrap confidence intervals and the
-true-vs-predicted final score correlation, `evaluate_surrogate()` optionally
-accepts a shared `FailureClassifier` (see failure_classifier.py and
-trainer.py's `_train_classifier`) to report how well it separates real
-all-particles-lost samples from the rest -- precision/recall/F1/confusion
-matrix, average precision and calibration diagnostics (`classifier_metrics`
-and `classifier_diagnostics`) plus a second score-metrics block computed as
-if its gate had been applied (`score_metrics_gated`). This is purely
-diagnostic: passing a classifier never changes the default `score_metrics`,
-it only adds extra keys to the result.
+true-vs-predicted final score correlation.
 """
 from __future__ import annotations
 
@@ -27,7 +19,6 @@ import torch
 from beam_optimization.config.adige import (
     ALL_PARTICLES_LOST_NPART_RATIO,
     BEAM_STATE_FEATURES,
-    ERROR_SCORE,
     N_OUTPUT_STAGES,
     RL_MIN_NPART_RATIO,
     STAGE_MARKERS,
@@ -41,10 +32,6 @@ from beam_optimization.config.paths import (
     default_dataset_path,
 )
 from beam_optimization.env.dataset import BeamDataset
-from beam_optimization.env.surrogate_env.surrogate.model.failure_classifier import (
-    FailureClassifier,
-    derive_failure_labels,
-)
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
 
@@ -75,8 +62,6 @@ def evaluate_surrogate(
     device: Optional[str | torch.device] = None,
     plots_dir: Optional[str | Path] = None,
     plot_prefix: str = "surrogate",
-    classifier: Optional[FailureClassifier] = None,
-    classifier_threshold: float = 0.5,
     filter_score_plots_to_rl_valid: bool = False,
 ) -> dict:
     """Evaluate one surrogate on a dataset.
@@ -84,13 +69,6 @@ def evaluate_surrogate(
     Metrics cover beam-state errors by stage/feature and the score computed
     from the final predicted/target beam. Evaluation is batch-wise; only the
     two final-score vectors are retained for correlation and plots.
-
-    When `classifier` is given, this additionally reports how well it
-    predicts the true all-particles-lost label (precision/recall/F1/confusion
-    matrix) and a second, "gated" score-metrics block computed as if the
-    classifier's gate (see surrogate_simulator.run_surrogate_forward) had
-    been applied -- purely diagnostic, does not change the default
-    ("score_metrics") behavior.
 
     `filter_score_plots_to_rl_valid` restricts the score_scatter/score_residuals
     plots (only those two -- the RMSE/NRMSE heatmaps stay over all samples) to
@@ -105,10 +83,6 @@ def evaluate_surrogate(
     device_t = _resolve_device(device)
     model = model.to(device_t)
     model.eval()
-    if classifier is not None:
-        classifier = classifier.to(device_t)
-        classifier.eval()
-
     n_features = len(BEAM_STATE_FEATURES)
     sse_stage_feature = np.zeros((N_OUTPUT_STAGES, n_features), dtype=np.float64)
     sae_stage_feature = np.zeros((N_OUTPUT_STAGES, n_features), dtype=np.float64)
@@ -120,7 +94,6 @@ def evaluate_surrogate(
     failure_label_batches: list[np.ndarray] = []
     true_npart_ratio_batches: list[np.ndarray] = []
     predicted_npart_ratio_batches: list[np.ndarray] = []
-    classifier_proba_batches: list[np.ndarray] = []
 
     with torch.no_grad():
         for start in range(0, len(dataset), int(batch_size)):
@@ -163,20 +136,17 @@ def evaluate_surrogate(
                     predicted_score_batches.append(
                         score_tensor(pred).detach().cpu().numpy().astype(np.float64)
                     )
-                    labels = derive_failure_labels(dataset.Y[indices]).numpy().astype(np.float64)
-                    failure_label_batches.append(labels)
                     npart_index = BEAM_STATE_FEATURES.index("npart_ratio")
+                    labels = (
+                        target[:, npart_index] <= ALL_PARTICLES_LOST_NPART_RATIO
+                    ).detach().cpu().numpy().astype(np.float64)
+                    failure_label_batches.append(labels)
                     true_npart_ratio_batches.append(
                         target[:, npart_index].detach().cpu().numpy().astype(np.float64)
                     )
                     predicted_npart_ratio_batches.append(
                         pred[:, npart_index].detach().cpu().numpy().astype(np.float64)
                     )
-                    if classifier is not None:
-                        proba = classifier.predict_proba(stage_params, beam_states[0])
-                        classifier_proba_batches.append(
-                            proba.detach().cpu().numpy().astype(np.float64)
-                        )
 
     mse_stage_feature = _safe_divide(sse_stage_feature, count_stage_feature)
     mae_stage_feature = _safe_divide(sae_stage_feature, count_stage_feature)
@@ -278,16 +248,13 @@ def evaluate_surrogate(
     rl_terminal_metrics = {
         "threshold": float(RL_MIN_NPART_RATIO),
         "boundary_is_valid": True,
-        "regressor_only": _binary_metrics(
+        "regressor": _binary_metrics(
             true_rl_terminal, predicted_rl_terminal_regressor
         ),
-        "with_classifier_gate": None,
     }
     npart_ratio_bands = _npart_ratio_band_metrics(
         true_npart_ratio,
         predicted_npart_ratio,
-        classifier_proba=None,
-        classifier_threshold=classifier_threshold,
     )
 
     final_mse = float(mse_per_stage[-1])
@@ -328,47 +295,6 @@ def evaluate_surrogate(
         "npart_ratio_bands": npart_ratio_bands,
     }
 
-    classifier_proba_all = None
-    classifier_labels_all = None
-    if classifier is not None and classifier_proba_batches:
-        classifier_proba_all = np.concatenate(classifier_proba_batches)
-        classifier_labels_all = failure_labels.astype(np.float64)
-        results["classifier_metrics"] = _classifier_metrics(
-            classifier_labels_all, classifier_proba_all, classifier_threshold,
-        )
-        results["classifier_diagnostics"] = _classifier_diagnostics(
-            classifier_labels_all,
-            classifier_proba_all,
-            true_scores,
-            predicted_scores,
-            classifier_threshold,
-        )
-        gated_predicted_scores = np.where(
-            classifier_proba_all > classifier_threshold, ERROR_SCORE, predicted_scores,
-        )
-        results["score_metrics_gated"] = _score_metrics(true_scores, gated_predicted_scores)
-        predicted_rl_terminal_pipeline = (
-            predicted_rl_terminal_regressor
-            | (classifier_proba_all > classifier_threshold)
-        )
-        results["rl_terminal_metrics"]["with_classifier_gate"] = _binary_metrics(
-            true_rl_terminal, predicted_rl_terminal_pipeline
-        )
-        results["npart_ratio_bands"] = _npart_ratio_band_metrics(
-            true_npart_ratio,
-            predicted_npart_ratio,
-            classifier_proba=classifier_proba_all,
-            classifier_threshold=classifier_threshold,
-        )
-        results["ok_criterion_comparison"] = _ok_criterion_comparison(
-            true_npart_ratio=true_npart_ratio,
-            predicted_npart_ratio=predicted_npart_ratio,
-            classifier_proba=classifier_proba_all,
-            true_scores=true_scores,
-            predicted_scores=predicted_scores,
-            classifier_threshold=classifier_threshold,
-        )
-
     if plots_dir is not None:
         if filter_score_plots_to_rl_valid:
             score_plot_mask = ~true_rl_terminal
@@ -389,16 +315,6 @@ def evaluate_surrogate(
             score_metrics=score_plot_metrics,
             score_title_suffix=score_title_suffix,
         )
-        if classifier_proba_all is not None:
-            plots.update(_save_classifier_plots(
-                labels=classifier_labels_all,
-                proba=classifier_proba_all,
-                threshold=classifier_threshold,
-                classifier_metrics=results["classifier_metrics"],
-                classifier_diagnostics=results["classifier_diagnostics"],
-                output_dir=Path(plots_dir),
-                prefix=plot_prefix,
-            ))
         results["plots"] = plots
     else:
         results["plots"] = {}
@@ -492,98 +408,6 @@ def _score_metrics(
     return metrics
 
 
-def _ok_criterion_comparison(
-    *,
-    true_npart_ratio: np.ndarray,
-    predicted_npart_ratio: np.ndarray,
-    classifier_proba: np.ndarray,
-    true_scores: np.ndarray,
-    predicted_scores: np.ndarray,
-    classifier_threshold: float,
-) -> dict:
-    """Compare the classifier-OK and predicted-transmission-OK selections.
-
-    The reference definition of an operationally valid RL sample comes from
-    the held-out TraceWin target: true final npart_ratio >=
-    RL_MIN_NPART_RATIO. Score-regression errors are reported only over the
-    samples accepted by each inference-time criterion.
-    """
-    true_ok = np.asarray(true_npart_ratio) >= RL_MIN_NPART_RATIO
-    classifier_ok = np.asarray(classifier_proba) <= classifier_threshold
-    transmission_ok = np.asarray(predicted_npart_ratio) >= RL_MIN_NPART_RATIO
-
-    def _ratio(numerator: int, denominator: int) -> Optional[float]:
-        return float(numerator / denominator) if denominator else None
-
-    def _selection(mask: np.ndarray) -> dict:
-        mask = np.asarray(mask, dtype=bool)
-        tp = int(np.sum(mask & true_ok))
-        fp = int(np.sum(mask & ~true_ok))
-        fn = int(np.sum(~mask & true_ok))
-        tn = int(np.sum(~mask & ~true_ok))
-        score_values = _score_metrics(
-            np.asarray(true_scores)[mask],
-            np.asarray(predicted_scores)[mask],
-            bootstrap_samples=0,
-        )
-        ratio_mae = (
-            float(np.mean(np.abs(
-                np.asarray(predicted_npart_ratio)[mask]
-                - np.asarray(true_npart_ratio)[mask]
-            )))
-            if np.any(mask)
-            else None
-        )
-        return {
-            "n_accepted": int(np.sum(mask)),
-            "accepted_fraction": float(np.mean(mask)),
-            "true_rl_valid_fraction_among_accepted": _ratio(tp, tp + fp),
-            "n_unsafe_accepted": fp,
-            "true_rl_valid_recall": _ratio(tp, tp + fn),
-            "decision_accuracy": _ratio(tp + tn, mask.size),
-            "score_metrics_on_accepted": score_values,
-            "npart_ratio_mae_on_accepted": ratio_mae,
-        }
-
-    agreement = {}
-    for name, mask in {
-        "both_ok": classifier_ok & transmission_ok,
-        "classifier_only_ok": classifier_ok & ~transmission_ok,
-        "transmission_only_ok": ~classifier_ok & transmission_ok,
-        "both_reject": ~classifier_ok & ~transmission_ok,
-    }.items():
-        count = int(np.sum(mask))
-        agreement[name] = {
-            "n_samples": count,
-            "fraction": float(count / true_ok.size),
-            "true_rl_valid_fraction": float(np.mean(true_ok[mask])) if count else None,
-            "true_npart_ratio_mean": (
-                float(np.mean(np.asarray(true_npart_ratio)[mask])) if count else None
-            ),
-            "predicted_npart_ratio_mean": (
-                float(np.mean(np.asarray(predicted_npart_ratio)[mask])) if count else None
-            ),
-            "classifier_probability_mean": (
-                float(np.mean(np.asarray(classifier_proba)[mask])) if count else None
-            ),
-        }
-
-    return {
-        "reference": {
-            "definition": "true final npart_ratio >= RL_MIN_NPART_RATIO",
-            "rl_min_npart_ratio": float(RL_MIN_NPART_RATIO),
-            "classifier_threshold": float(classifier_threshold),
-            "n_samples": int(true_ok.size),
-            "n_true_rl_valid": int(np.sum(true_ok)),
-        },
-        "criteria": {
-            "classifier_ok": _selection(classifier_ok),
-            "predicted_transmission_ok": _selection(transmission_ok),
-            "both_ok": _selection(classifier_ok & transmission_ok),
-        },
-        "agreement": agreement,
-    }
-
 
 def _bootstrap_score_intervals(
     true_scores: np.ndarray,
@@ -656,9 +480,6 @@ def _binary_metrics(labels: np.ndarray, predictions: np.ndarray) -> dict:
 def _npart_ratio_band_metrics(
     true_ratio: np.ndarray,
     predicted_ratio: np.ndarray,
-    *,
-    classifier_proba: Optional[np.ndarray],
-    classifier_threshold: float,
 ) -> list[dict]:
     """Regression and terminal-decision quality in operational transmission bands."""
     true_ratio = np.asarray(true_ratio, dtype=np.float64)
@@ -688,11 +509,6 @@ def _npart_ratio_band_metrics(
     ]
     rows = []
     predicted_terminal = predicted_ratio < RL_MIN_NPART_RATIO
-    classifier_flags = (
-        np.asarray(classifier_proba) > classifier_threshold
-        if classifier_proba is not None
-        else np.zeros_like(predicted_terminal)
-    )
     for name, mask, interval in bands:
         count = int(np.sum(mask))
         if count:
@@ -703,13 +519,9 @@ def _npart_ratio_band_metrics(
             rmse = float(np.sqrt(np.mean(np.square(residual))))
             bias = float(np.mean(residual))
             regressor_terminal_rate = float(np.mean(predicted_terminal[mask]))
-            classifier_flag_rate = float(np.mean(classifier_flags[mask]))
-            pipeline_terminal_rate = float(
-                np.mean((predicted_terminal | classifier_flags)[mask])
-            )
         else:
             true_mean = predicted_mean = mae = rmse = bias = None
-            regressor_terminal_rate = classifier_flag_rate = pipeline_terminal_rate = None
+            regressor_terminal_rate = None
         rows.append({
             "name": name,
             "interval": interval,
@@ -720,140 +532,9 @@ def _npart_ratio_band_metrics(
             "rmse": rmse,
             "bias": bias,
             "regressor_terminal_rate": regressor_terminal_rate,
-            "classifier_flag_rate": (
-                classifier_flag_rate if classifier_proba is not None else None
-            ),
-            "pipeline_terminal_rate": pipeline_terminal_rate,
         })
     return rows
 
-
-def _classifier_metrics(labels: np.ndarray, proba: np.ndarray, threshold: float) -> dict:
-    """Precision/recall/F1/confusion matrix of the FailureClassifier against
-    the true all-particles-lost label (derive_failure_labels()), at a given
-    decision threshold. A false negative here (classifier says "fine" but the
-    true beam is fully lost) is worse than a false positive, so recall on the
-    failure class is the metric to watch."""
-    preds = (proba > threshold).astype(np.float64)
-    tp = float(np.sum((preds == 1) & (labels == 1)))
-    fp = float(np.sum((preds == 1) & (labels == 0)))
-    fn = float(np.sum((preds == 0) & (labels == 1)))
-    tn = float(np.sum((preds == 0) & (labels == 0)))
-    total = tp + fp + fn + tn
-
-    precision = tp / (tp + fp) if (tp + fp) > 0 else None
-    recall = tp / (tp + fn) if (tp + fn) > 0 else None
-    f1 = (
-        2 * precision * recall / (precision + recall)
-        if precision is not None and recall is not None and (precision + recall) > 0
-        else None
-    )
-    accuracy = (tp + tn) / total if total > 0 else None
-
-    return {
-        "threshold": float(threshold),
-        "n_samples": int(total),
-        "n_true_failures": int(tp + fn),
-        "confusion_matrix": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "accuracy": accuracy,
-    }
-
-
-def _classifier_diagnostics(
-    labels: np.ndarray,
-    proba: np.ndarray,
-    true_scores: np.ndarray,
-    predicted_scores: np.ndarray,
-    selected_threshold: float,
-) -> dict:
-    """Threshold-independent and threshold-sweep classifier diagnostics.
-
-    The sweep is descriptive. A production threshold must be chosen on a
-    validation dataset, then kept fixed for the final test dataset.
-    """
-    labels = np.asarray(labels, dtype=np.float64)
-    proba = np.clip(np.asarray(proba, dtype=np.float64), 0.0, 1.0)
-    brier = float(np.mean(np.square(proba - labels)))
-
-    order = np.argsort(-proba, kind="stable")
-    sorted_labels = labels[order]
-    cumulative_tp = np.cumsum(sorted_labels)
-    ranks = np.arange(1, len(labels) + 1, dtype=np.float64)
-    n_positive = float(np.sum(labels))
-    average_precision = (
-        float(np.sum((cumulative_tp / ranks) * sorted_labels) / n_positive)
-        if n_positive > 0
-        else None
-    )
-
-    calibration_bins = []
-    expected_calibration_error = 0.0
-    edges = np.linspace(0.0, 1.0, 11)
-    for index, (low, high) in enumerate(zip(edges[:-1], edges[1:])):
-        mask = (proba >= low) & (proba < high if index < len(edges) - 2 else proba <= high)
-        count = int(np.sum(mask))
-        mean_probability = float(np.mean(proba[mask])) if count else None
-        observed_rate = float(np.mean(labels[mask])) if count else None
-        if count:
-            expected_calibration_error += (
-                count / len(labels) * abs(mean_probability - observed_rate)
-            )
-        calibration_bins.append({
-            "lower": float(low),
-            "upper": float(high),
-            "count": count,
-            "mean_probability": mean_probability,
-            "observed_failure_rate": observed_rate,
-        })
-
-    curve_thresholds = np.linspace(0.0, 1.0, 101)
-    precision_recall_curve = []
-    for threshold in curve_thresholds:
-        metrics = _classifier_metrics(labels, proba, float(threshold))
-        precision_recall_curve.append({
-            "threshold": float(threshold),
-            "precision": metrics["precision"],
-            "recall": metrics["recall"],
-        })
-
-    diagnostic_thresholds = np.unique(np.concatenate([
-        np.linspace(0.05, 0.95, 19),
-        np.asarray([selected_threshold], dtype=np.float64),
-    ]))
-    threshold_diagnostics = []
-    for threshold in diagnostic_thresholds:
-        classification = _classifier_metrics(labels, proba, float(threshold))
-        gated_scores = np.where(proba > threshold, ERROR_SCORE, predicted_scores)
-        gated = _score_metrics(
-            true_scores, gated_scores, bootstrap_samples=0
-        )
-        threshold_diagnostics.append({
-            "threshold": float(threshold),
-            "precision": classification["precision"],
-            "recall": classification["recall"],
-            "f1": classification["f1"],
-            "false_positives": classification["confusion_matrix"]["fp"],
-            "false_negatives": classification["confusion_matrix"]["fn"],
-            "gated_score_mae": gated["mae"],
-            "gated_score_rmse": gated["rmse"],
-            "gated_score_r2": gated["r2"],
-        })
-
-    return {
-        "prevalence": float(np.mean(labels)),
-        "brier_score": brier,
-        "average_precision": average_precision,
-        "expected_calibration_error": float(expected_calibration_error),
-        "calibration_bins": calibration_bins,
-        "precision_recall_curve": precision_recall_curve,
-        "threshold_diagnostics": threshold_diagnostics,
-        "threshold_selection_warning": (
-            "Choose the operating threshold on validation data, never on the final test set."
-        ),
-    }
 
 
 def _save_evaluation_plots(
@@ -983,128 +664,6 @@ def _save_evaluation_plots(
     return paths
 
 
-def _save_classifier_plots(
-    *,
-    labels: np.ndarray,
-    proba: np.ndarray,
-    threshold: float,
-    classifier_metrics: dict,
-    classifier_diagnostics: dict,
-    output_dir: Path,
-    prefix: str,
-) -> dict[str, str]:
-    """Two diagnostic plots for the FailureClassifier: how well its predicted
-    probability separates the two true classes, and the resulting confusion
-    matrix at `threshold`."""
-    configure_matplotlib_cache()
-    import matplotlib.pyplot as plt
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    paths: dict[str, str] = {}
-
-    fig, axis = plt.subplots(figsize=(7.0, 5.0))
-    bins = np.linspace(0.0, 1.0, 41)
-    axis.hist(proba[labels == 0], bins=bins, alpha=0.6, color="steelblue",
-              label=f"true: not lost (n={int(np.sum(labels == 0)):,})")
-    axis.hist(proba[labels == 1], bins=bins, alpha=0.6, color="crimson",
-              label=f"true: all particles lost (n={int(np.sum(labels == 1)):,})")
-    axis.axvline(threshold, color="black", linestyle="--", linewidth=1.2,
-                 label=f"threshold={threshold:g}")
-    axis.set_xlabel("Predicted failure probability")
-    axis.set_ylabel("Count")
-    axis.set_title(f"{prefix}: classifier probability by true label")
-    axis.legend(fontsize=8)
-    axis.grid(alpha=0.25)
-    fig.tight_layout()
-    hist_path = output_dir / f"{prefix}_classifier_proba_hist.png"
-    fig.savefig(hist_path, dpi=170)
-    plt.close(fig)
-    paths["classifier_proba_hist"] = str(hist_path)
-
-    cm = classifier_metrics["confusion_matrix"]
-    matrix = np.array([[cm["tn"], cm["fp"]], [cm["fn"], cm["tp"]]])
-    fig, axis = plt.subplots(figsize=(4.6, 4.2))
-    image = axis.imshow(matrix, cmap="Blues")
-    axis.set_xticks([0, 1])
-    axis.set_xticklabels(["pred: ok", "pred: failure"])
-    axis.set_yticks([0, 1])
-    axis.set_yticklabels(["true: ok", "true: failure"])
-    vmax = matrix.max() if matrix.size else 0.0
-    for i in range(2):
-        for j in range(2):
-            axis.text(j, i, f"{int(matrix[i, j]):,}", ha="center", va="center",
-                       color="white" if matrix[i, j] > vmax / 2 else "black")
-    axis.set_title(
-        f"{prefix}: classifier confusion matrix\n"
-        f"precision={_format_optional(classifier_metrics['precision'])}  "
-        f"recall={_format_optional(classifier_metrics['recall'])}"
-    )
-    fig.colorbar(image, ax=axis, shrink=0.8)
-    fig.tight_layout()
-    confusion_path = output_dir / f"{prefix}_classifier_confusion.png"
-    fig.savefig(confusion_path, dpi=170)
-    plt.close(fig)
-    paths["classifier_confusion"] = str(confusion_path)
-
-    pr_points = classifier_diagnostics["precision_recall_curve"]
-    usable_pr = [
-        point for point in pr_points
-        if point["recall"] is not None and point["precision"] is not None
-    ]
-    recalls = [point["recall"] for point in usable_pr]
-    precisions = [point["precision"] for point in usable_pr]
-    fig, axis = plt.subplots(figsize=(6.2, 5.2))
-    axis.plot(recalls, precisions, color="darkorange", linewidth=2)
-    axis.axhline(
-        classifier_diagnostics["prevalence"],
-        color="0.4", linestyle="--", linewidth=1, label="random baseline",
-    )
-    axis.set_xlim(0.0, 1.02)
-    axis.set_ylim(0.0, 1.02)
-    axis.set_xlabel("Recall")
-    axis.set_ylabel("Precision")
-    axis.set_title(
-        f"{prefix}: failure precision-recall\n"
-        f"average precision={_format_optional(classifier_diagnostics['average_precision'])}"
-    )
-    axis.legend(frameon=False)
-    axis.grid(alpha=0.25)
-    fig.tight_layout()
-    pr_path = output_dir / f"{prefix}_classifier_precision_recall.png"
-    fig.savefig(pr_path, dpi=170)
-    plt.close(fig)
-    paths["classifier_precision_recall"] = str(pr_path)
-
-    bins = [
-        row for row in classifier_diagnostics["calibration_bins"]
-        if row["count"] > 0
-    ]
-    fig, axis = plt.subplots(figsize=(6.2, 5.2))
-    axis.plot([0, 1], [0, 1], "--", color="0.4", label="perfect calibration")
-    axis.plot(
-        [row["mean_probability"] for row in bins],
-        [row["observed_failure_rate"] for row in bins],
-        "o-", color="purple", label="classifier",
-    )
-    axis.set_xlim(0.0, 1.0)
-    axis.set_ylim(0.0, 1.0)
-    axis.set_xlabel("Mean predicted failure probability")
-    axis.set_ylabel("Observed failure rate")
-    axis.set_title(
-        f"{prefix}: classifier calibration\n"
-        f"Brier={classifier_diagnostics['brier_score']:.4g}, "
-        f"ECE={classifier_diagnostics['expected_calibration_error']:.4g}"
-    )
-    axis.legend(frameon=False)
-    axis.grid(alpha=0.25)
-    fig.tight_layout()
-    calibration_path = output_dir / f"{prefix}_classifier_calibration.png"
-    fig.savefig(calibration_path, dpi=170)
-    plt.close(fig)
-    paths["classifier_calibration"] = str(calibration_path)
-
-    return paths
-
 
 def _format_optional(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.4g}"
@@ -1150,8 +709,6 @@ def evaluate_surrogate_folder(
     device: Optional[str | torch.device] = None,
     save_path: Optional[str | Path] = None,
     plots_dir: Optional[str | Path] = None,
-    classifier_path: Optional[str | Path] = None,
-    classifier_threshold: float = 0.5,
 ) -> dict:
     """Evaluate every surrogate_*.pt model in a directory."""
     model_dir = Path(model_dir)
@@ -1167,11 +724,6 @@ def evaluate_surrogate_folder(
         output_path = Path(save_path)
         resolved_plots_dir = output_path.parent / f"{output_path.stem}_plots"
 
-    classifier = None
-    if classifier_path is not None:
-        classifier = FailureClassifier.load(str(classifier_path), device=str(device_t))
-        classifier.eval()
-
     results = {
         "evaluated_at_utc": datetime.now(timezone.utc).isoformat(),
         "model_dir": str(model_dir),
@@ -1186,8 +738,6 @@ def evaluate_surrogate_folder(
         },
         "batch_size": int(batch_size),
         "device": str(device_t),
-        "classifier_path": str(classifier_path) if classifier_path is not None else None,
-        "classifier_threshold": float(classifier_threshold),
         "models": {},
         "score_function": score_function_metadata(),
     }
@@ -1203,8 +753,6 @@ def evaluate_surrogate_folder(
             device=device_t,
             plots_dir=resolved_plots_dir,
             plot_prefix=model_path.stem,
-            classifier=classifier,
-            classifier_threshold=classifier_threshold,
         )
         metrics["checkpoint_provenance"] = _checkpoint_provenance(model_path)
         results["models"][model_path.name] = metrics
@@ -1218,8 +766,6 @@ def evaluate_surrogate_folder(
             device=device_t,
             plots_dir=resolved_plots_dir,
             plot_prefix="ensemble_mean",
-            classifier=classifier,
-            classifier_threshold=classifier_threshold,
         )
         results["ensemble_mean"]["ensemble_size"] = len(loaded_models)
 
@@ -1255,26 +801,6 @@ def main() -> None:
             "--output, uses <output_stem>_plots next to the JSON."
         ),
     )
-    parser.add_argument(
-        "--classifier-path",
-        default=None,
-        metavar="PATH",
-        help=(
-            "Optional shared failure_classifier_<dataset>.pt (see train_surrogate). "
-            "When given, adds classifier_metrics (precision/recall/F1) and a "
-            "score_metrics_gated block to each model's report -- diagnostic "
-            "only, does not change score_metrics."
-        ),
-    )
-    parser.add_argument(
-        "--classifier-threshold",
-        type=float,
-        default=0.5,
-        help=(
-            "Fixed failure probability threshold. Choose it on validation data "
-            "before the final test evaluation (default: %(default)s)."
-        ),
-    )
     args = parser.parse_args()
 
     results = evaluate_surrogate_folder(
@@ -1284,8 +810,6 @@ def main() -> None:
         device=args.device,
         save_path=args.output,
         plots_dir=args.plots_dir,
-        classifier_path=args.classifier_path,
-        classifier_threshold=args.classifier_threshold,
     )
 
     for model_name, metrics in results["models"].items():
@@ -1354,10 +878,7 @@ def _print_model_report(model_name: str, metrics: dict) -> None:
 
     terminal = metrics["rl_terminal_metrics"]
     print(f"\nRL terminal decision (npart_ratio < {terminal['threshold']:g})")
-    for label, key in (
-        ("regressor only", "regressor_only"),
-        ("regressor + classifier gate", "with_classifier_gate"),
-    ):
+    for label, key in (("regressor", "regressor"),):
         values = terminal.get(key)
         if values is None:
             continue
@@ -1378,7 +899,7 @@ def _print_model_report(model_name: str, metrics: dict) -> None:
     )
     print("-" * 84)
     for band in metrics["npart_ratio_bands"]:
-        terminal_rate = band["pipeline_terminal_rate"]
+        terminal_rate = band["regressor_terminal_rate"]
         terminal_percent = (
             f"{100.0 * terminal_rate:.2f}" if terminal_rate is not None else "n/a"
         )
@@ -1408,31 +929,6 @@ def _print_model_report(model_name: str, metrics: dict) -> None:
     print("\nPer-stage RMSE")
     for marker, rmse in zip(metrics["stage_markers"], metrics["rmse_per_stage"]):
         print(f"  marker {marker:>4}: {_format_optional(rmse)}")
-
-    if metrics.get("classifier_metrics"):
-        cm = metrics["classifier_metrics"]
-        print("\nFailure classifier metrics (all-particles-lost)")
-        print(
-            f"  precision={_format_optional(cm['precision'])}  "
-            f"recall={_format_optional(cm['recall'])}  "
-            f"f1={_format_optional(cm['f1'])}  "
-            f"accuracy={_format_optional(cm['accuracy'])}  "
-            f"n_true_failures={cm['n_true_failures']}/{cm['n_samples']}"
-        )
-        gated = metrics["score_metrics_gated"]
-        print(
-            "  score_metrics with classifier gate applied: "
-            f"MAE={_format_optional(gated['mae'])}  RMSE={_format_optional(gated['rmse'])}  "
-            f"R²={_format_optional(gated['r2'])}"
-        )
-        diagnostics = metrics["classifier_diagnostics"]
-        print(
-            "  threshold-independent: "
-            f"AP={_format_optional(diagnostics['average_precision'])}  "
-            f"Brier={_format_optional(diagnostics['brier_score'])}  "
-            f"ECE={_format_optional(diagnostics['expected_calibration_error'])}"
-        )
-        print(f"  WARNING: {diagnostics['threshold_selection_warning']}")
 
     if metrics.get("plots"):
         print("\nPlots")

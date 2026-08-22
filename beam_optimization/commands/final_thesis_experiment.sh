@@ -20,7 +20,6 @@ for REQUIRED_PATH in \
   beam_optimization/env/dataset/018/dataset_train.pt \
   beam_optimization/env/dataset/018/dataset_all.pt \
   "$MODEL_DIR/surrogate_018_0.pt" \
-  "$MODEL_DIR/failure_classifier_018.pt" \
   "$TRACEWIN_PROJECT"
 do
   if [ ! -f "$REQUIRED_PATH" ]; then
@@ -81,7 +80,6 @@ done
 python -m beam_optimization benchmark \
   --surrogate "$MODEL_DIR/surrogate_018_0.pt" \
   --dataset beam_optimization/env/dataset/018/dataset_all.pt \
-  --classifier-path "$MODEL_DIR/failure_classifier_018.pt" \
   --policy-only \
   --tracewin-only \
   --tracewin "$TRACEWIN_PROJECT" \

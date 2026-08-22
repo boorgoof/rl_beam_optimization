@@ -11,7 +11,6 @@ source beam_optimization/.venv/bin/activate
 python -m beam_optimization benchmark \
   --surrogate beam_optimization/env/surrogate_env/surrogate/trained_models/base_018_final/surrogate_018_0.pt \
   --dataset beam_optimization/env/dataset/018/dataset_all.pt \
-  --classifier-path beam_optimization/env/surrogate_env/surrogate/trained_models/base_018_final/failure_classifier_018.pt \
   --policy-only \
   --tracewin-only \
   --sac beam_optimization/results/train/rl/final_thesis_018_a030_s050/sac/sac_agent.zip \

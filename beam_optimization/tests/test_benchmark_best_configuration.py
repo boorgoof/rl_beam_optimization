@@ -47,9 +47,11 @@ def _episode(
 class BenchmarkBestConfigurationTests(unittest.TestCase):
     def test_policy_episode_captures_intermediate_environment_maximum(self):
         env = SimpleNamespace(
-            best_score=57.0,
-            best_step=2,
-            best_params=_params(10.0),
+            state=SimpleNamespace(
+                best_score=57.0,
+                best_step=2,
+                best_params=_params(10.0),
+            ),
         )
         common_result = {
             "total_reward": 0.4,

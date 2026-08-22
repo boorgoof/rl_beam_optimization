@@ -25,7 +25,7 @@ python -m beam_optimization build_dataset \
   # before each simulation)
   # --scale is pinned to the current DATASET_SCALE from adige.py; change both
   # together after a new exploration-scale calibration.
-  # Use a larger value only for a dataset dedicated
-  # to training the FailureClassifier with a higher failure rate. Resuming an
+  # Use a larger value when a dataset needs more failure and near-boundary
+  # samples to improve surrogate robustness. Resuming an
   # interrupted build must reuse the same --scale (or omit it consistently),
   # or it is rejected as a config mismatch (see builder_state.json)

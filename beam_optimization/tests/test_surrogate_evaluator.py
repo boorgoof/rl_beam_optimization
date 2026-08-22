@@ -19,9 +19,7 @@ from beam_optimization.config.adige import (
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.evaluator import (
     _binary_metrics,
-    _classifier_diagnostics,
     _npart_ratio_band_metrics,
-    _ok_criterion_comparison,
     _score_metrics,
     evaluate_surrogate,
 )
@@ -121,7 +119,7 @@ class SurrogateEvaluatorTests(unittest.TestCase):
         self.assertEqual(result["score_metrics_rl_valid"], result["score_metrics"])
         self.assertIsNone(result["score_metrics_rl_terminal"]["mae"])
         self.assertEqual(
-            result["rl_terminal_metrics"]["regressor_only"]["n_positive"], 0
+            result["rl_terminal_metrics"]["regressor"]["n_positive"], 0
         )
 
         for feature_index, feature in enumerate(BEAM_STATE_FEATURES):
@@ -202,27 +200,6 @@ class SurrogateEvaluatorTests(unittest.TestCase):
                 self.assertTrue(target.is_file())
                 self.assertGreater(target.stat().st_size, 0)
 
-    def test_classifier_diagnostics_include_calibration_pr_and_threshold_sweep(self):
-        labels = np.array([0, 0, 1, 1], dtype=np.float64)
-        proba = np.array([0.1, 0.4, 0.6, 0.9], dtype=np.float64)
-        true_scores = np.array([10.0, 20.0, -999.0, -999.0])
-        predicted_scores = np.array([11.0, 19.0, 5.0, 4.0])
-
-        result = _classifier_diagnostics(
-            labels, proba, true_scores, predicted_scores, 0.5
-        )
-
-        self.assertAlmostEqual(result["brier_score"], 0.085)
-        self.assertAlmostEqual(result["average_precision"], 1.0)
-        self.assertEqual(len(result["calibration_bins"]), 10)
-        self.assertEqual(len(result["precision_recall_curve"]), 101)
-        selected = [
-            row for row in result["threshold_diagnostics"]
-            if np.isclose(row["threshold"], 0.5)
-        ][0]
-        self.assertEqual(selected["false_positives"], 0)
-        self.assertEqual(selected["false_negatives"], 0)
-        self.assertLess(selected["gated_score_mae"], 1.0)
 
     def test_rl_terminal_metrics_and_operational_bands_use_strict_ten_percent(self):
         true_ratio = np.array([0.0, 0.05, 0.10, 0.20, 0.40])
@@ -240,8 +217,6 @@ class SurrogateEvaluatorTests(unittest.TestCase):
         bands = _npart_ratio_band_metrics(
             true_ratio,
             predicted_ratio,
-            classifier_proba=np.array([0.9, 0.1, 0.2, 0.8, 0.1]),
-            classifier_threshold=0.5,
         )
         by_name = {band["name"]: band for band in bands}
         self.assertEqual(by_name["all_particles_lost"]["n_samples"], 1)
@@ -252,33 +227,9 @@ class SurrogateEvaluatorTests(unittest.TestCase):
             by_name["rl_valid_near_boundary"]["true_mean"], 0.15
         )
         self.assertEqual(
-            by_name["rl_valid_near_boundary"]["pipeline_terminal_rate"], 1.0
+            by_name["rl_valid_near_boundary"]["regressor_terminal_rate"], 0.5
         )
 
-    def test_ok_criterion_comparison_separates_classifier_and_transmission(self):
-        result = _ok_criterion_comparison(
-            true_npart_ratio=np.array([0.0, 0.05, 0.10, 0.20]),
-            predicted_npart_ratio=np.array([0.20, 0.05, 0.11, 0.08]),
-            classifier_proba=np.array([0.90, 0.10, 0.20, 0.80]),
-            true_scores=np.array([-999.0, 5.0, 10.0, 20.0]),
-            predicted_scores=np.array([3.0, 6.0, 11.0, 19.0]),
-            classifier_threshold=0.5,
-        )
-
-        classifier_ok = result["criteria"]["classifier_ok"]
-        self.assertEqual(classifier_ok["n_accepted"], 2)
-        self.assertEqual(classifier_ok["n_unsafe_accepted"], 1)
-        self.assertAlmostEqual(
-            classifier_ok["true_rl_valid_fraction_among_accepted"], 0.5
-        )
-
-        both_ok = result["criteria"]["both_ok"]
-        self.assertEqual(both_ok["n_accepted"], 1)
-        self.assertEqual(both_ok["n_unsafe_accepted"], 0)
-        self.assertAlmostEqual(both_ok["decision_accuracy"], 0.75)
-
-        self.assertEqual(result["agreement"]["classifier_only_ok"]["n_samples"], 1)
-        self.assertEqual(result["agreement"]["transmission_only_ok"]["n_samples"], 1)
 
     def test_cli_defaults_to_test_and_launcher_forwards_arguments(self):
         package_root = Path(__file__).resolve().parents[1]
