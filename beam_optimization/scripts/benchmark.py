@@ -377,47 +377,26 @@ def save_policy_plots(episodes: list[dict], summary: dict[str, dict], output_jso
     colors = [algo_style(algo)[0] for algo in algorithms]
     out_dir = Path(output_json).parent
 
-    fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.2))
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
     for ax, (metric, title, ylabel) in zip(axes.ravel(), POLICY_PANELS):
         means = [summary[algo][f"{metric}_mean"] for algo in algorithms]
         stds = [summary[algo][f"{metric}_std"] for algo in algorithms]
-        positions = np.arange(len(algorithms))
-        bars = ax.bar(
-            positions, means, yerr=stds, width=0.58, capsize=4,
-            color=colors, alpha=0.82, edgecolor="white", linewidth=0.8,
-            error_kw={"ecolor": "#444444", "elinewidth": 1.2, "capthick": 1.2},
-        )
+        ax.bar(algorithms, means, yerr=stds, capsize=4, alpha=0.86, color=colors)
         if metric == "final_score":
             for ref in ("bayesian_opt",):
                 best = _optimization_best(optimization_results, ref)
                 if best is not None:
-                    ax.axhline(best, color=algo_style(ref)[0], linewidth=1.4,
-                               linestyle=(0, (4, 3)), label=f"{ref} best = {best:.2f}")
+                    ax.axhline(best, color=algo_style(ref)[0], linewidth=1.2,
+                               linestyle=":", label=f"{ref} best")
             if ax.get_legend_handles_labels()[0]:
-                ax.legend(fontsize=8, frameon=False, loc="lower right")
-        ax.set_xticks(positions, algorithms)
-        ax.set_title(title, loc="left", pad=8)
+                ax.legend(fontsize=8)
+        ax.set_title(title)
         ax.set_ylabel(ylabel)
-        ax.grid(axis="y", color="#d9d9d9", linewidth=0.7, alpha=0.55)
-        ax.set_axisbelow(True)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.tick_params(axis="x", rotation=20)
-        if len(algorithms) == 1:
-            ax.set_xlim(-0.75, 0.75)
-        for bar, mean in zip(bars, means):
-            offset = 4 if mean >= 0 else -12
-            va = "bottom" if mean >= 0 else "top"
-            ax.annotate(
-                f"{mean:.3g}",
-                (bar.get_x() + bar.get_width() / 2, mean),
-                xytext=(0, offset), textcoords="offset points",
-                ha="center", va=va, fontsize=8, color="#333333",
-            )
-    fig.suptitle("Policy evaluation summary", fontsize=14, fontweight="normal")
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+        ax.grid(axis="y", alpha=0.25)
+        ax.tick_params(axis="x", rotation=35)
+    fig.tight_layout()
     bar_path = out_dir / f"benchmark_policy_bars{tag}.png"
-    fig.savefig(bar_path, dpi=180, facecolor="white")
+    fig.savefig(bar_path, dpi=160)
     plt.close(fig)
 
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.2))
@@ -427,12 +406,40 @@ def save_policy_plots(episodes: list[dict], summary: dict[str, dict], output_jso
             for algo in algorithms
         ]
         try:
-            boxes = ax.boxplot(values, tick_labels=algorithms, showmeans=True, patch_artist=True)
+            boxes = ax.boxplot(
+                values, tick_labels=algorithms, showmeans=True, patch_artist=True,
+                medianprops={"color": "#333333", "linewidth": 1.6},
+                whiskerprops={"color": "#555555", "linewidth": 1.1},
+                capprops={"color": "#555555", "linewidth": 1.1},
+                meanprops={
+                    "marker": "D", "markerfacecolor": "white",
+                    "markeredgecolor": "#333333", "markersize": 4.5,
+                },
+                flierprops={
+                    "marker": "o", "markerfacecolor": "#777777",
+                    "markeredgecolor": "none", "markersize": 3.5, "alpha": 0.35,
+                },
+            )
         except TypeError:
-            boxes = ax.boxplot(values, labels=algorithms, showmeans=True, patch_artist=True)
+            boxes = ax.boxplot(
+                values, labels=algorithms, showmeans=True, patch_artist=True,
+                medianprops={"color": "#333333", "linewidth": 1.6},
+                whiskerprops={"color": "#555555", "linewidth": 1.1},
+                capprops={"color": "#555555", "linewidth": 1.1},
+                meanprops={
+                    "marker": "D", "markerfacecolor": "white",
+                    "markeredgecolor": "#333333", "markersize": 4.5,
+                },
+                flierprops={
+                    "marker": "o", "markerfacecolor": "#777777",
+                    "markeredgecolor": "none", "markersize": 3.5, "alpha": 0.35,
+                },
+            )
         for patch, color in zip(boxes["boxes"], colors):
             patch.set_facecolor(color)
-            patch.set_alpha(0.45)
+            patch.set_edgecolor("white")
+            patch.set_linewidth(0.9)
+            patch.set_alpha(0.82)
         ax.set_title(title, loc="left", pad=8)
         ax.set_ylabel(ylabel)
         ax.grid(axis="y", color="#d9d9d9", linewidth=0.7, alpha=0.55)

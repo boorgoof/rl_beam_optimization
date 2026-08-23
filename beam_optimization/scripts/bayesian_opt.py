@@ -647,10 +647,17 @@ def save_delta_plot(
         figsize=(max(12.0, 0.85 * len(names)), 6.8)
     )
     colors = [
-        "#4c78a8" if delta >= 0 else "#e34948"
+        "#2A9D8F" if delta >= 0 else "#E76F51"
         for delta in normalized_deltas
     ]
-    bars = axis.bar(names, normalized_deltas, color=colors, alpha=0.86)
+    bars = axis.bar(
+        names,
+        normalized_deltas,
+        color=colors,
+        alpha=0.9,
+        edgecolor="white",
+        linewidth=0.8,
+    )
     for bar, normalized_delta, physical_delta in zip(
         bars,
         normalized_deltas,
