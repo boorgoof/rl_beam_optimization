@@ -47,7 +47,7 @@ ALGO_STYLES: dict[str, tuple[str, str]] = {
     "iterative_sim2real_sac": ("#00a6a6", "-"),
     "svg_final":    ("#4a3aa7", "-"),
     "svg_finale":   ("#4a3aa7", "-"),  # legacy alias
-    "svg_uniform":  ("#4a3aa7", "--"),
+    "svg_uniform":  ("#b24f91", "--"),
     # optimization baseline (red)
     "bayesian_opt": ("#e34948", "-"),
 }
