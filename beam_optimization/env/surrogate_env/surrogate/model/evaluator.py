@@ -63,6 +63,7 @@ def evaluate_surrogate(
     plots_dir: Optional[str | Path] = None,
     plot_prefix: str = "surrogate",
     filter_score_plots_to_rl_valid: bool = False,
+    annotate_score_plots: bool = True,
 ) -> dict:
     """Evaluate one surrogate on a dataset.
 
@@ -76,6 +77,9 @@ def evaluate_surrogate(
     with `score_metrics_rl_valid` instead of `score_metrics`. It never changes
     any returned metric, only which samples the two score plots are drawn
     from -- the default (False) draws them over every sample, unchanged.
+
+    `annotate_score_plots=False` omits the metric boxes from both final-score
+    plots without changing the computed or returned metrics.
     """
     if len(dataset) == 0:
         raise ValueError("Cannot evaluate a surrogate on an empty dataset")
@@ -314,6 +318,7 @@ def evaluate_surrogate(
             prefix=plot_prefix,
             score_metrics=score_plot_metrics,
             score_title_suffix=score_title_suffix,
+            annotate_score_plots=annotate_score_plots,
         )
         results["plots"] = plots
     else:
@@ -548,6 +553,7 @@ def _save_evaluation_plots(
     prefix: str,
     score_metrics: dict,
     score_title_suffix: str = "",
+    annotate_score_plots: bool = True,
 ) -> dict[str, str]:
     configure_matplotlib_cache()
     import matplotlib.pyplot as plt
@@ -595,13 +601,11 @@ def _save_evaluation_plots(
             f"Pearson={_format_optional(score_metrics['pearson_correlation'])}\n"
             f"R²={_format_optional(score_metrics['r2'])}"
         )
-        # Same reasoning as the legend above: placed below the x-axis label,
-        # in the figure margin, so it can never sit on top of a data point
-        # regardless of where the score distribution falls.
-        axis.text(
-            0.0, -0.14, annotation, transform=axis.transAxes, va="top", ha="left",
-            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "0.6"},
-        )
+        if annotate_score_plots:
+            axis.text(
+                0.0, -0.14, annotation, transform=axis.transAxes, va="top", ha="left",
+                bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "0.6"},
+            )
         fig.tight_layout()
         scatter_path = output_dir / f"{prefix}_score_scatter.png"
         fig.savefig(scatter_path, dpi=170, bbox_inches="tight")
@@ -610,15 +614,33 @@ def _save_evaluation_plots(
 
         residuals = predicted_scores - true_scores
         fig, axis = plt.subplots(figsize=(7.5, 5.0))
-        axis.scatter(true_scores, residuals, s=13, alpha=0.5, edgecolors="none")
-        axis.axhline(0.0, linestyle="--", color="black", linewidth=1)
+        axis.scatter(
+            true_scores[valid], residuals[valid],
+            s=13, alpha=0.5, edgecolors="none", label="valid",
+        )
+        if np.any(failure_labels):
+            axis.scatter(
+                true_scores[failure_labels], residuals[failure_labels],
+                s=18, alpha=0.55, edgecolors="none", color="crimson",
+                label="all particles lost",
+            )
+        axis.axhline(0.0, linestyle="--", color="black", linewidth=1, label="ideal")
         axis.set_xlabel("True TraceWin score")
         axis.set_ylabel("Residual (predicted − true)")
         axis.set_title(f"{prefix}: final-score residuals{score_title_suffix}")
         axis.grid(alpha=0.25)
+        axis.legend(
+            loc="lower center", bbox_to_anchor=(0.5, 1.12),
+            frameon=False, borderaxespad=0.0, ncol=3,
+        )
+        if annotate_score_plots:
+            axis.text(
+                0.0, -0.18, annotation, transform=axis.transAxes, va="top", ha="left",
+                bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "0.6"},
+            )
         fig.tight_layout()
         residual_path = output_dir / f"{prefix}_score_residuals.png"
-        fig.savefig(residual_path, dpi=170)
+        fig.savefig(residual_path, dpi=170, bbox_inches="tight")
         plt.close(fig)
         paths["score_residuals"] = str(residual_path)
 
