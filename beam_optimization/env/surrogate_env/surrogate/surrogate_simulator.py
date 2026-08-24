@@ -3,6 +3,8 @@ It is a class that maps ADIGE parameters to a BeamSimulationResult using a surro
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -10,9 +12,14 @@ import torch
 
 from beam_optimization.config.adige import (
     BEAM_STATE_DIM, BEAM_STATE_FEATURES, ERROR_SCORE,
-    params_to_stage_tensors, score,
+    N_PARAMS, STAGE_PARAM_SIZES, params_to_stage_tensors, params_to_vec,
+    score, score_tensor,
 )
-from beam_optimization.env.simulation import BeamSimulationResult, BeamSimulator
+from beam_optimization.env.simulation import (
+    BeamSimulationResult,
+    BeamSimulator,
+    DifferentiableBeamSimulationResult,
+)
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
@@ -170,13 +177,77 @@ class SurrogateBeamSimulator(BeamSimulator):
         self.set_active_model(self.sample_model_index(rng))
         self.set_episode_beam0(self.sample_beam0(rng))
 
-    def forward_differentiable(self, model, beam0: torch.Tensor, stage_params_grad: list):
-        """Gradient-preserving counterpart of `simulate()`. No `no_grad()`.
+    @contextmanager
+    def frozen_active_model_weights(self) -> Iterator[None]:
+        """Freeze active model weights while retaining input gradients."""
+        parameters = list(self.model.parameters())
+        previous_flags = [parameter.requires_grad for parameter in parameters]
+        try:
+            for parameter in parameters:
+                parameter.requires_grad_(False)
+            yield
+        finally:
+            for parameter, requires_grad in zip(parameters, previous_flags):
+                parameter.requires_grad_(requires_grad)
 
-        Used by SVGAgent, which needs the forward pass to stay in the
-        autograd graph so it can backprop through the surrogate.
-        """
-        return model(stage_params_grad, beam0)
+    @staticmethod
+    def _split_flat_params(params: torch.Tensor) -> List[torch.Tensor]:
+        stage_params = []
+        offset = 0
+        for size in STAGE_PARAM_SIZES:
+            stage_params.append(params[offset:offset + size].unsqueeze(0))
+            offset += size
+        return stage_params
+
+    def _forward(
+        self,
+        params: torch.Tensor,
+        beam0: torch.Tensor,
+        model_index: Optional[int] = None,
+    ) -> tuple[List[torch.Tensor], int]:
+        """Shared active-model forward used by both simulator APIs."""
+        if model_index is not None:
+            if not 0 <= model_index < len(self._ensemble):
+                raise IndexError(
+                    f"model_index must be in [0, {len(self._ensemble) - 1}], "
+                    f"got {model_index}"
+                )
+            self.set_active_model(model_index)
+        return self.model(self._split_flat_params(params), beam0), self._active_model_index
+
+    def simulate_torch(
+        self,
+        params: torch.Tensor,
+        beam0: torch.Tensor,
+        model_index: Optional[int] = None,
+    ) -> DifferentiableBeamSimulationResult:
+        """Run the surrogate while preserving autograd through tensor inputs."""
+        params_t = params.to(device=self.device, dtype=torch.float32)
+        beam0_t = beam0.to(device=self.device, dtype=torch.float32)
+        if params_t.shape != (N_PARAMS,):
+            raise ValueError(
+                f"params must have shape ({N_PARAMS},), got {tuple(params_t.shape)}"
+            )
+        if beam0_t.dim() == 1:
+            beam0_t = beam0_t.unsqueeze(0)
+        if beam0_t.shape != (1, BEAM_STATE_DIM):
+            raise ValueError(
+                f"beam0 must have shape ({BEAM_STATE_DIM},) or "
+                f"(1, {BEAM_STATE_DIM}), got {tuple(beam0_t.shape)}"
+            )
+
+        beam_states, active_model_index = self._forward(
+            params_t, beam0_t, model_index=model_index,
+        )
+        final_beam = beam_states[-1]
+        return DifferentiableBeamSimulationResult(
+            beam0=beam0_t,
+            params=params_t,
+            beam_states=beam_states,
+            final_beam=final_beam,
+            score=score_tensor(final_beam),
+            model_index=active_model_index,
+        )
 
     def simulate(self, params: Dict[str, float]) -> BeamSimulationResult:
         """Predict one beam trajectory with the active surrogate model.
@@ -187,13 +258,30 @@ class SurrogateBeamSimulator(BeamSimulator):
         """
         try:
 
-            # Convert the episode initial beam state from numpy to a batched tensor expected by ModularMLP: (1, BEAM_STATE_DIM).
-            beam0_t = torch.tensor( self._episode_beam0, dtype=torch.float32, device=self.device, ).unsqueeze(0)
-
-            # Run the active surrogate model without gradients and compute the final beam dictionary plus the scalar score.
-            beam_states, final_beam, score_val = run_surrogate_forward(
-                self.model, beam0_t, params, self.device,
+            beam0_t = torch.tensor(
+                self._episode_beam0, dtype=torch.float32, device=self.device,
+            ).unsqueeze(0)
+            params_t = torch.tensor(
+                params_to_vec(params), dtype=torch.float32, device=self.device,
             )
+            with torch.no_grad():
+                torch_result = self.simulate_torch(params_t, beam0_t)
+
+            beam_states = np.asarray(
+                [
+                    torch_result.beam0.squeeze(0).cpu().numpy(),
+                    *[
+                        stage.squeeze(0).cpu().numpy()
+                        for stage in torch_result.beam_states
+                    ],
+                ],
+                dtype=np.float32,
+            )
+            final_beam = {
+                feature: float(beam_states[-1][index])
+                for index, feature in enumerate(BEAM_STATE_FEATURES)
+            }
+            score_val = score(final_beam)
 
             metadata = {
                 "beam0": self._episode_beam0.copy(),

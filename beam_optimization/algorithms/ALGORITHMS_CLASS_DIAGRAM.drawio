@@ -226,7 +226,7 @@
                 <mxCell id="SurrogateBeamSimulator" value="&lt;&lt;external env&gt;&gt;&lt;br&gt;&lt;b&gt;SurrogateBeamSimulator&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="-3110" y="3440" width="360" height="190" as="geometry"/>
                 </mxCell>
-                <mxCell id="SurrogateBeamSimulator_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ ensemble : list[ModularMLP] [property]&lt;br&gt;+ model : ModularMLP&lt;br&gt;+ dataset : BeamDataset&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ sample_beam0(...) / sample_model_index(...)&lt;br&gt;+ set_active_model(...) / reset_context(...)&lt;br&gt;+ forward_differentiable(...)&lt;br&gt;+ simulate(params) : BeamSimulationResult" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="SurrogateBeamSimulator" vertex="1" connectable="0">
+                <mxCell id="SurrogateBeamSimulator_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ ensemble : list[ModularMLP] [property]&lt;br&gt;+ model : ModularMLP&lt;br&gt;+ dataset : BeamDataset&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ sample_beam0(...) / sample_model_index(...)&lt;br&gt;+ set_active_model(...) / reset_context(...)&lt;br&gt;+ simulate(params) : BeamSimulationResult&lt;br&gt;+ simulate_torch(...) : DifferentiableBeamSimulationResult" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="SurrogateBeamSimulator" vertex="1" connectable="0">
                     <mxGeometry y="50" width="360" height="140" as="geometry"/>
                 </mxCell>
                 <mxCell id="SurrogateEnv" value="&lt;&lt;external env&gt;&gt;&lt;br&gt;&lt;b&gt;SurrogateEnv&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
@@ -238,14 +238,20 @@
                 <mxCell id="DifferentiableSurrogateEnv" value="&lt;&lt;external env&gt;&gt;&lt;br&gt;&lt;b&gt;DifferentiableSurrogateEnv&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="-2290" y="4202.5" width="380" height="185" as="geometry"/>
                 </mxCell>
-                <mxCell id="DifferentiableSurrogateEnv_body" value="&lt;b&gt;role&lt;/b&gt;&lt;br&gt;+ SVG torch/autograd rollout env&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ reset_torch(...) : DifferentiableBeamState&lt;br&gt;+ step_torch(state, action) : state, reward&lt;br&gt;&lt;i&gt;differentiable KNN, action and score-regression penalties keep reward connected to the policy graph&lt;/i&gt;" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="DifferentiableSurrogateEnv" vertex="1" connectable="0">
+                <mxCell id="DifferentiableSurrogateEnv_body" value="&lt;b&gt;role&lt;/b&gt;&lt;br&gt;+ SVG torch/autograd rollout env&lt;br&gt;&lt;hr&gt;&lt;b&gt;methods&lt;/b&gt;&lt;br&gt;+ reset_torch(...) : DifferentiableEpisodeState&lt;br&gt;+ step_torch(state, action) : state, reward&lt;br&gt;&lt;i&gt;consumes simulate_torch(); Gym EpisodeState remains separate&lt;/i&gt;" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="DifferentiableSurrogateEnv" vertex="1" connectable="0">
                     <mxGeometry y="50" width="380" height="135" as="geometry"/>
                 </mxCell>
-                <mxCell id="DifferentiableBeamState" value="&lt;&lt;external env dataclass&gt;&gt;&lt;br&gt;&lt;b&gt;DifferentiableBeamState&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                <mxCell id="DifferentiableEpisodeState" value="&lt;&lt;external env dataclass&gt;&gt;&lt;br&gt;&lt;b&gt;DifferentiableEpisodeState&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="-2280" y="3970" width="360" height="160" as="geometry"/>
                 </mxCell>
-                <mxCell id="DifferentiableBeamState_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ beam0 / params / obs / score : Tensor&lt;br&gt;+ beam_states : list[Tensor]&lt;br&gt;+ step_count / model_index&lt;br&gt;&lt;hr&gt;+ detach_for_next_step()" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="DifferentiableBeamState" vertex="1" connectable="0">
+                <mxCell id="DifferentiableEpisodeState_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ simulation : DifferentiableBeamSimulationResult&lt;br&gt;+ obs / score : Tensor&lt;br&gt;+ step_count / previous_action&lt;br&gt;&lt;hr&gt;+ detach_for_next_step()" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="DifferentiableEpisodeState" vertex="1" connectable="0">
                     <mxGeometry y="50" width="360" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="DifferentiableBeamSimulationResult" value="&lt;&lt;external env dataclass&gt;&gt;&lt;br&gt;&lt;b&gt;DifferentiableBeamSimulationResult&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="-2780" y="3970" width="410" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="DifferentiableBeamSimulationResult_body" value="&lt;b&gt;attributes&lt;/b&gt;&lt;br&gt;+ beam0 / params / final_beam / score : Tensor&lt;br&gt;+ beam_states : list[Tensor]&lt;br&gt;+ model_index : int&lt;br&gt;&lt;hr&gt;+ detach()" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;verticalAlign=top;whiteSpace=wrap;spacing=8;fontSize=12;overflow=fill;" parent="DifferentiableBeamSimulationResult" vertex="1" connectable="0">
+                    <mxGeometry y="50" width="410" height="130" as="geometry"/>
                 </mxCell>
                 <mxCell id="ModularMLP" value="&lt;&lt;external env&gt;&gt;&lt;br&gt;&lt;b&gt;ModularMLP&lt;/b&gt;" style="swimlane;html=1;whiteSpace=wrap;collapsible=0;recursiveResize=0;childLayout=stackLayout;horizontal=1;startSize=50;align=center;verticalAlign=top;spacing=8;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="-3660" y="3460" width="330" height="135" as="geometry"/>
@@ -570,7 +576,16 @@
                 <mxCell id="e53" value="env" style="html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;startArrow=diamond;startFill=1;endArrow=open;" parent="1" source="SVGAgent" target="DifferentiableSurrogateEnv" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e54a" value="returns torch state" style="html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;endArrow=open;" parent="1" source="DifferentiableSurrogateEnv" target="DifferentiableBeamState" edge="1">
+                <mxCell id="e54a" value="returns torch state" style="html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;endArrow=open;" parent="1" source="DifferentiableSurrogateEnv" target="DifferentiableEpisodeState" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e54result" value="simulation" style="html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;startArrow=diamond;startFill=1;endArrow=open;" parent="1" source="DifferentiableEpisodeState" target="DifferentiableBeamSimulationResult" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e54simresult" value="simulate_torch creates" style="html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;endArrow=open;dashed=1;" parent="1" source="SurrogateBeamSimulator" target="DifferentiableBeamSimulationResult" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e54agentstate" value="holds during rollout" style="html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;endArrow=open;dashed=1;" parent="1" source="SVGAgent" target="DifferentiableEpisodeState" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="e54b" value="uses inherited simulator" style="html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;endArrow=open;dashed=1;" parent="1" source="DifferentiableSurrogateEnv" target="SurrogateBeamSimulator" edge="1">

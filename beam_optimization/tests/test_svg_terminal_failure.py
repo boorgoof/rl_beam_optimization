@@ -20,28 +20,44 @@ from beam_optimization.config.adige import (
     action_step_vec,
 )
 from beam_optimization.env.surrogate_env.differentiable_surrogate_env import (
-    DifferentiableBeamState,
+    DifferentiableEpisodeState,
     DifferentiableSurrogateEnv,
 )
+from beam_optimization.env.simulation import DifferentiableBeamSimulationResult
 
 
-def _state(score: float = 0.0) -> DifferentiableBeamState:
+def _state(score: float = 0.0) -> DifferentiableEpisodeState:
     beam0 = torch.ones((1, BEAM_STATE_DIM))
     outputs = [torch.ones((1, BEAM_STATE_DIM)) for _ in range(N_OUTPUT_STAGES)]
-    return DifferentiableBeamState(
+    simulation = DifferentiableBeamSimulationResult(
         beam0=beam0,
         params=torch.zeros(N_PARAMS),
+        beam_states=outputs,
+        final_beam=outputs[-1],
+        score=torch.tensor([score]),
+        model_index=0,
+    )
+    return DifferentiableEpisodeState(
+        simulation=simulation,
         obs=torch.ones(BEAM_STATE_DIM * 3),
         score=torch.tensor([score]),
-        beam_states=outputs,
         step_count=0,
-        model_index=0,
     )
 
 
 class _Simulator:
-    def set_active_model(self, index):
-        self.index = index
+    def __init__(self, outputs):
+        self.outputs = outputs
+
+    def simulate_torch(self, params, beam0, model_index=None):
+        return DifferentiableBeamSimulationResult(
+            beam0=beam0,
+            params=params,
+            beam_states=self.outputs,
+            final_beam=self.outputs[-1],
+            score=torch.tensor(0.0),
+            model_index=model_index,
+        )
 
 
 class _Policy(torch.nn.Module):
@@ -81,12 +97,15 @@ class SVGTerminalFailureTests(unittest.TestCase):
     def test_differentiable_step_returns_terminal_failure(self):
         env = DifferentiableSurrogateEnv.__new__(DifferentiableSurrogateEnv)
         env.device = torch.device("cpu")
-        env.simulator = _Simulator()
         env._action_step_t = torch.tensor(action_step_vec(), dtype=torch.float32)
         env._stage_weights_t = None
         outputs = [torch.ones((1, BEAM_STATE_DIM)) for _ in range(N_OUTPUT_STAGES)]
         outputs[-1][0, 0] = RL_MIN_NPART_RATIO - 0.001
-        env._forward = lambda params, beam0: outputs
+        env.simulator = _Simulator(outputs)
+        env.distance_penalty_weight = 0.0
+        env.action_penalty_weight = 0.0
+        env.action_smoothness_penalty_weight = 0.0
+        env.score_regression_penalty_weight = 0.0
 
         next_state, reward, terminated = env.step_torch(
             _state(),

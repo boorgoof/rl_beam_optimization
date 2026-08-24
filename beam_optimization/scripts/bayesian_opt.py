@@ -263,7 +263,10 @@ def _random_unused_tracewin_seed(report: dict) -> int:
             return seed
 
 
-def _load_new_samples(path: Path, report: dict) -> BeamDataset:
+def _load_new_samples(
+    path: Path,
+    report: dict,
+) -> BeamDataset:
     expected = sum(
         1
         for run in report.get("runs", [])
@@ -272,6 +275,82 @@ def _load_new_samples(path: Path, report: dict) -> BeamDataset:
     )
     if path.exists():
         dataset = BeamDataset.load(path)
+        if len(dataset) == expected + 1:
+            # A successful TraceWin sample is persisted before its JSON
+            # evaluation.  If the process dies between those two atomic
+            # writes, recover the single orphan sample instead of discarding
+            # an expensive simulation or making the checkpoint unresumable.
+            total_evaluations = _completed_evaluation_count(report)
+            n_calls = int(report["config"]["n_calls"])
+            n_runs = int(report["config"]["n_runs"])
+            run_index, call_index = divmod(total_evaluations, n_calls)
+            if run_index >= n_runs:
+                raise ValueError(
+                    f"{path} contains an extra row after all configured "
+                    "Bayesian evaluations were already recorded."
+                )
+
+            recorded_successes = [
+                evaluation
+                for recorded_run in report["runs"]
+                for evaluation in recorded_run["evaluations"]
+                if evaluation["success"]
+            ]
+            recorded_vectors = np.asarray(
+                [
+                    _vector_from_params(evaluation["params"])
+                    for evaluation in recorded_successes
+                ],
+                dtype=np.float64,
+            )
+            dataset_vectors = (
+                dataset.get_param_vecs().detach().cpu().numpy().astype(np.float64)
+            )
+            if expected and not np.allclose(
+                recorded_vectors,
+                dataset_vectors[:expected],
+                rtol=1e-5,
+                atol=1e-8,
+            ):
+                raise ValueError(
+                    f"{path} contains one more row than the Bayesian checkpoint, "
+                    "but its preceding rows do not match the successful evaluations "
+                    "recorded in the JSON; refusing automatic recovery."
+                )
+
+            optimizer_seed = int(report["config"]["seed"]) + run_index
+            run = _ensure_run(report, run_index, optimizer_seed)
+            stored_vector = dataset_vectors[-1]
+            tracewin_seed_base = report["config"].get("tracewin_seed_base")
+            tracewin_seed = (
+                None
+                if tracewin_seed_base is None
+                else int(tracewin_seed_base) + total_evaluations
+            )
+            run["evaluations"].append(
+                {
+                    "evaluation_index": total_evaluations,
+                    "call_index": call_index,
+                    "phase": "bayesian",
+                    "tracewin_seed": tracewin_seed,
+                    "params": _params_from_vector(stored_vector),
+                    "score": float(dataset.scores[-1].item()),
+                    "success": True,
+                    "error": None,
+                    "timestamp": datetime.fromtimestamp(
+                        path.stat().st_mtime,
+                        timezone.utc,
+                    ).isoformat(),
+                    "recovered_from_dataset_checkpoint": True,
+                }
+            )
+            _update_report_bests(report)
+            print(
+                "Recovered one successful TraceWin evaluation from the "
+                "new-samples dataset after an interrupted checkpoint write.",
+                flush=True,
+            )
+            return dataset
         if len(dataset) != expected:
             raise ValueError(
                 f"{path} contains {len(dataset)} rows, but the Bayesian checkpoint "

@@ -1,8 +1,9 @@
 from beam_optimization.env.surrogate_env.surrogate_env import SurrogateEnv
 from beam_optimization.env.surrogate_env.differentiable_surrogate_env import (
-    DifferentiableBeamState,
+    DifferentiableEpisodeState,
     DifferentiableSurrogateEnv,
 )
+from beam_optimization.env.simulation import DifferentiableBeamSimulationResult
 from beam_optimization.env.surrogate_env.surrogate.surrogate_simulator import (
     SurrogateBeamSimulator,
 )
@@ -18,7 +19,8 @@ from beam_optimization.env.surrogate_env.surrogate.model.trainer import (
 
 __all__ = [
     "SurrogateEnv",
-    "DifferentiableBeamState",
+    "DifferentiableBeamSimulationResult",
+    "DifferentiableEpisodeState",
     "DifferentiableSurrogateEnv",
     "SurrogateBeamSimulator",
     "ModularMLP",

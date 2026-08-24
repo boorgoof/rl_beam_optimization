@@ -20,9 +20,10 @@ from beam_optimization.config.adige import (
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.base_beam_env import BaseBeamEnv, EpisodeState
 from beam_optimization.env.surrogate_env.differentiable_surrogate_env import (
-    DifferentiableBeamState,
+    DifferentiableEpisodeState,
     DifferentiableSurrogateEnv,
 )
+from beam_optimization.env.simulation import DifferentiableBeamSimulationResult
 
 
 def _dataset_with_params(param_rows: np.ndarray) -> BeamDataset:
@@ -41,17 +42,24 @@ def _state(
     score: torch.Tensor,
     params: torch.Tensor,
     previous_action: torch.Tensor | None = None,
-) -> DifferentiableBeamState:
-    return DifferentiableBeamState(
-        beam0=torch.ones((1, BEAM_STATE_DIM)),
+) -> DifferentiableEpisodeState:
+    beam0 = torch.ones((1, BEAM_STATE_DIM))
+    beam_states = [
+        torch.ones((1, BEAM_STATE_DIM)) for _ in range(N_OUTPUT_STAGES)
+    ]
+    simulation = DifferentiableBeamSimulationResult(
+        beam0=beam0,
         params=params,
+        beam_states=beam_states,
+        final_beam=beam_states[-1],
+        score=score,
+        model_index=0,
+    )
+    return DifferentiableEpisodeState(
+        simulation=simulation,
         obs=torch.ones(BEAM_STATE_DIM * 3),
         score=score,
-        beam_states=[
-            torch.ones((1, BEAM_STATE_DIM)) for _ in range(N_OUTPUT_STAGES)
-        ],
         step_count=0,
-        model_index=0,
         previous_action=previous_action,
     )
 
@@ -183,6 +191,8 @@ class DifferentiableRegularizationTests(unittest.TestCase):
         self.assertIsNotNone(detached.previous_action)
         self.assertFalse(detached.previous_action.requires_grad)
         self.assertIsNot(detached.previous_action, previous_action)
+        self.assertFalse(detached.simulation.params.requires_grad)
+        self.assertFalse(detached.simulation.final_beam.requires_grad)
 
     def test_smoothness_value_has_numeric_parity_with_gym_environment(self):
         dataset = _dataset_with_params(np.zeros((1, N_PARAMS), dtype=np.float32))

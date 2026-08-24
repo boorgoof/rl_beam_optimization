@@ -10,9 +10,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
+import torch
 
 
 PHYSICS_FAILURE_PATTERNS = (
@@ -60,6 +61,36 @@ class BeamSimulationResult:
     @property
     def score(self) -> float:
         return self.score_val
+
+
+@dataclass
+class DifferentiableBeamSimulationResult:
+    """Autograd-preserving output of a surrogate simulation.
+
+    Unlike :class:`BeamSimulationResult`, every physical value remains a torch
+    tensor connected to the input parameters. ``beam_states`` contains the
+    predicted output stages; the separately stored ``beam0`` is the input
+    stage.
+    """
+
+    beam0: torch.Tensor
+    params: torch.Tensor
+    beam_states: List[torch.Tensor]
+    final_beam: torch.Tensor
+    score: torch.Tensor
+    model_index: int
+
+    def detach(self) -> "DifferentiableBeamSimulationResult":
+        """Return an equivalent result disconnected from its autograd graph."""
+        beam_states = [stage.detach() for stage in self.beam_states]
+        return DifferentiableBeamSimulationResult(
+            beam0=self.beam0.detach(),
+            params=self.params.detach(),
+            beam_states=beam_states,
+            final_beam=self.final_beam.detach(),
+            score=self.score.detach(),
+            model_index=self.model_index,
+        )
 
 
 class BeamSimulator(ABC):

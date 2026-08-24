@@ -245,7 +245,9 @@ class SVGAgent:
         final_score = score_history[-1] if score_history else 0.0
         if final_score > self.best_score:
             self.best_score  = final_score
-            self.best_params = self._params_tensor_to_dict(state.params)
+            self.best_params = self._params_tensor_to_dict(
+                state.simulation.params
+            )
 
         self.train_steps += 1
 

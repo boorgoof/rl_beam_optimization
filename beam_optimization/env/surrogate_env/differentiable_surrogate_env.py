@@ -5,9 +5,7 @@ adds a torch-only API for algorithms that need autograd through the surrogate.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
-from collections.abc import Iterator
 from typing import List, Optional, Union
 
 import numpy as np
@@ -22,7 +20,6 @@ from beam_optimization.config.adige import (
     N_OUTPUT_STAGES,
     N_PARAMS,
     REWARD_SCORE_SCALE,
-    STAGE_PARAM_SIZES,
     TERMINAL_FAILURE_REWARD,
     TRAIN_RESET_SCALE,
     action_step_vec,
@@ -34,33 +31,28 @@ from beam_optimization.config.adige import (
     select_observation_stages_tensor,
 )
 from beam_optimization.env.dataset import BeamDataset
+from beam_optimization.env.simulation import DifferentiableBeamSimulationResult
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 from beam_optimization.env.surrogate_env.surrogate_env import SurrogateEnv
 
 
 @dataclass
-class DifferentiableBeamState:
+class DifferentiableEpisodeState:
     """Torch rollout state carried explicitly by SVG."""
 
-    beam0: torch.Tensor
-    params: torch.Tensor
+    simulation: DifferentiableBeamSimulationResult
     obs: torch.Tensor
     score: torch.Tensor
-    beam_states: List[torch.Tensor]
     step_count: int
-    model_index: int
     previous_action: Optional[torch.Tensor] = None
 
-    def detach_for_next_step(self) -> "DifferentiableBeamState":
+    def detach_for_next_step(self) -> "DifferentiableEpisodeState":
         """copy the state and detach all tensors from the current autograd graph"""
-        return DifferentiableBeamState(
-            beam0=self.beam0.detach(),
-            params=self.params.detach(),
+        return DifferentiableEpisodeState(
+            simulation=self.simulation.detach(),
             obs=self.obs.detach(),
             score=self.score.detach(),
-            beam_states=[stage.detach() for stage in self.beam_states],
             step_count=self.step_count,
-            model_index=self.model_index,
             previous_action=(
                 None
                 if self.previous_action is None
@@ -73,7 +65,7 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
     """SurrogateEnv plus a torch/autograd rollout API for SVG.
 
     reset()/step() remain the inherited Gym/numpy API. reset_torch()/step_torch()
-    use an explicit DifferentiableBeamState and do not mutate the Gym episode
+    use an explicit DifferentiableEpisodeState and do not mutate the Gym episode
     state (self.state.current_params/current_obs/current_score, ...).
     """
 
@@ -124,29 +116,14 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
                 device=self.device,
             )
 
-    @contextmanager
-    def frozen_surrogate_weights(self) -> Iterator[None]:
-        """Temporarily freeze active surrogate weights while preserving input gradients.
-
-        SVG needs gradients through the surrogate forward pass back to the
-        action/policy, but it must not accumulate gradients on the surrogate
-        weights themselves. This context manager changes only parameter
-        requires_grad flags; it does not use torch.no_grad().
-        """
-        params = list(self.simulator.model.parameters())
-        previous_flags = [param.requires_grad for param in params]
-        try:
-            for param in params:
-                param.requires_grad_(False)
-            yield
-        finally:
-            for param, requires_grad in zip(params, previous_flags):
-                param.requires_grad_(requires_grad)
+    def frozen_surrogate_weights(self):
+        """Delegate model freezing to the simulator that owns the model."""
+        return self.simulator.frozen_active_model_weights()
 
     def reset_torch(
         self,
         beam0: Optional[Union[np.ndarray, torch.Tensor]] = None,
-    ) -> DifferentiableBeamState:
+    ) -> DifferentiableEpisodeState:
         """Start a differentiable surrogate episode without touching Gym state."""
         model_index = self.simulator.sample_model_index()
         self.simulator.set_active_model(model_index)
@@ -157,34 +134,39 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
                 self._defaults_t
                 + torch.randn(N_PARAMS, device=self.device) * self._reset_std_t
             ).detach()
-            beam_states = self._forward(params, beam0_t)
-            if not bool(self._terminal_failure_mask(beam_states).item()):
+            simulation = self.simulator.simulate_torch(
+                params=params,
+                beam0=beam0_t,
+                model_index=model_index,
+            )
+            if not bool(
+                self._terminal_failure_mask(simulation.beam_states).item()
+            ):
                 break
         else:
             raise RuntimeError(
                 "Could not sample a non-terminal differentiable initial state "
                 f"after {MAX_TERMINAL_RESET_ATTEMPTS} attempts."
             )
-        score = self._score_beam_states(beam_states).detach()
-        obs = self._build_obs(beam0_t, beam_states).detach()
+        simulation = simulation.detach()
+        score = self._score_beam_states(simulation.beam_states).detach()
+        obs = self._build_obs(
+            simulation.beam0, simulation.beam_states,
+        ).detach()
 
-        return DifferentiableBeamState(
-            beam0=beam0_t.detach(),
-            params=params,
+        return DifferentiableEpisodeState(
+            simulation=simulation,
             obs=obs,
             score=score,
-            beam_states=[stage.detach() for stage in beam_states],
             step_count=0,
-            model_index=model_index,
         )
 
     def step_torch(
         self,
-        state: DifferentiableBeamState,
+        state: DifferentiableEpisodeState,
         action: torch.Tensor,
-    ) -> tuple[DifferentiableBeamState, torch.Tensor, bool]:
+    ) -> tuple[DifferentiableEpisodeState, torch.Tensor, bool]:
         """Apply one action and return (next_state, reward, terminated)."""
-        self.simulator.set_active_model(state.model_index)
 
         action = action.to(device=self.device, dtype=torch.float32)
         if action.dim() == 2:
@@ -197,10 +179,14 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         # Same action-box clip as BaseBeamEnv.step (differentiable clamp; the
         # tanh policy already respects the bounds, so this rarely binds).
         action = torch.clamp(action, -self._action_step_t, self._action_step_t)
-        params_next = clip_param_tensor_to_hw(state.params + action)
-        beam_states = self._forward(params_next, state.beam0)
-        terminal_mask = self._terminal_failure_mask(beam_states)
-        regular_score = self._score_beam_states(beam_states)
+        params_next = clip_param_tensor_to_hw(state.simulation.params + action)
+        simulation = self.simulator.simulate_torch(
+            params=params_next,
+            beam0=state.simulation.beam0,
+            model_index=state.simulation.model_index,
+        )
+        terminal_mask = self._terminal_failure_mask(simulation.beam_states)
+        regular_score = self._score_beam_states(simulation.beam_states)
         score_next = torch.where(
             terminal_mask,
             regular_score.new_full((), ERROR_SCORE),
@@ -239,23 +225,22 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
             score_next.new_full((), TERMINAL_FAILURE_REWARD),
             regular_reward,
         )
-        obs_next = self._build_obs(state.beam0, beam_states)
+        obs_next = self._build_obs(
+            simulation.beam0, simulation.beam_states,
+        )
 
-        next_state = DifferentiableBeamState(
-            beam0=state.beam0,
-            params=params_next,
+        next_state = DifferentiableEpisodeState(
+            simulation=simulation,
             obs=obs_next,
             score=score_next,
-            beam_states=beam_states,
             step_count=state.step_count + 1,
-            model_index=state.model_index,
             previous_action=action,
         )
         return next_state, reward, terminated
 
     def _differentiable_penalties(
         self,
-        state: DifferentiableBeamState,
+        state: DifferentiableEpisodeState,
         action: torch.Tensor,
         params_next: torch.Tensor,
         score_next: torch.Tensor,
@@ -333,21 +318,6 @@ class DifferentiableSurrogateEnv(SurrogateEnv):
         if beam0_t.dim() != 2 or beam0_t.shape[0] != 1:
             raise ValueError(f"beam0 must have shape (9,) or (1, 9), got {tuple(beam0_t.shape)}")
         return beam0_t
-
-    def _split_params_grad(self, params: torch.Tensor) -> List[torch.Tensor]:
-        tensors = []
-        offset = 0
-        for size in STAGE_PARAM_SIZES:
-            tensors.append(params[offset:offset + size].unsqueeze(0))
-            offset += size
-        return tensors
-
-    def _forward(self, params: torch.Tensor, beam0: torch.Tensor) -> List[torch.Tensor]:
-        return self.simulator.forward_differentiable(
-            self.simulator.model,
-            beam0,
-            self._split_params_grad(params),
-        )
 
     def _build_obs(
         self,
