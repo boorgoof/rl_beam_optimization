@@ -124,10 +124,15 @@ class TraceWinRetryTests(unittest.TestCase):
         self.assertEqual(output.count("retrying"), 2)
         self.assertIn("Qt platform plugin xcb failed", result.error)
 
-    def test_concurrent_mode_disables_global_timeout_cleanup(self):
+    def test_timeout_cleanup_runs_even_with_kill_stale_disabled(self):
+        # kill_remote_on_timeout is now always True: the remote cleanup it
+        # triggers is scoped to this simulator's own project/workspace (see
+        # TraceWin._kill_remote_tracewin_processes), so it can no longer kill
+        # another concurrently running workspace's TraceWin/Xvfb -- the
+        # concern kill_stale=False used to guard against.
         self._run_failure("Qt platform plugin xcb failed")
 
-        self.assertFalse(
+        self.assertTrue(
             _FailingTraceWin.last_run_kwargs["kill_remote_on_timeout"]
         )
 

@@ -61,35 +61,35 @@ class ParameterSpec:
 # List of all tunable parameters in the ADIGE beam line, in order of appearance in the lattice.
 PARAMETERS: Tuple[ParameterSpec, ...] = (
     #stage 0
-    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.4311317906379778, sensitivity=0.0008203680437760797, hw_min=None, hw_max=None),
+    ParameterSpec("AD.SO.01", "ele[2][5]", marker=2, default=0.4327330902535792, sensitivity=0.0008203680437760797, hw_min=None, hw_max=None),
     #stage 1
-    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.10111150232736774, sensitivity=0.002867122710046139, hw_min=None, hw_max=None),
+    ParameterSpec("AD.SO.02", "ele[29][5]", marker=29, default=0.10677017106143272, sensitivity=0.002867122710046139, hw_min=None, hw_max=None),
     #stage 2
-    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=4.0706947529191115e-06, sensitivity= 0.00014599749270943364, hw_min=None, hw_max=None),
-    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=-7.202734159404677e-06, sensitivity=2.504541673796964e-05, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.03.X", "ele[38][1]", marker=38, default=5.9465820299250666e-06, sensitivity= 0.00014599749270943364, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.03.Y", "ele[38][2]", marker=38, default=1.0730205568364323e-05, sensitivity=2.504541673796964e-05, hw_min=None, hw_max=None),
     #stage 3
-    ParameterSpec("AD.1EQ.01", "ele[151][2]", marker=151, default=192.30821624378285, sensitivity=23.63581267893679, hw_min=None, hw_max=None),
+    ParameterSpec("AD.1EQ.01", "ele[151][2]", marker=151, default=167.75056163612388, sensitivity=23.63581267893679, hw_min=None, hw_max=None),
     #stage 4
-    ParameterSpec("AD.MS.04.X", "ele[162][1]", marker=162, default=-6.903900893156021e-06, sensitivity=0.0004512130719117839, hw_min=None, hw_max=None),
-    ParameterSpec("AD.MS.04.Y", "ele[162][2]", marker=162, default=1.4283076382417385e-06, sensitivity=0.00015896338985085687, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.04.X", "ele[162][1]", marker=162, default=-1.2240442331343054e-05, sensitivity=0.0004512130719117839, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.04.Y", "ele[162][2]", marker=162, default=-0.00033949416661421307, sensitivity=0.00015896338985085687, hw_min=None, hw_max=None),
     #stage 5
-    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=-7.93265212152327, sensitivity=13.912223170558082, hw_min=None, hw_max=None),
+    ParameterSpec("AD.1EQ.02", "ele[195][2]", marker=195, default=-21.25361113013163, sensitivity=13.912223170558082, hw_min=None, hw_max=None),
     #stage 6
-    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.04620384302215141, sensitivity=0.00022533311374819292, hw_min=None, hw_max=None),
+    ParameterSpec("AD.D.02", "ele[197][5]", marker=197, default=-0.04610460452041907, sensitivity=0.00022533311374819292, hw_min=None, hw_max=None),
     #stage 7
-    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=-234.60214174611588, sensitivity=10319.947006686732, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=-1794.14758261054, sensitivity=1050.4430712108588, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=-595.8945980045671, sensitivity= 597.8835414717153, hw_min=None, hw_max=None),
-    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=-1.5967833748777753, sensitivity=1418.9897625338751, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.6", "ele[200][6]", marker=200, default=-907.0622819495184, sensitivity=10319.947006686732, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.8", "ele[201][6]", marker=201, default=-1119.3056113643588, sensitivity=1050.4430712108588, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.10", "ele[202][6]", marker=202, default=-1098.4548162153501, sensitivity= 597.8835414717153, hw_min=None, hw_max=None),
+    ParameterSpec("AD.EM.12", "ele[203][6]", marker=203, default=3535.258257437014, sensitivity=1418.9897625338751, hw_min=None, hw_max=None),
     #stage 8
-    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.04620542012403646, sensitivity=1.7508343652815022e-05, hw_min=None, hw_max=None),
+    ParameterSpec("AD.D.03", "ele[205][5]", marker=205, default=0.04624437990910416, sensitivity=1.7508343652815022e-05, hw_min=None, hw_max=None),
     #stage 9
-    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=5.56477802375267, sensitivity=12.689121497919485, hw_min=None, hw_max=None),
+    ParameterSpec("AD.1EQ.03", "ele[225][2]", marker=225, default=-5.925703149052165, sensitivity=12.689121497919485, hw_min=None, hw_max=None),
     #stage 10
-    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=-2.146875364017188e-05, sensitivity= 0.0004565309126443308, hw_min=None, hw_max=None),
-    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=2.669825715770255e-06, sensitivity= 0.00041901724439086273, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.05.X", "ele[261][1]", marker=261, default=7.891437133346173e-07, sensitivity= 0.0004565309126443308, hw_min=None, hw_max=None),
+    ParameterSpec("AD.MS.05.Y", "ele[261][2]", marker=261, default=-4.5273514501665554e-05, sensitivity= 0.00041901724439086273, hw_min=None, hw_max=None),
     #stage 11
-    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-193.180081121261, sensitivity=55.49152576140488, hw_min=None, hw_max=None),
+    ParameterSpec("AD.1EQ.04", "ele[280][2]", marker=280, default=-146.1072776385359, sensitivity=55.49152576140488, hw_min=None, hw_max=None),
     #stage 12
     
 )

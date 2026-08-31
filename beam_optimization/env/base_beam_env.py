@@ -477,7 +477,9 @@ class BaseBeamEnv(gym.Env, ABC):
         are colored per segment: each step-to-step move is green if that
         stage's feature improved (or score/reward went up), red if it
         worsened (see _feature_improved) — so a single line can show several
-        colors along its path, not one color for the whole episode.
+        colors along its path, not one color for the whole episode. The KNN
+        distance trend is deliberately neutral blue: it shows distance from
+        the reference dataset without classifying each move as good or bad.
 
         Args:
             save_path: if None (default), show the figures with all steps
@@ -774,10 +776,13 @@ class BaseBeamEnv(gym.Env, ABC):
     def _segment_colors(cls, values: list[float], feature: str | None = None) -> list[str]:
         """Per-segment green/red/gray color for each consecutive pair in values.
 
-        Gray if the value did not change between the two steps. Otherwise,
-        if `feature` is given, uses _feature_improved's per-feature trend
-        convention; otherwise (score/reward) higher is always better.
+        KNN distance is always neutral blue. For other series, gray means no
+        change; otherwise a segment is green/red according to whether the
+        value improved or worsened.
         """
+        if feature == "knn_distance":
+            return ["tab:blue"] * max(0, len(values) - 1)
+
         colors = []
         for before, after in zip(values[:-1], values[1:]):
             if np.isclose(before, after):

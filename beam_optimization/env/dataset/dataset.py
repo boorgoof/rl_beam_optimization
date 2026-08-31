@@ -183,7 +183,7 @@ class BeamDataset(TorchDataset):
         self._ensure_param_knn_index()
         effective_k = min(max(1, int(k)), len(self))
         query = np.atleast_2d(np.asarray(param_vecs, dtype=np.float64)) / self._param_knn_std
-        dists, indices = self._param_knn_tree.query(query, k=effective_k)
+        dists, indices = self._param_knn_tree.query(query, k=effective_k, workers=-1)
         if dists.ndim == 1:
             dists = dists[:, None]
             indices = indices[:, None]

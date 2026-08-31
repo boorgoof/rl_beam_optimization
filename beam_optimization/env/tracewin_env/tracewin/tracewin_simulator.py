@@ -119,7 +119,7 @@ class TraceWinSimulator(BeamSimulator):
             full_params.update(params)
 
         if self.kill_stale:
-            _kill_stale_tracewin_processes()
+            _kill_stale_tracewin_processes(self.project_file)
 
         self._sim_count += 1
         last_exc: Optional[Exception] = None
@@ -186,7 +186,7 @@ class TraceWinSimulator(BeamSimulator):
                 elem_params=params,
                 other_params=self.tracewin_params,
                 num_threads=self.num_threads,
-                kill_remote_on_timeout=self.kill_stale,
+                kill_remote_on_timeout=True,
             )
 
             if not success:
@@ -457,6 +457,10 @@ def _read_beam_feature_from_tracewin_row(
     return float(row.get(feature, 0.0))
 
 
-def _kill_stale_tracewin_processes():
-    """Kill any leftover TraceWin processes running as `comunian`."""
-    TraceWin._kill_remote_tracewin_processes()
+def _kill_stale_tracewin_processes(project_file: Optional[str] = None):
+    """Kill any leftover TraceWin processes running as `comunian`.
+
+    Scoped to `project_file`'s workspace when given, so this doesn't kill
+    TraceWin runs on other workspaces (see `_xvfb_display_for_project`).
+    """
+    TraceWin._kill_remote_tracewin_processes(project_file)

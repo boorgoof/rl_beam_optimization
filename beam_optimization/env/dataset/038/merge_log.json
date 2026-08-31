@@ -1,0 +1,39 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-08-28T08:49:27.950053+00:00",
+      "mode": "merge",
+      "inputs": [
+        {
+          "path": "beam_optimization/env/dataset/031/dataset_all.pt",
+          "num_samples": 125844,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/034/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/035/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        },
+        {
+          "path": "beam_optimization/env/dataset/036/dataset_all.pt",
+          "num_samples": 5000,
+          "running_snapshot": false
+        }
+      ],
+      "seed": 123,
+      "allow_running": false,
+      "num_samples": 140844,
+      "split_counts": {
+        "all": 140844,
+        "train": 112675,
+        "val": 14084,
+        "test": 14085
+      }
+    }
+  ]
+}

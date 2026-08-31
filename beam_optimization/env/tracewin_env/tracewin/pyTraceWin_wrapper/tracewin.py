@@ -10,12 +10,34 @@ from __future__ import annotations
 import argparse
 import errno
 import os
+import re
+import shlex
 import signal
 import subprocess
 
 import pandas as pd
 
 from .files import Dst, Plt
+
+# Mirrors run_tracewin_with_permissions.sh's path -> XVFB_DISPLAY mapping, so
+# a stale-process cleanup can target the exact Xvfb server a given project
+# workspace uses instead of every Xvfb on the machine. Order doesn't matter:
+# "TraceWin_workspace/" and "TraceWin_workspace_2/" never both match the same
+# path (the character right after "TraceWin_workspace" differs: "/" vs "_").
+_WORKSPACE_DISPLAYS = {
+    "TraceWin_workspace_2/": 120,
+    "TraceWin_workspace_3/": 130,
+    "TraceWin_workspace_4/": 140,
+    "TraceWin_workspace_5/": 150,
+    "TraceWin_workspace/": 110,
+}
+
+
+def _xvfb_display_for_project(project: str) -> int:
+    for suffix, display in _WORKSPACE_DISPLAYS.items():
+        if suffix in project:
+            return display
+    return 190
 
 
 class TraceWin:
@@ -63,9 +85,13 @@ class TraceWin:
             elem_params: Dictionary of element parameters
             other_params: Dictionary of other parameters
             num_threads: Number of threads for TraceWin (default: all available CPUs)
-            kill_remote_on_timeout: Whether timeout recovery may perform the
-                legacy global cleanup of remote TraceWin/Xvfb processes. Set
-                this to False when independent workspaces run concurrently.
+            kill_remote_on_timeout: Whether timeout recovery may clean up this
+                workspace's own remote TraceWin/Xvfb processes (scoped to
+                `self.project`, see `_kill_remote_tracewin_processes`), so a
+                timed-out run doesn't leave an orphaned Xvfb bound to this
+                workspace's display for the next attempt to collide with.
+                Safe to leave True even when independent workspaces run
+                concurrently -- it never touches other workspaces' processes.
 
         Returns:
             True if TraceWin exited successfully, False otherwise.
@@ -104,13 +130,13 @@ class TraceWin:
         except subprocess.TimeoutExpired as exc:
             self._kill_process_group(proc, pgid)
             if kill_remote_on_timeout:
-                self._kill_remote_tracewin_processes()
+                self._kill_remote_tracewin_processes(self.project)
             try:
                 stdout, stderr = proc.communicate(timeout=5)
             except subprocess.TimeoutExpired as cleanup_exc:
                 self._kill_process_group(proc, pgid)
                 if kill_remote_on_timeout:
-                    self._kill_remote_tracewin_processes()
+                    self._kill_remote_tracewin_processes(self.project)
                 stdout = cleanup_exc.output or exc.output or ""
                 stderr = cleanup_exc.stderr or exc.stderr or ""
             self.last_stdout = self._as_text(stdout)
@@ -162,7 +188,7 @@ class TraceWin:
             pass
 
     @staticmethod
-    def _kill_remote_tracewin_processes() -> None:
+    def _kill_remote_tracewin_processes(project: str | None = None) -> None:
         """Best-effort cleanup for TraceWin processes left alive over SSH.
 
         Also kills any bare Xvfb display server orphaned by a killed
@@ -170,7 +196,27 @@ class TraceWin:
         but when it is killed abruptly (a TraceWin timeout, or this same
         pkill hitting the xvfb-run wrapper below) that cleanup trap never
         runs, leaking the Xvfb process.
+
+        When `project` (the .ini path for the workspace being cleaned up) is
+        given, both pkills are scoped to that workspace's TraceWin process
+        and its dedicated Xvfb display (see `_xvfb_display_for_project`), so
+        concurrent TraceWin runs on other workspaces are left untouched.
+        Without it, falls back to the old machine-wide cleanup.
         """
+        if project:
+            tracewin_pattern = shlex.quote(re.escape(str(project)))
+            display = _xvfb_display_for_project(str(project))
+            xvfb_pattern = shlex.quote(f"[X]vfb :{display} -screen 0 640x480x24 -nolisten tcp")
+            remote_command = (
+                f"pkill -u comunian -f {tracewin_pattern} || true; "
+                f"pkill -u comunian -f {xvfb_pattern} || true"
+            )
+        else:
+            remote_command = (
+                "pkill -u comunian -x TraceWin || true; "
+                "pkill -u comunian -f '[x]vfb-run.*TraceWin' || true; "
+                "pkill -u comunian -f '[X]vfb :[0-9]+ -screen 0 640x480x24 -nolisten tcp' || true"
+            )
         try:
             subprocess.run(
                 [
@@ -179,9 +225,7 @@ class TraceWin:
                     "-o", "BatchMode=yes",
                     "-o", "ConnectTimeout=5",
                     "comunian@localhost",
-                    "pkill -u comunian -x TraceWin || true; "
-                    "pkill -u comunian -f '[x]vfb-run.*TraceWin' || true; "
-                    "pkill -u comunian -f '[X]vfb :[0-9]+ -screen 0 640x480x24 -nolisten tcp' || true",
+                    remote_command,
                 ],
                 timeout=10,
                 capture_output=True,
