@@ -22,6 +22,13 @@ PHYSICS_FAILURE_PATTERNS = (
         "synchronous particle never reaches the end of the field map",
         "synchronous_particle_never_reaches_end",
     ),
+    # "Transport failed" is the envelope solver's own way of saying the beam
+    # is not physically transportable for this configuration -- the same
+    # outcome as "all particles are lost" (score() zeroes the final beam and
+    # clamps to ERROR_SCORE identically either way), just phrased differently
+    # because it comes from the Matrix Field Map envelope calculation instead
+    # of the particle tracker.
+    ("transport failed", "all_particles_lost"),
     (
         "part of the beam distribution never reaches the end of the field map",
         "partial_beam_never_reaches_end",

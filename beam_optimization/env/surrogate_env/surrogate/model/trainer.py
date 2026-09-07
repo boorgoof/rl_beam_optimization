@@ -16,34 +16,56 @@ import numpy as np
 import torch
 
 from beam_optimization.algorithms.utils.logger import Logger
-from beam_optimization.config.adige import BEAM_STATE_FEATURES, SCORE_WEIGHTS
+from beam_optimization.config.adige import BEAM_STATE_FEATURES
 from beam_optimization.config.paths import DEFAULT_BASE_SURROGATE_DIR, DEFAULT_SURROGATE_LOG_DIR
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
 
-# Maps each BEAM_STATE_FEATURES entry to the SCORE_WEIGHTS group it belongs to,
-# so the training loss prioritizes features the same way score() does instead
-# of weighting every feature equally regardless of its raw numeric scale.
-_FEATURE_WEIGHT_GROUPS = {
-    "npart_ratio": "npart_ratio",
-    "ex": "emittance", "ey": "emittance",
-    "x0": "offset", "y0": "offset",
-    "x'0": "angle", "y'0": "angle",
-    "SizeX": "size", "SizeY": "size",
-}
+_POSITIVE_OUTPUT_FEATURES = ("SizeX", "SizeY", "ex", "ey")
+_POSITIVE_OUTPUT_INDICES = [
+    BEAM_STATE_FEATURES.index(name) for name in _POSITIVE_OUTPUT_FEATURES
+]
+
+MIN_LOSS_FEATURE_STD = 1e-6
+
+# Per-feature surrogate loss weight, applied to the standardized squared error
+# in _weighted_standardized_mse() before it is averaged over features+batch.
+# Uniform weights (all equal) always give every feature the same influence on
+# the gradient regardless of their common value -- 1/len(...) here just also
+# rescales the whole loss by that same constant. Edit this dict directly to
+# reprioritize specific features (equal values keep them equally weighted).
+SURROGATE_LOSS_FEATURE_WEIGHTS: dict[str, float] = {name: 1.0 for name in BEAM_STATE_FEATURES}
 
 
 def build_feature_loss_weights() -> torch.Tensor:
-    """Per-feature loss weight vector, in BEAM_STATE_FEATURES order, from SCORE_WEIGHTS."""
+    """Per-feature loss weight vector, in BEAM_STATE_FEATURES order, from SURROGATE_LOSS_FEATURE_WEIGHTS."""
     return torch.tensor(
-        [SCORE_WEIGHTS[_FEATURE_WEIGHT_GROUPS[name]] for name in BEAM_STATE_FEATURES],
+        [SURROGATE_LOSS_FEATURE_WEIGHTS[name] for name in BEAM_STATE_FEATURES],
         dtype=torch.float32,
     )
 
 
-def _weighted_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-    return ((pred - target) ** 2 * weights).mean()
+def _weighted_standardized_mse(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    weights: torch.Tensor,
+    feature_std: torch.Tensor,
+) -> torch.Tensor:
+    """Weighted MSE after standardizing each raw physical output feature."""
+    safe_std = feature_std.clamp_min(MIN_LOSS_FEATURE_STD)
+    normalized_error = (pred - target) / safe_std
+    return (normalized_error.square() * weights).mean()
+
+
+def _inverse_softplus(
+    values: torch.Tensor,
+    *,
+    minimum: float = MIN_LOSS_FEATURE_STD,
+) -> torch.Tensor:
+    """Stable inverse of softplus for non-negative physical targets."""
+    positive = values.clamp_min(minimum)
+    return positive + torch.log(-torch.expm1(-positive))
 
 
 class SurrogateTrainer:
@@ -113,6 +135,7 @@ class SurrogateTrainer:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         norm_stats = compute_normalization_metadata(train_dataset)
+        stage_feature_stds = compute_stage_feature_stds(train_dataset)
         saved = []
 
         for local_index in range(self.n_models):
@@ -147,6 +170,7 @@ class SurrogateTrainer:
                     scheduler,
                     train_dataset,
                     val_dataset,
+                    stage_feature_stds=stage_feature_stds,
                     logger=logger,
                     progress_label=save_path.stem,
                 )
@@ -171,6 +195,12 @@ class SurrogateTrainer:
                         "n_train_samples": len(train_dataset),
                         "n_val_samples": len(val_dataset) if val_dataset is not None else 0,
                         "history": history,
+                        "loss": {
+                            "name": "stage_standardized_weighted_mse",
+                            "minimum_feature_std": MIN_LOSS_FEATURE_STD,
+                            "feature_weights": self.feature_loss_weights.detach().cpu(),
+                            "stage_feature_stds": stage_feature_stds,
+                        },
                     },
                     "best_val_loss": best_val_loss,
                     "train_dataset_path": str(self.train_dataset_path),
@@ -204,6 +234,7 @@ class SurrogateTrainer:
         scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
         train_dataset: BeamDataset,
         val_dataset: Optional[BeamDataset],
+        stage_feature_stds: Optional[list[torch.Tensor]] = None,
         logger: Optional[Logger] = None,
         progress_label: str = "surrogate",
     ) -> tuple[list[dict], dict, float]:
@@ -212,6 +243,9 @@ class SurrogateTrainer:
         best_val_loss = float("inf")
         epochs_without_improvement = 0
         training_started = time.monotonic()
+        if stage_feature_stds is None:
+            stage_feature_stds = compute_stage_feature_stds(train_dataset)
+        loss_stds = [tensor.to(self.device) for tensor in stage_feature_stds]
 
         for epoch in range(1, self.max_epochs + 1):
             model.train()
@@ -230,10 +264,15 @@ class SurrogateTrainer:
 
                 preds = model(stage_params, beam_states[0])
                 pred_targets = _prediction_pairs(preds, targets)
+                prediction_stds = _prediction_stds(preds, loss_stds)
                 loss_weight = 1.0 / len(pred_targets)
                 stage_losses = [
-                    _weighted_mse(pred, target, self.feature_loss_weights)
-                    for pred, target in pred_targets
+                    _weighted_standardized_mse(
+                        pred, target, self.feature_loss_weights, feature_std
+                    )
+                    for (pred, target), feature_std in zip(
+                        pred_targets, prediction_stds
+                    )
                 ]
                 loss = sum(loss_weight * stage_loss for stage_loss in stage_losses)
 
@@ -258,7 +297,7 @@ class SurrogateTrainer:
                 else []
             )
             val_loss = (
-                self._evaluate_loss(model, val_dataset)
+                self._evaluate_loss(model, val_dataset, loss_stds)
                 if val_dataset is not None and len(val_dataset) > 0
                 else train_loss
             )
@@ -315,6 +354,7 @@ class SurrogateTrainer:
         self,
         model: ModularMLP,
         dataset: BeamDataset,
+        stage_feature_stds: list[torch.Tensor],
     ) -> float:
         model.eval()
         losses = []
@@ -329,10 +369,16 @@ class SurrogateTrainer:
                 targets = beam_states[1:]
                 preds = model(stage_params, beam_states[0])
                 pred_targets = _prediction_pairs(preds, targets)
+                prediction_stds = _prediction_stds(preds, stage_feature_stds)
                 loss_weight = 1.0 / len(pred_targets)
                 loss = sum(
-                    loss_weight * _weighted_mse(pred, target, self.feature_loss_weights)
-                    for pred, target in pred_targets
+                    loss_weight
+                    * _weighted_standardized_mse(
+                        pred, target, self.feature_loss_weights, feature_std
+                    )
+                    for (pred, target), feature_std in zip(
+                        pred_targets, prediction_stds
+                    )
                 )
                 losses.append(float(loss.detach().cpu()))
 
@@ -393,12 +439,12 @@ def compute_normalization_metadata(dataset: BeamDataset) -> dict:
     """Compute ModularMLP normalization statistics from a BeamDataset.
 
     npart_ratio at output stages (index 1..N_OUTPUT_STAGES of beam_states) is
-    logit-transformed before its mean/variance are computed -- see
-    ModularMLP._apply_physical_bounds(), which correspondingly applies
-    sigmoid() (not a clamp) to reconstruct that one column from the
-    logit-space denormalized value. beam0 (stage 0, the network's input) is
-    left untransformed: it is always exactly 1.0 in this dataset and is only
-    ever consumed by _norm_beam(), not the output-side denorm+bounds path.
+    logit-transformed and positive size/emittance features are inverse-softplus
+    transformed before their statistics are computed. These are the exact
+    inverses of ModularMLP._apply_physical_bounds(), so denormalization followed
+    by sigmoid/softplus reconstructs the physical target space consistently.
+    beam0 (stage 0, the network input) is left untransformed because it is only
+    consumed by _norm_beam(), not the output-side denorm+bounds path.
     """
     stage_params, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
     npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
@@ -410,6 +456,8 @@ def compute_normalization_metadata(dataset: BeamDataset) -> dict:
             continue
         columns = list(torch.unbind(tensor, dim=1))
         columns[npart_idx] = torch.logit(columns[npart_idx], eps=1e-4)
+        for feature_idx in _POSITIVE_OUTPUT_INDICES:
+            columns[feature_idx] = _inverse_softplus(columns[feature_idx])
         transformed_beam_states.append(torch.stack(columns, dim=1))
 
     return {
@@ -426,10 +474,42 @@ def compute_normalization_metadata(dataset: BeamDataset) -> dict:
     }
 
 
+def compute_stage_feature_stds(
+    dataset: BeamDataset,
+    *,
+    minimum: float = MIN_LOSS_FEATURE_STD,
+) -> list[torch.Tensor]:
+    """Raw target-feature standard deviations used by the training loss.
+
+    These are intentionally separate from the model normalization metadata:
+    output ``npart_ratio`` is represented in logit space inside that metadata,
+    whereas the loss compares predictions and targets in raw physical units.
+    """
+    _, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
+    return [
+        target.std(dim=0, unbiased=False).clamp_min(minimum).detach().cpu()
+        for target in beam_states[1:]
+    ]
+
+
 def _prediction_pairs(preds, targets):
     if isinstance(preds, torch.Tensor):
         return [(preds, targets[-1])]
     return list(zip(preds, targets))
+
+
+def _prediction_stds(
+    preds,
+    stage_feature_stds: list[torch.Tensor],
+) -> list[torch.Tensor]:
+    if isinstance(preds, torch.Tensor):
+        return [stage_feature_stds[-1]]
+    if len(preds) != len(stage_feature_stds):
+        raise ValueError(
+            "Number of predicted stages does not match loss standard deviations: "
+            f"{len(preds)} != {len(stage_feature_stds)}"
+        )
+    return stage_feature_stds
 
 
 def _seed_everything(seed: int) -> None:

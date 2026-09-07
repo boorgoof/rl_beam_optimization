@@ -143,7 +143,7 @@ MAX_STEPS: int = 20
 #                       mostly land in valid, recoverable states.
 DATASET_SCALE: float = 0.6
 TRAIN_RESET_SCALE: float = 0.45
-TEST_RESET_SCALE: float = DATASET_SCALE       # evaluation resets deliberately use the same gaussian width as dataset generation
+TEST_RESET_SCALE: float = 0.45       # evaluation resets deliberately use the same gaussian width as dataset generation
 BAYESIAN_SCALE: float = DATASET_SCALE         # default Bayesian-opt space per parameter is [default - BAYESIAN_SCALE*sensitivity, default + BAYESIAN_SCALE*sensitivity], intersected with hw_min/hw_max
 
 # ACTION_SCALE is a fixed fraction of DATASET_SCALE, not separately

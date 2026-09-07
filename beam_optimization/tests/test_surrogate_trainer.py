@@ -1,6 +1,7 @@
 """SurrogateTrainer: per-feature loss weights, LR scheduling, early stopping."""
 from __future__ import annotations
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,14 +15,20 @@ from beam_optimization.config.adige import (
     BEAM_STATE_FEATURES,
     N_OUTPUT_STAGES,
     N_PARAMS,
-    SCORE_WEIGHTS,
 )
 from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
+from beam_optimization.env.surrogate_env.surrogate.model.updater import (
+    SurrogateDatasetUpdater,
+)
 from beam_optimization.env.surrogate_env.surrogate.model.trainer import (
+    MIN_LOSS_FEATURE_STD,
     SurrogateTrainer,
+    _inverse_softplus,
+    _weighted_standardized_mse,
     build_feature_loss_weights,
     compute_normalization_metadata,
+    compute_stage_feature_stds,
 )
 
 
@@ -29,19 +36,30 @@ class FeatureLossWeightsTests(unittest.TestCase):
     def test_length_and_order_match_beam_state_features(self):
         weights = build_feature_loss_weights()
         self.assertEqual(tuple(weights.shape), (len(BEAM_STATE_FEATURES),))
+        torch.testing.assert_close(weights, torch.ones(len(BEAM_STATE_FEATURES)))
 
-        idx = {name: i for i, name in enumerate(BEAM_STATE_FEATURES)}
-        expected_group = {
-            "npart_ratio": "npart_ratio",
-            "ex": "emittance", "ey": "emittance",
-            "x0": "offset", "y0": "offset",
-            "x'0": "angle", "y'0": "angle",
-            "SizeX": "size", "SizeY": "size",
-        }
-        for name, group in expected_group.items():
-            self.assertAlmostEqual(
-                weights[idx[name]].item(), SCORE_WEIGHTS[group], msg=f"feature {name!r}"
-            )
+    def test_standardized_loss_uses_feature_scales_before_priorities(self):
+        prediction = torch.tensor([[2.0, 20.0]])
+        target = torch.zeros_like(prediction)
+        feature_std = torch.tensor([2.0, 20.0])
+        priorities = torch.tensor([1.0, 4.0])
+
+        loss = _weighted_standardized_mse(
+            prediction, target, priorities, feature_std
+        )
+
+        self.assertAlmostEqual(loss.item(), 2.5)
+
+    def test_standardized_loss_clamps_near_zero_feature_scale(self):
+        prediction = torch.tensor([[MIN_LOSS_FEATURE_STD]])
+        target = torch.zeros_like(prediction)
+        loss = _weighted_standardized_mse(
+            prediction,
+            target,
+            torch.ones(1),
+            torch.zeros(1),
+        )
+        self.assertAlmostEqual(loss.item(), 1.0)
 
 
 def _dataset_with_known_npart_ratio(*, n: int = 5, seed: int = 0):
@@ -99,16 +117,31 @@ class ComputeNormalizationMetadataLogitTests(unittest.TestCase):
         self.assertAlmostEqual(norm_stats["beam_state_means"][0][npart_idx].item(), 1.0, places=5)
         self.assertAlmostEqual(norm_stats["beam_state_variances"][0][npart_idx].item(), 0.0, places=5)
 
-    def test_other_features_remain_raw_at_every_stage(self):
-        dataset, _ = _dataset_with_known_npart_ratio()
+    def test_loss_feature_std_uses_raw_npart_ratio(self):
+        dataset, known = _dataset_with_known_npart_ratio()
         npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
+
+        stage_stds = compute_stage_feature_stds(dataset)
+        expected = torch.tensor(known).std(unbiased=False).item()
+
+        for stage_idx, feature_std in enumerate(stage_stds, start=1):
+            self.assertAlmostEqual(
+                feature_std[npart_idx].item(),
+                expected,
+                places=5,
+                msg=f"stage {stage_idx}",
+            )
+
+    def test_signed_features_remain_raw_at_every_stage(self):
+        dataset, _ = _dataset_with_known_npart_ratio()
+        transformed_features = {"npart_ratio", "SizeX", "SizeY", "ex", "ey"}
         _, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
 
         norm_stats = compute_normalization_metadata(dataset)
 
         for stage_idx, tensor in enumerate(beam_states):
-            for feature_idx in range(BEAM_STATE_DIM):
-                if feature_idx == npart_idx:
+            for feature_idx, feature in enumerate(BEAM_STATE_FEATURES):
+                if feature in transformed_features:
                     continue
                 expected_mean = tensor[:, feature_idx].mean().item()
                 mean = norm_stats["beam_state_means"][stage_idx][feature_idx].item()
@@ -116,6 +149,63 @@ class ComputeNormalizationMetadataLogitTests(unittest.TestCase):
                     mean, expected_mean, places=4,
                     msg=f"stage {stage_idx} feature {feature_idx}",
                 )
+
+    def test_positive_output_features_use_inverse_softplus_stats(self):
+        dataset, _ = _dataset_with_known_npart_ratio()
+        _, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
+        norm_stats = compute_normalization_metadata(dataset)
+
+        for stage_idx, tensor in enumerate(beam_states[1:], start=1):
+            for feature in ("SizeX", "SizeY", "ex", "ey"):
+                feature_idx = BEAM_STATE_FEATURES.index(feature)
+                transformed = _inverse_softplus(tensor[:, feature_idx])
+                expected_mean = transformed.mean().item()
+                expected_var = transformed.var(unbiased=False).item()
+                self.assertAlmostEqual(
+                    norm_stats["beam_state_means"][stage_idx][feature_idx].item(),
+                    expected_mean,
+                    places=4,
+                )
+                self.assertAlmostEqual(
+                    norm_stats["beam_state_variances"][stage_idx][feature_idx].item(),
+                    expected_var,
+                    places=4,
+                )
+                reconstructed = torch.nn.functional.softplus(transformed)
+                torch.testing.assert_close(
+                    reconstructed,
+                    tensor[:, feature_idx].clamp_min(MIN_LOSS_FEATURE_STD),
+                )
+
+
+class OnlineFineTuningLossTests(unittest.TestCase):
+    def test_updater_uses_same_stage_standardized_weighted_loss(self):
+        dataset, _ = _dataset_with_known_npart_ratio(n=8)
+        model = ModularMLP(
+            norm_stats=compute_normalization_metadata(dataset),
+            **_TINY_MODEL_KWARGS,
+        )
+        updater = SurrogateDatasetUpdater(
+            model,
+            offline_dataset=dataset,
+            initial_online_dataset=dataset,
+            batch_size=4,
+            epochs=1,
+            min_samples=1,
+            online_mix_ratio=0.5,
+            device="cpu",
+        )
+
+        with mock.patch(
+            "beam_optimization.env.surrogate_env.surrogate.model.updater."
+            "_weighted_standardized_mse",
+            wraps=_weighted_standardized_mse,
+        ) as standardized_loss:
+            losses = updater.update()
+
+        self.assertEqual(standardized_loss.call_count, N_OUTPUT_STAGES)
+        self.assertTrue(math.isfinite(losses["surrogate_0"]))
+        self.assertEqual(len(updater._last_loss_stds), N_OUTPUT_STAGES)
 
 
 def _make_synthetic_dataset(path: Path, *, n: int, seed: int) -> None:

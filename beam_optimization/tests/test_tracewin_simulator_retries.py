@@ -107,6 +107,23 @@ class TraceWinRetryTests(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertNotIn("retrying", output)
 
+    def test_transport_failed_is_not_retried(self):
+        original = (
+            "Error: Transport failed\n"
+            "From->[ELEMENTS] : Matrix Field Map:Element :205\n"
+            "From->[ENVELOPE] : Envelope in element : 205\n"
+            "From->[PROCESS_ENVELOPE] : Envelope calculation"
+        )
+        result, calls, output = self._run_failure(original)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "Error: Transport failed")
+        self.assertEqual(calls, 1)
+        self.assertNotIn("retrying", output)
+        self.assertEqual(
+            result.metadata.get("physics_failure_reason"), "all_particles_lost"
+        )
+
     def test_physics_failure_matching_is_case_insensitive(self):
         self.assertEqual(
             _non_retryable_physics_failure("eRrOr: ALL PARTICLES ARE LOST", ""),

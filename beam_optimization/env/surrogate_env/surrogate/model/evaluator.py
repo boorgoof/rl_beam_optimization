@@ -93,6 +93,21 @@ def evaluate_surrogate(
     target_sum_stage_feature = np.zeros((N_OUTPUT_STAGES, n_features), dtype=np.float64)
     target_sumsq_stage_feature = np.zeros((N_OUTPUT_STAGES, n_features), dtype=np.float64)
     count_stage_feature = np.zeros((N_OUTPUT_STAGES, n_features), dtype=np.int64)
+    predicted_valid_sse_stage_feature = np.zeros(
+        (N_OUTPUT_STAGES, n_features), dtype=np.float64
+    )
+    predicted_valid_sae_stage_feature = np.zeros(
+        (N_OUTPUT_STAGES, n_features), dtype=np.float64
+    )
+    predicted_valid_target_sum_stage_feature = np.zeros(
+        (N_OUTPUT_STAGES, n_features), dtype=np.float64
+    )
+    predicted_valid_target_sumsq_stage_feature = np.zeros(
+        (N_OUTPUT_STAGES, n_features), dtype=np.float64
+    )
+    predicted_valid_count_stage_feature = np.zeros(
+        (N_OUTPUT_STAGES, n_features), dtype=np.int64
+    )
     true_score_batches: list[np.ndarray] = []
     predicted_score_batches: list[np.ndarray] = []
     failure_label_batches: list[np.ndarray] = []
@@ -118,6 +133,10 @@ def evaluate_surrogate(
                     for idx, (pred, target) in enumerate(zip(preds, targets))
                 ]
 
+            npart_index = BEAM_STATE_FEATURES.index("npart_ratio")
+            predicted_valid_batch_mask = (
+                preds[-1][:, npart_index] >= RL_MIN_NPART_RATIO
+            )
             for stage_idx, pred, target in pred_targets:
                 diff = pred - target
                 sse_stage_feature[stage_idx] += (
@@ -133,6 +152,24 @@ def evaluate_surrogate(
                     torch.sum(target * target, dim=0).detach().cpu().numpy()
                 )
                 count_stage_feature[stage_idx] += int(diff.shape[0])
+                valid_diff = diff[predicted_valid_batch_mask]
+                valid_target = target[predicted_valid_batch_mask]
+                if valid_diff.shape[0] > 0:
+                    predicted_valid_sse_stage_feature[stage_idx] += (
+                        torch.sum(valid_diff * valid_diff, dim=0).detach().cpu().numpy()
+                    )
+                    predicted_valid_sae_stage_feature[stage_idx] += (
+                        torch.sum(torch.abs(valid_diff), dim=0).detach().cpu().numpy()
+                    )
+                    predicted_valid_target_sum_stage_feature[stage_idx] += (
+                        torch.sum(valid_target, dim=0).detach().cpu().numpy()
+                    )
+                    predicted_valid_target_sumsq_stage_feature[stage_idx] += (
+                        torch.sum(valid_target * valid_target, dim=0).detach().cpu().numpy()
+                    )
+                    predicted_valid_count_stage_feature[stage_idx] += int(
+                        valid_diff.shape[0]
+                    )
                 if stage_idx == N_OUTPUT_STAGES - 1:
                     true_score_batches.append(
                         score_tensor(target).detach().cpu().numpy().astype(np.float64)
@@ -140,7 +177,6 @@ def evaluate_surrogate(
                     predicted_score_batches.append(
                         score_tensor(pred).detach().cpu().numpy().astype(np.float64)
                     )
-                    npart_index = BEAM_STATE_FEATURES.index("npart_ratio")
                     labels = (
                         target[:, npart_index] <= ALL_PARTICLES_LOST_NPART_RATIO
                     ).detach().cpu().numpy().astype(np.float64)
@@ -220,6 +256,80 @@ def evaluate_surrogate(
         for index, feature in enumerate(BEAM_STATE_FEATURES)
     }
 
+    predicted_valid_mse_stage_feature = _safe_divide(
+        predicted_valid_sse_stage_feature, predicted_valid_count_stage_feature
+    )
+    predicted_valid_mae_stage_feature = _safe_divide(
+        predicted_valid_sae_stage_feature, predicted_valid_count_stage_feature
+    )
+    predicted_valid_target_mean_stage_feature = _safe_divide(
+        predicted_valid_target_sum_stage_feature,
+        predicted_valid_count_stage_feature,
+    )
+    predicted_valid_target_variance_stage_feature = np.maximum(
+        0.0,
+        _safe_divide(
+            predicted_valid_target_sumsq_stage_feature,
+            predicted_valid_count_stage_feature,
+        )
+        - np.square(predicted_valid_target_mean_stage_feature),
+    )
+    predicted_valid_target_std_stage_feature = np.sqrt(
+        predicted_valid_target_variance_stage_feature
+    )
+    predicted_valid_nrmse_stage_feature = np.sqrt(
+        np.divide(
+            predicted_valid_mse_stage_feature,
+            predicted_valid_target_variance_stage_feature,
+            out=np.full_like(predicted_valid_mse_stage_feature, np.nan),
+            where=predicted_valid_target_variance_stage_feature > 1e-12,
+        )
+    )
+    predicted_valid_sse_per_feature = np.sum(
+        predicted_valid_sse_stage_feature, axis=0
+    )
+    predicted_valid_sae_per_feature = np.sum(
+        predicted_valid_sae_stage_feature, axis=0
+    )
+    predicted_valid_count_per_feature = np.sum(
+        predicted_valid_count_stage_feature, axis=0
+    )
+    predicted_valid_mse_per_feature = _safe_divide(
+        predicted_valid_sse_per_feature, predicted_valid_count_per_feature
+    )
+    predicted_valid_mae_per_feature = _safe_divide(
+        predicted_valid_sae_per_feature, predicted_valid_count_per_feature
+    )
+    feature_metrics_predicted_rl_valid = {
+        feature: {
+            "mse_all_stages": _finite_or_none(
+                predicted_valid_mse_per_feature[index]
+            ),
+            "rmse_all_stages": _finite_or_none(
+                math.sqrt(predicted_valid_mse_per_feature[index])
+            ),
+            "mae_all_stages": _finite_or_none(
+                predicted_valid_mae_per_feature[index]
+            ),
+            "mse_final_stage": _finite_or_none(
+                predicted_valid_mse_stage_feature[-1, index]
+            ),
+            "rmse_final_stage": _finite_or_none(
+                math.sqrt(predicted_valid_mse_stage_feature[-1, index])
+            ),
+            "mae_final_stage": _finite_or_none(
+                predicted_valid_mae_stage_feature[-1, index]
+            ),
+            "nrmse_final_stage": _finite_or_none(
+                predicted_valid_nrmse_stage_feature[-1, index]
+            ),
+            "target_std_final_stage": _finite_or_none(
+                predicted_valid_target_std_stage_feature[-1, index]
+            ),
+        }
+        for index, feature in enumerate(BEAM_STATE_FEATURES)
+    }
+
     true_scores = (
         np.concatenate(true_score_batches) if true_score_batches else np.empty(0)
     )
@@ -276,6 +386,10 @@ def evaluate_surrogate(
         "feature_names": list(BEAM_STATE_FEATURES),
         "stage_markers": list(STAGE_MARKERS[1:]),
         "feature_metrics": feature_metrics,
+        "n_samples_predicted_rl_valid": int(
+            predicted_valid_count_stage_feature[-1, 0]
+        ),
+        "feature_metrics_predicted_rl_valid": feature_metrics_predicted_rl_valid,
         "rmse_by_stage_and_feature": _matrix_to_json(rmse_stage_feature),
         "mse_by_stage_and_feature": _matrix_to_json(mse_stage_feature),
         "mae_by_stage_and_feature": _matrix_to_json(mae_stage_feature),

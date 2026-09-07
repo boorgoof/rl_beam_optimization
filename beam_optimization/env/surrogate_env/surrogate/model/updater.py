@@ -14,12 +14,17 @@ from typing import List, Optional, Union
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 from beam_optimization.config.adige import N_OUTPUT_STAGES
 from beam_optimization.env.dataset import BeamDataset, tracewin_result_to_flat_sample
 from beam_optimization.env.simulation import BeamSimulationResult
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
+from beam_optimization.env.surrogate_env.surrogate.model.trainer import (
+    MIN_LOSS_FEATURE_STD,
+    _weighted_standardized_mse,
+    build_feature_loss_weights,
+    compute_stage_feature_stds,
+)
 
 
 class SurrogateDatasetUpdater:
@@ -72,6 +77,13 @@ class SurrogateDatasetUpdater:
         self.min_samples = int(min_samples)
         self.online_mix_ratio = min(max(float(online_mix_ratio), 0.0), 1.0)
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.feature_loss_weights = build_feature_loss_weights().to(self.device)
+        self._stage_feature_stds = (
+            compute_stage_feature_stds(self._offline_dataset)
+            if self._offline_dataset is not None and len(self._offline_dataset) > 0
+            else None
+        )
+        self._last_loss_stds: Optional[list[torch.Tensor]] = None
 
         self.online_dataset_save_path = (
             Path(online_dataset_save_path) if online_dataset_save_path else None
@@ -140,9 +152,13 @@ class SurrogateDatasetUpdater:
             )
             return None
 
-        criterion = nn.MSELoss()
         stage_w = 1.0 / N_OUTPUT_STAGES
         final_losses = {}
+        stage_feature_stds = self._stage_feature_stds
+        if stage_feature_stds is None:
+            stage_feature_stds = compute_stage_feature_stds(self._online_dataset)
+        loss_stds = [tensor.to(self.device) for tensor in stage_feature_stds]
+        self._last_loss_stds = [tensor.detach().cpu() for tensor in loss_stds]
 
         for i, (surrogate, optimizer) in enumerate(zip(self.surrogates, self._optimizers)):
             surrogate.train()
@@ -153,8 +169,18 @@ class SurrogateDatasetUpdater:
             for _ in range(self.epochs):
                 stage_t, beam0_t, targets_t = self._collate_mixed(self.batch_size)
                 preds = surrogate(stage_t, beam0_t)
-                loss = sum(stage_w * criterion(pred, target)
-                           for pred, target in zip(preds, targets_t))
+                loss = sum(
+                    stage_w
+                    * _weighted_standardized_mse(
+                        pred,
+                        target,
+                        self.feature_loss_weights,
+                        feature_std,
+                    )
+                    for pred, target, feature_std in zip(
+                        preds, targets_t, loss_stds
+                    )
+                )
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -221,6 +247,12 @@ class SurrogateDatasetUpdater:
                     "normalization_metadata": surrogate._norm_stats,
                     "update_count": self._update_count,
                     "online_samples": self.n_online_samples,
+                    "fine_tuning_loss": {
+                        "name": "stage_standardized_weighted_mse",
+                        "minimum_feature_std": MIN_LOSS_FEATURE_STD,
+                        "feature_weights": self.feature_loss_weights.detach().cpu(),
+                        "stage_feature_stds": self._last_loss_stds,
+                    },
                 },
             )
         print(

@@ -154,7 +154,9 @@ class ModularMLP(nn.Module):
         noisy negative prediction into an artificial exact 0 ("all particles
         lost" per score()) and discards how wrong the prediction actually was.
 
-        sizes/emittances: softplus(), not a clamp. Unconstrained MSE
+        sizes/emittances: softplus(), not a clamp. Their output-stage
+        normalization statistics are computed in inverse-softplus space, so
+        this is the exact reconstruction transform. Unconstrained MSE
         regression can otherwise predict impossible negative values; softplus
         enforces strict positivity (output always > 0, never exactly 0) while
         staying smooth and differentiable everywhere, including below the raw

@@ -121,9 +121,13 @@ class SurrogateEvaluatorTests(unittest.TestCase):
         self.assertEqual(
             result["rl_terminal_metrics"]["regressor"]["n_positive"], 0
         )
+        self.assertEqual(result["n_samples_predicted_rl_valid"], 5)
 
         for feature_index, feature in enumerate(BEAM_STATE_FEATURES):
             metrics = result["feature_metrics"][feature]
+            predicted_valid_metrics = result[
+                "feature_metrics_predicted_rl_valid"
+            ][feature]
             expected_rmse = math.sqrt(
                 float(np.mean(expected_mse_matrix[:, feature_index]))
             )
@@ -136,6 +140,11 @@ class SurrogateEvaluatorTests(unittest.TestCase):
             self.assertAlmostEqual(
                 metrics["rmse_final_stage"],
                 float(self.errors[-1, feature_index]),
+                places=7,
+            )
+            self.assertAlmostEqual(
+                predicted_valid_metrics["rmse_final_stage"],
+                metrics["rmse_final_stage"],
                 places=7,
             )
 
