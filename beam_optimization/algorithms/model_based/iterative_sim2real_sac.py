@@ -1,4 +1,4 @@
-"""Iterative sim-to-real SAC with alternating surrogate and TraceWin phases."""
+"""Iterative sim-to-real training for SB3 SAC and TD3 policies."""
 from __future__ import annotations
 
 import csv
@@ -30,15 +30,11 @@ from beam_optimization.scripts.common import evaluate_policy
 
 STATE_VERSION = 1
 EVAL_SEED = 10_000
-POLICY_RELATIVE_PATH = Path("sac/sac_agent.zip")
-LATEST_POLICY_RELATIVE_PATH = Path("sac/latest_agent.zip")
-PRETRAINED_POLICY_RELATIVE_PATH = Path("sac/pretrained_agent.zip")
-BEST_SURROGATE_POLICY_RELATIVE_PATH = Path("sac/best_surrogate_agent.zip")
-BEST_TRACEWIN_POLICY_RELATIVE_PATH = Path("sac/best_tracewin_agent.zip")
-REPLAY_RELATIVE_PATH = Path("sac/replay_buffer.pkl")
 ONLINE_RELATIVE_PATH = Path("cumulative_online_dataset.pt")
 WORKING_SURROGATE_RELATIVE_PATH = Path("working_surrogate/surrogate_0.pt")
+SUPPORTED_ALGORITHMS = ("sac", "td3")
 LEGACY_OPTIONAL_CONFIG_KEYS = {
+    "algorithm",
     "surrogate_learning_rate",
     "real_learning_rate",
     "real_update_interval",
@@ -51,12 +47,18 @@ LEGACY_OPTIONAL_CONFIG_KEYS = {
 
 @dataclass
 class IterativeSim2RealSACConfig:
-    """Configuration for one resumable iterative sim-to-real SAC run."""
+    """Configuration for one resumable SAC/TD3 sim-to-real run.
+
+    The historical class name is retained so existing SAC callers and saved
+    workflows remain compatible. ``algorithm`` selects the persistent SB3
+    off-policy learner used in every surrogate and TraceWin phase.
+    """
 
     surrogate: str
     dataset: str
     tracewin: str
     output: str
+    algorithm: str = "sac"
     initial_policy: Optional[str] = None
     cycles: int = 1
     initial_surrogate_steps: int = 200_000
@@ -217,6 +219,10 @@ def _atomic_copy(source: Path, target: Path) -> None:
 
 
 def _validate_config(config: IterativeSim2RealSACConfig) -> None:
+    if config.algorithm not in SUPPORTED_ALGORITHMS:
+        raise ValueError(
+            f"algorithm must be one of {', '.join(SUPPORTED_ALGORITHMS)}"
+        )
     positive = {
         "cycles": config.cycles,
         "initial_surrogate_steps": config.initial_surrogate_steps,
@@ -248,6 +254,8 @@ def _validate_config(config: IterativeSim2RealSACConfig) -> None:
         )
     ):
         errors.append("fixed_entropy_coefficient must be positive when provided")
+    if config.algorithm != "sac" and config.fixed_entropy_coefficient is not None:
+        errors.append("fixed_entropy_coefficient is available only for SAC")
     if not 0.0 <= config.online_mix_ratio <= 1.0:
         errors.append("online_mix_ratio must be between 0 and 1")
     if config.surrogate_update_lr <= 0.0:
@@ -261,26 +269,51 @@ def _validate_config(config: IterativeSim2RealSACConfig) -> None:
 
 
 def _new_state(args: IterativeSim2RealSACConfig) -> dict:
+    paths = _artifact_paths(args.algorithm)
     return {
         "version": STATE_VERSION,
         "phase": "real" if args.initial_policy else "initial_surrogate",
         "cycle": 1,
         "phase_steps_completed": 0,
-        "global_sac_steps": 0,
+        "algorithm": args.algorithm,
+        "global_steps": 0,
+        f"global_{args.algorithm}_steps": 0,
         "real_learning_start_timestep": None,
         "online_samples": 0,
-        "policy_path": str(POLICY_RELATIVE_PATH),
-        "latest_policy_path": str(LATEST_POLICY_RELATIVE_PATH),
+        "policy_path": str(paths["policy"]),
+        "latest_policy_path": str(paths["latest"]),
         "pretrained_policy_path": None,
         "best_surrogate_policy_path": None,
         "best_tracewin_policy_path": None,
         "best_tracewin_score": None,
         "recent_tracewin_final_scores": [],
-        "replay_buffer_path": str(REPLAY_RELATIVE_PATH),
+        "replay_buffer_path": str(paths["replay"]),
         "online_dataset_path": str(ONLINE_RELATIVE_PATH),
         "working_surrogate_path": str(WORKING_SURROGATE_RELATIVE_PATH),
         "config": _config_payload(args),
     }
+
+
+def _artifact_paths(algorithm: str) -> dict[str, Path]:
+    """Return an algorithm-specific layout while preserving legacy SAC paths."""
+    if algorithm not in SUPPORTED_ALGORITHMS:
+        raise ValueError(f"Unsupported iterative sim-to-real algorithm: {algorithm}")
+    folder = Path(algorithm)
+    return {
+        "policy": folder / f"{algorithm}_agent.zip",
+        "latest": folder / "latest_agent.zip",
+        "pretrained": folder / "pretrained_agent.zip",
+        "best_surrogate": folder / "best_surrogate_agent.zip",
+        "best_tracewin": folder / "best_tracewin_agent.zip",
+        "replay": folder / "replay_buffer.pkl",
+    }
+
+
+def _state_algorithm(state: dict, agent: Optional[StableBaselinesAgent] = None) -> str:
+    """Read the algorithm from new state, with SAC fallback for legacy states."""
+    if agent is not None and getattr(agent, "algorithm", None) in SUPPORTED_ALGORITHMS:
+        return str(agent.algorithm)
+    return str(state.get("algorithm", state.get("config", {}).get("algorithm", "sac")))
 
 
 def _config_payload(config: IterativeSim2RealSACConfig) -> dict:
@@ -313,25 +346,29 @@ def _save_checkpoint(
     updater: SurrogateDatasetUpdater,
     state: dict,
 ) -> None:
-    policy_path = output / POLICY_RELATIVE_PATH
-    replay_path = output / REPLAY_RELATIVE_PATH
+    algorithm = _state_algorithm(state, agent)
+    paths = _artifact_paths(algorithm)
+    policy_path = output / paths["policy"]
+    replay_path = output / paths["replay"]
     online_path = output / ONLINE_RELATIVE_PATH
 
     agent.save(str(policy_path))
-    _atomic_copy(policy_path, output / LATEST_POLICY_RELATIVE_PATH)
+    _atomic_copy(policy_path, output / paths["latest"])
     agent.save_replay_buffer(replay_path)
     _atomic_dataset(updater.online_dataset, online_path)
-    state["global_sac_steps"] = agent.num_timesteps
+    state["global_steps"] = agent.num_timesteps
+    state[f"global_{algorithm}_steps"] = agent.num_timesteps
     state["online_samples"] = updater.n_online_samples
     _atomic_json(output / "state.json", state)
 
 
 def _save_pretrained_policy(output: Path, agent: StableBaselinesAgent, state: dict) -> None:
     """Save the immutable policy used at the start of real fine-tuning."""
-    path = output / PRETRAINED_POLICY_RELATIVE_PATH
+    relative_path = _artifact_paths(_state_algorithm(state, agent))["pretrained"]
+    path = output / relative_path
     if not path.is_file():
         agent.save(str(path))
-    state["pretrained_policy_path"] = str(PRETRAINED_POLICY_RELATIVE_PATH)
+    state["pretrained_policy_path"] = str(relative_path)
 
 
 def _consider_best_tracewin_policy(
@@ -355,11 +392,12 @@ def _consider_best_tracewin_policy(
     previous_best = state.get("best_tracewin_score")
     if previous_best is not None and metric <= float(previous_best):
         return
-    agent.save(str(output / BEST_TRACEWIN_POLICY_RELATIVE_PATH))
+    relative_path = _artifact_paths(_state_algorithm(state, agent))["best_tracewin"]
+    agent.save(str(output / relative_path))
     state["best_tracewin_score"] = metric
     state["best_tracewin_final_score"] = float(scores[-1])
     state["best_tracewin_step"] = int(agent.num_timesteps)
-    state["best_tracewin_policy_path"] = str(BEST_TRACEWIN_POLICY_RELATIVE_PATH)
+    state["best_tracewin_policy_path"] = str(relative_path)
 
 
 def _phase_checkpoint_hook(
@@ -500,6 +538,9 @@ def _run_workflow(
     without launching TraceWin.
     """
     _validate_config(args)
+    algorithm = args.algorithm
+    paths = _artifact_paths(algorithm)
+    workflow_label = f"iterative_sim2real_{algorithm}"
     output = Path(args.output)
     base_surrogate_path = Path(args.surrogate)
     dataset_path = Path(args.dataset)
@@ -556,10 +597,10 @@ def _run_workflow(
         if args.initial_policy:
             initial_policy_path = Path(args.initial_policy)
             if initial_policy_path.is_dir():
-                initial_policy_path = initial_policy_path / "sac_agent.zip"
+                initial_policy_path = initial_policy_path / f"{algorithm}_agent.zip"
             if not initial_policy_path.is_file():
                 raise FileNotFoundError(
-                    f"Initial SAC policy not found: {initial_policy_path}"
+                    f"Initial {algorithm.upper()} policy not found: {initial_policy_path}"
                 )
         output.mkdir(parents=True)
         _atomic_copy(
@@ -618,8 +659,8 @@ def _run_workflow(
         )
 
     initial_env = make_surrogate_env()
-    recorder = _LearningCurveRecorder(output / "sac", "iterative_sim2real_sac")
-    curve_csv = output / "sac/learning_curve.csv"
+    recorder = _LearningCurveRecorder(output / algorithm, workflow_label)
+    curve_csv = output / algorithm / "learning_curve.csv"
     if args.resume and curve_csv.is_file():
         with open(curve_csv, newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
@@ -652,16 +693,16 @@ def _run_workflow(
         previous = state.get("best_surrogate_validation_score")
         if previous is not None and mean_score <= float(previous):
             return
-        agent.save(str(output / BEST_SURROGATE_POLICY_RELATIVE_PATH))
+        agent.save(str(output / paths["best_surrogate"]))
         state["best_surrogate_validation_score"] = mean_score
         state["best_surrogate_step"] = int(step)
         state["best_surrogate_policy_path"] = str(
-            BEST_SURROGATE_POLICY_RELATIVE_PATH
+            paths["best_surrogate"]
         )
-    policy_path = output / POLICY_RELATIVE_PATH
-    replay_path = output / REPLAY_RELATIVE_PATH
+    policy_path = output / paths["policy"]
+    replay_path = output / paths["replay"]
     if args.resume:
-        agent = StableBaselinesAgent.load("sac", str(policy_path), env=initial_env)
+        agent = StableBaselinesAgent.load(algorithm, str(policy_path), env=initial_env)
         agent.load_replay_buffer(replay_path)
         learning_start = state.get("real_learning_start_timestep")
         if learning_start is not None:
@@ -669,13 +710,13 @@ def _run_workflow(
     elif args.initial_policy:
         initial_policy_path = Path(args.initial_policy)
         if initial_policy_path.is_dir():
-            initial_policy_path = initial_policy_path / "sac_agent.zip"
+            initial_policy_path = initial_policy_path / f"{algorithm}_agent.zip"
         agent = StableBaselinesAgent.load(
-            "sac", str(initial_policy_path), env=initial_env
+            algorithm, str(initial_policy_path), env=initial_env
         )
         agent.reset_replay_buffer()
         _save_pretrained_policy(output, agent, state)
-        if args.freeze_entropy_on_tracewin:
+        if algorithm == "sac" and args.freeze_entropy_on_tracewin:
             state["frozen_entropy_coefficient"] = agent.freeze_entropy_coefficient(
                 args.fixed_entropy_coefficient
             )
@@ -683,7 +724,7 @@ def _run_workflow(
             args.real_learning_starts
         )
         print(
-            "Loaded initial SAC policy from "
+            f"Loaded initial {algorithm.upper()} policy from "
             f"{initial_policy_path} at timestep {agent.num_timesteps}."
         )
         print(
@@ -699,7 +740,7 @@ def _run_workflow(
             args.real_learning_starts + 1,
         )
         agent = factory(
-            "sac",
+            algorithm,
             initial_env,
             hidden_dims=tuple(args.hidden),
             seed=args.seed,
@@ -718,16 +759,16 @@ def _run_workflow(
             phase = state["phase"]
             cycle = int(state["cycle"])
             print(
-                f"\n[iterative_sim2real_sac] phase={phase} "
+                f"\n[{workflow_label}] phase={phase} "
                 f"cycle={cycle}/{args.cycles} "
                 f"completed={state['phase_steps_completed']} "
-                f"global_sac_steps={agent.num_timesteps} "
+                f"global_{algorithm}_steps={agent.num_timesteps} "
                 f"online_samples={updater.n_online_samples}"
             )
 
             if phase == "initial_surrogate":
                 print(
-                    f"Training SAC on the base SurrogateEnv for "
+                    f"Training {algorithm.upper()} on the base SurrogateEnv for "
                     f"{args.initial_surrogate_steps} total phase steps "
                     f"(learning_rate={args.surrogate_learning_rate:g})."
                 )
@@ -750,11 +791,11 @@ def _run_workflow(
                     learning_rate=args.surrogate_learning_rate,
                 )
                 env.close()
-                best_surrogate_path = output / BEST_SURROGATE_POLICY_RELATIVE_PATH
+                best_surrogate_path = output / paths["best_surrogate"]
                 if best_surrogate_path.is_file():
                     completed_surrogate_steps = agent.num_timesteps
                     selected_agent = StableBaselinesAgent.load(
-                        "sac", str(best_surrogate_path), env=initial_env
+                        algorithm, str(best_surrogate_path), env=initial_env
                     )
                     # Keep the workflow's monotonic global counter while
                     # restoring the weights/optimizers/entropy from the best
@@ -766,7 +807,7 @@ def _run_workflow(
                     )
                 agent.reset_replay_buffer()
                 _save_pretrained_policy(output, agent, state)
-                if args.freeze_entropy_on_tracewin:
+                if algorithm == "sac" and args.freeze_entropy_on_tracewin:
                     state["frozen_entropy_coefficient"] = agent.freeze_entropy_coefficient(
                         args.fixed_entropy_coefficient
                     )
@@ -789,7 +830,7 @@ def _run_workflow(
 
             if phase == "surrogate_refresh":
                 print(
-                    f"Continuing the same SAC on the updated SurrogateEnv for "
+                    f"Continuing the same {algorithm.upper()} on the updated SurrogateEnv for "
                     f"{args.subsequent_surrogate_steps} total phase steps; "
                     f"learning_rate={args.surrogate_learning_rate:g}; "
                     "the real replay is retained during this phase."
@@ -831,7 +872,7 @@ def _run_workflow(
 
             if phase == "real":
                 print(
-                    f"Continuing the same SAC on TraceWinEnv for "
+                    f"Continuing the same {algorithm.upper()} on TraceWinEnv for "
                     f"{args.real_steps_per_cycle} total phase steps. "
                     f"learning_rate={args.real_learning_rate:g}; one gradient "
                     f"update every {args.real_update_interval} real steps after "
@@ -951,20 +992,22 @@ def _run_workflow(
     best_tracewin_score = state.get("best_tracewin_score")
     summary = {
         "status": "complete",
+        "algorithm": algorithm,
         "cycles": args.cycles,
         "initial_policy": args.initial_policy,
-        "global_sac_steps": agent.num_timesteps,
+        "global_steps": agent.num_timesteps,
+        f"global_{algorithm}_steps": agent.num_timesteps,
         "online_samples": updater.n_online_samples,
-        "policy": str(output / POLICY_RELATIVE_PATH),
-        "latest_policy": str(output / LATEST_POLICY_RELATIVE_PATH),
+        "policy": str(output / paths["policy"]),
+        "latest_policy": str(output / paths["latest"]),
         "pretrained_policy": (
-            str(output / PRETRAINED_POLICY_RELATIVE_PATH)
-            if (output / PRETRAINED_POLICY_RELATIVE_PATH).is_file()
+            str(output / paths["pretrained"])
+            if (output / paths["pretrained"]).is_file()
             else None
         ),
         "best_surrogate_policy": (
-            str(output / BEST_SURROGATE_POLICY_RELATIVE_PATH)
-            if (output / BEST_SURROGATE_POLICY_RELATIVE_PATH).is_file()
+            str(output / paths["best_surrogate"])
+            if (output / paths["best_surrogate"]).is_file()
             else None
         ),
         "best_surrogate_validation_score": state.get(
@@ -972,14 +1015,14 @@ def _run_workflow(
         ),
         "selected_surrogate_step": state.get("selected_surrogate_step"),
         "best_tracewin_policy": (
-            str(output / BEST_TRACEWIN_POLICY_RELATIVE_PATH)
-            if (output / BEST_TRACEWIN_POLICY_RELATIVE_PATH).is_file()
+            str(output / paths["best_tracewin"])
+            if (output / paths["best_tracewin"]).is_file()
             else None
         ),
         "best_tracewin_score": best_tracewin_score,
         "best_tracewin_step": state.get("best_tracewin_step"),
         "frozen_entropy_coefficient": state.get("frozen_entropy_coefficient"),
-        "replay_buffer": str(output / REPLAY_RELATIVE_PATH),
+        "replay_buffer": str(output / paths["replay"]),
         "working_surrogate": str(output / WORKING_SURROGATE_RELATIVE_PATH),
         # Public training summaries should describe the real phase when one
         # has completed, not a historical surrogate-only maximum.

@@ -4,7 +4,7 @@ Train — trains all algorithms in sequence on the surrogate environment.
 Algorithms:
   Stable Baselines3  SAC, PPO, TD3, DDPG, A2C
   custom model-free  SAC, TD3, PPO, DDPG, A2C, REINFORCE, TRPO (_custom)
-  model-based     SVGAgent, MBPO, Iterative Sim-to-Real SAC
+  model-based     SVGAgent, MBPO, Iterative Sim-to-Real SAC/TD3
 
 Quick smoke test (few steps):
     python -m beam_optimization train_policies --quick
@@ -89,14 +89,19 @@ STAGE_WEIGHT_CONFIGS = {
     "uniform": [1.0] * N_OUTPUT_STAGES,
 }
 
-ITERATIVE_SIM2REAL_ALGORITHM = "iterative_sim2real_sac"
+ITERATIVE_SIM2REAL_SAC_ALGORITHM = "iterative_sim2real_sac"
+ITERATIVE_SIM2REAL_TD3_ALGORITHM = "iterative_sim2real_td3"
+ITERATIVE_SIM2REAL_ALGORITHMS = {
+    ITERATIVE_SIM2REAL_SAC_ALGORITHM,
+    ITERATIVE_SIM2REAL_TD3_ALGORITHM,
+}
 CONCRETE_TRAINING_ALGORITHMS = {
     *CUSTOM_MODEL_FREE_ALGORITHMS,
     *STABLE_BASELINES_ALGORITHMS,
     "dyna",
     "svg_final",
     "svg_uniform",
-    ITERATIVE_SIM2REAL_ALGORITHM,
+    *ITERATIVE_SIM2REAL_ALGORITHMS,
 }
 
 
@@ -1255,13 +1260,13 @@ def build_parser() -> argparse.ArgumentParser:
                                 "ppo, sac_custom, dyna, or svg.")
     selection.add_argument(
         "--only", nargs="+", default=None, metavar="ALGO",
-        help=("Train only the listed algorithms. Iterative Sim-to-Real SAC is "
-              "available only via --only iterative_sim2real_sac."),
+        help=("Train only the listed algorithms. Iterative Sim-to-Real is "
+              "available as iterative_sim2real_sac or iterative_sim2real_td3."),
     )
     parser.add_argument("--tracewin",       default=None, metavar="INI",
                         nargs="?", const=str(DEFAULT_TRACEWIN_INI),
                         help="Use TraceWin as the real env for MBPO or Iterative "
-                             "Sim-to-Real SAC. "
+                             "Sim-to-Real SAC/TD3. "
                              "Without a value, uses the project default path.")
     parser.add_argument("--tracewin-timeout", type=float, default=180.0)
     parser.add_argument("--tracewin-threads", type=int, default=None, metavar="N")
@@ -1283,8 +1288,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument(
         "--initial-policy", default=None, metavar="PATH",
-        help=("Initialize Iterative Sim-to-Real from an existing SB3 SAC "
-              "sac_agent.zip, or from a directory containing it. This skips "
+        help=("Initialize Iterative Sim-to-Real from an existing SB3 SAC/TD3 "
+              "checkpoint, or from a directory containing <algo>_agent.zip. This skips "
               "the initial surrogate pretraining and starts at TraceWin cycle 1."),
     )
     parser.add_argument("--initial-surrogate-steps", type=int, default=200_000)
@@ -1296,15 +1301,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--real-learning-starts", type=int, default=1_000)
     parser.add_argument(
         "--sim2real-surrogate-learning-rate", type=float, default=3e-4,
-        help="SAC learning rate during surrogate phases (default: 3e-4).",
+        help="SAC/TD3 learning rate during surrogate phases (default: 3e-4).",
     )
     parser.add_argument(
         "--sim2real-real-learning-rate", type=float, default=1e-5,
-        help="Conservative SAC learning rate during TraceWin phases (default: 1e-5).",
+        help="Conservative SAC/TD3 learning rate during TraceWin phases (default: 1e-5).",
     )
     parser.add_argument(
         "--sim2real-real-update-interval", type=int, default=20, metavar="N",
-        help="Run one SAC gradient update every N TraceWin steps (default: 20).",
+        help="Run one SAC/TD3 gradient update every N TraceWin steps (default: 20).",
     )
     parser.add_argument(
         "--sim2real-surrogate-refresh", action="store_true",
@@ -1340,7 +1345,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-every-surrogate-steps", type=int, default=10_000)
     parser.add_argument(
         "--resume", action="store_true",
-        help="Resume Sim-to-Real; requires --only iterative_sim2real_sac.",
+        help="Resume Sim-to-Real; requires exactly one iterative SAC/TD3 selection.",
     )
     return parser
 
@@ -1389,21 +1394,29 @@ def main():
         only = {aliases.get(name, name) for name in args.only}
         if "svg" in only:
             only.update({"svg_final", "svg_uniform"})
-        if args.resume and only != {ITERATIVE_SIM2REAL_ALGORITHM}:
+        selected_sim2real = only & ITERATIVE_SIM2REAL_ALGORITHMS
+        if len(selected_sim2real) > 1:
+            parser.error("select only one iterative sim-to-real algorithm")
+        if args.resume and only != selected_sim2real:
             parser.error(
-                "--resume requires --only iterative_sim2real_sac with no other algorithms"
+                "--resume requires exactly one iterative_sim2real_sac/td3 algorithm"
             )
     elif args.resume:
-        parser.error("--resume requires --only iterative_sim2real_sac")
+        parser.error("--resume requires --only iterative_sim2real_sac or iterative_sim2real_td3")
 
-    run_iterative_sim2real = (
-        only is not None and ITERATIVE_SIM2REAL_ALGORITHM in only
+    selected_sim2real = set() if only is None else only & ITERATIVE_SIM2REAL_ALGORITHMS
+    run_iterative_sim2real = bool(selected_sim2real)
+    sim2real_label = next(iter(selected_sim2real), None)
+    sim2real_algorithm = (
+        sim2real_label.removeprefix("iterative_sim2real_")
+        if sim2real_label is not None
+        else None
     )
     if run_iterative_sim2real and not args.tracewin:
-        parser.error("--only iterative_sim2real_sac requires --tracewin INI")
+        parser.error("iterative sim-to-real requires --tracewin INI")
     if args.initial_policy and not run_iterative_sim2real:
         parser.error(
-            "--initial-policy requires --only iterative_sim2real_sac"
+            "--initial-policy requires an iterative_sim2real_sac/td3 selection"
         )
 
     out_root = Path(args.output)
@@ -1561,13 +1574,14 @@ def main():
     if run_iterative_sim2real:
         if len(seeds) > 1:
             print(
-                "WARNING: Iterative Sim-to-Real SAC uses only the base seed "
+                "WARNING: Iterative Sim-to-Real uses only the base seed "
                 f"{seeds[0]}; --n-seeds={len(seeds)} is not applied to real physics."
             )
-        label = ITERATIVE_SIM2REAL_ALGORITHM
+        label = sim2real_label
+        policy_algorithm = sim2real_algorithm
         print(
-            f"\n{'='*50}\nTraining Iterative Sim-to-Real SAC "
-            f"({'pretrained SAC' if args.initial_policy else f'{args.initial_surrogate_steps} initial surrogate steps'}, "
+            f"\n{'='*50}\nTraining Iterative Sim-to-Real {policy_algorithm.upper()} "
+            f"({'pretrained policy' if args.initial_policy else f'{args.initial_surrogate_steps} initial surrogate steps'}, "
             f"{args.real_steps_per_cycle} TraceWin steps/cycle, "
             f"{args.cycles} cycle, "
             f"{'legacy surrogate refresh' if args.sim2real_surrogate_refresh else 'TraceWin-only fine-tuning'}, "
@@ -1578,6 +1592,7 @@ def main():
             dataset=str(args.dataset),
             tracewin=str(args.tracewin),
             output=str(out_root / label),
+            algorithm=policy_algorithm,
             initial_policy=args.initial_policy,
             cycles=args.cycles,
             initial_surrogate_steps=args.initial_surrogate_steps,

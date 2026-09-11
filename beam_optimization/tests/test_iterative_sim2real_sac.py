@@ -526,6 +526,86 @@ class IterativeWorkflowTests(unittest.TestCase):
         self.assertEqual(args.max_ep_steps, 20)
         self.assertIsNone(args.initial_policy)
         self.assertIn("iterative_sim2real_sac", MODEL_BASED_ALGORITHMS)
+        self.assertIn("iterative_sim2real_td3", MODEL_BASED_ALGORITHMS)
+
+    def test_pretrained_td3_runs_real_phase_and_uses_td3_artifact_layout(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = self._args(root, cycles=1)
+            args.algorithm = "td3"
+            args.enable_learning_curve = False
+
+            dataset = BeamDataset.load(args.dataset)
+            model = ModularMLP.load(args.surrogate)
+            policy_env = SurrogateEnv(
+                model=model, dataset=dataset, max_steps=args.max_ep_steps
+            )
+            pretrained = StableBaselinesAgent(
+                "td3",
+                policy_env,
+                hidden_dims=(8, 8),
+                seed=7,
+                model_kwargs={
+                    "learning_starts": 100,
+                    "buffer_size": 32,
+                    "batch_size": 2,
+                },
+            )
+            pretrained._model.num_timesteps = 7
+            initial_policy = root / "td3_agent.zip"
+            pretrained.save(str(initial_policy))
+            policy_env.close()
+            args.initial_policy = str(initial_policy)
+
+            class FakeTraceWinEnv(SurrogateEnv):
+                def reset(self, **kwargs):
+                    obs, info = super().reset(**kwargs)
+                    info["sim_result"].source = "tracewin"
+                    return obs, info
+
+                def step(self, action):
+                    obs, reward, terminated, truncated, info = super().step(action)
+                    info["sim_result"].source = "tracewin"
+                    return obs, reward, terminated, truncated, info
+
+            def tracewin_factory(**kwargs):
+                return FakeTraceWinEnv(
+                    model=model,
+                    dataset=kwargs["distance_dataset"],
+                    max_steps=kwargs["max_steps"],
+                    reset_scale=kwargs["reset_scale"],
+                )
+
+            summary = IterativeSim2RealSAC(
+                args, tracewin_env_factory=tracewin_factory
+            ).train()
+
+            output = Path(args.output)
+            self.assertEqual(summary["algorithm"], "td3")
+            self.assertEqual(summary["global_steps"], 9)
+            self.assertEqual(summary["global_td3_steps"], 9)
+            self.assertNotIn("global_sac_steps", summary)
+            self.assertIsNone(summary["frozen_entropy_coefficient"])
+            self.assertTrue((output / "td3/td3_agent.zip").is_file())
+            self.assertTrue((output / "td3/pretrained_agent.zip").is_file())
+            self.assertTrue((output / "td3/best_tracewin_agent.zip").is_file())
+            self.assertTrue((output / "td3/replay_buffer.pkl").is_file())
+
+            loaded = StableBaselinesAgent.load(
+                "td3", str(output / "td3/td3_agent.zip"), env=FakeTraceWinEnv(
+                    model=model, dataset=dataset, max_steps=args.max_ep_steps
+                )
+            )
+            self.assertEqual(loaded.algorithm, "td3")
+
+            resumed = IterativeSim2RealSAC(
+                args,
+                tracewin_env_factory=lambda **kwargs: self.fail(
+                    "completed TD3 resume must not call TraceWin"
+                ),
+            ).resume()
+            self.assertEqual(resumed["status"], "complete")
+            self.assertEqual(resumed["algorithm"], "td3")
 
 
 class TrainPoliciesIntegrationTests(unittest.TestCase):
@@ -598,6 +678,51 @@ class TrainPoliciesIntegrationTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 train_policies.main()
 
+    def test_only_iterative_td3_selects_td3_and_its_output_directory(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_path = root / "dataset.pt"
+            surrogate_path = root / "surrogate.pt"
+            tracewin_path = root / "tracewin.ini"
+            output = root / "train"
+            initial_policy = root / "td3_agent.zip"
+            _tiny_dataset().save_flat(dataset_path)
+            _tiny_surrogate().save(str(surrogate_path))
+            tracewin_path.write_text("fake", encoding="utf-8")
+            captured = {}
+
+            class FakeAlgorithm:
+                def __init__(self, config):
+                    captured["config"] = config
+
+                def train(self):
+                    return {"best_score": 1.0, "learning_curve": []}
+
+            argv = [
+                "train_policies",
+                "--only", "iterative_sim2real_td3",
+                "--single-surrogate", str(surrogate_path),
+                "--dataset", str(dataset_path),
+                "--tracewin", str(tracewin_path),
+                "--output", str(output),
+                "--initial-policy", str(initial_policy),
+                "--quick",
+                "--no-learning-curve",
+                "--no-tensorboard",
+            ]
+            from beam_optimization.scripts import train_policies
+
+            with patch.object(train_policies, "IterativeSim2RealSAC", FakeAlgorithm), \
+                 patch("sys.argv", argv):
+                train_policies.main()
+
+            config = captured["config"]
+            self.assertEqual(config.algorithm, "td3")
+            self.assertEqual(
+                Path(config.output), output / "iterative_sim2real_td3"
+            )
+            self.assertTrue((output / "summary.json").is_file())
+
     def test_initial_policy_requires_only_iterative_sim2real(self):
         from beam_optimization.scripts import train_policies
 
@@ -632,6 +757,30 @@ class PublicIdentityTests(unittest.TestCase):
             )
         self.assertIs(loaded, sentinel)
         load.assert_called_once_with("sac", "policy.zip", env=env)
+
+    def test_benchmark_loads_iterative_checkpoint_as_sb3_td3(self):
+        from beam_optimization.scripts.benchmark import make_policy_agent
+
+        env = _ContinuousEnv()
+        sentinel = object()
+        with patch.object(StableBaselinesAgent, "load", return_value=sentinel) as load:
+            loaded = make_policy_agent(
+                "iterative_sim2real_td3", "policy.zip", env, [8, 8]
+            )
+        self.assertIs(loaded, sentinel)
+        load.assert_called_once_with("td3", "policy.zip", env=env)
+
+    def test_qualitative_test_loads_iterative_checkpoint_as_sb3_td3(self):
+        from beam_optimization.scripts.test import make_agent
+
+        env = _ContinuousEnv()
+        sentinel = object()
+        with patch.object(StableBaselinesAgent, "load", return_value=sentinel) as load:
+            loaded = make_agent(
+                "iterative_sim2real_td3", "policy.zip", 4, [8, 8], env=env
+            )
+        self.assertIs(loaded, sentinel)
+        load.assert_called_once_with("td3", "policy.zip", env=env)
 
 if __name__ == "__main__":
     unittest.main()

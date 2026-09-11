@@ -92,6 +92,7 @@ POLICY_ALGORITHMS = (
     *CUSTOM_MODEL_FREE_ALGORITHMS,
     "mbpo",
     "iterative_sim2real_sac",
+    "iterative_sim2real_td3",
     "svg_final",
     "svg_uniform",
 )
@@ -179,11 +180,12 @@ def make_policy_agent(algo: str, ckpt_path: str, env, hidden: list[int],
     obs_dim = env.observation_space.shape[0]
 
     algo = canonical_algorithm_name(algo)
-    if algo == "iterative_sim2real_sac":
+    if algo in {"iterative_sim2real_sac", "iterative_sim2real_td3"}:
         from beam_optimization.algorithms.model_free.stable_baselines import (
             StableBaselinesAgent,
         )
-        return StableBaselinesAgent.load("sac", ckpt_path, env=env)
+        policy_algorithm = algo.removeprefix("iterative_sim2real_")
+        return StableBaselinesAgent.load(policy_algorithm, ckpt_path, env=env)
     if algo in STABLE_BASELINES_ALGORITHMS:
         from beam_optimization.algorithms.model_free.stable_baselines import (
             StableBaselinesAgent,
@@ -506,7 +508,7 @@ def run_policy_benchmark(args, surrogate, dataset,
         expected = (
             ".zip"
             if algo in STABLE_BASELINES_ALGORITHMS
-            or algo == "iterative_sim2real_sac"
+            or algo in {"iterative_sim2real_sac", "iterative_sim2real_td3"}
             else ".pt"
         )
         if path.suffix.lower() != expected:
@@ -820,6 +822,13 @@ def main():
         default=None,
         metavar="CKPT",
         help="Iterative Sim-to-Real SAC checkpoint (.zip).",
+    )
+    parser.add_argument(
+        "--iterative-sim2real-td3",
+        dest="iterative_sim2real_td3",
+        default=None,
+        metavar="CKPT",
+        help="Iterative Sim-to-Real TD3 checkpoint (.zip).",
     )
     parser.add_argument(
         "--svg-final", "--svg-finale", dest="svg_final", default=None, metavar="CKPT",

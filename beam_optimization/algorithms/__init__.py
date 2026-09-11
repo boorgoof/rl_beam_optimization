@@ -29,6 +29,7 @@ MODEL_BASED_ALGORITHMS: tuple[str, ...] = (
     "svg_final",
     "svg_uniform",
     "iterative_sim2real_sac",
+    "iterative_sim2real_td3",
 )
 ALGORITHMS: tuple[str, ...] = (*MODEL_FREE_ALGORITHMS, *MODEL_BASED_ALGORITHMS)
 LEGACY_ALGORITHM_ALIASES = {"sb3_sac": "sac"}
