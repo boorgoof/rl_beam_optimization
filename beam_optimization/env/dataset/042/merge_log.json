@@ -34,6 +34,25 @@
         "val": 16448,
         "test": 16450
       }
+    },
+    {
+      "timestamp": "2026-09-08T10:48:56+02:00",
+      "mode": "remove_beam0_artifact",
+      "reason": "Removed encoded physics-failure rows whose beam0 differed from the dominant beam0 only by floating-point extraction noise.",
+      "criterion": "beam0 is the rare exact variant; all removed rows have score -999",
+      "backup_dir": "beam0_artifact_backup",
+      "removed_counts": {
+        "all": 254,
+        "train": 205,
+        "val": 30,
+        "test": 19
+      },
+      "remaining_counts": {
+        "all": 164234,
+        "train": 131385,
+        "val": 16418,
+        "test": 16431
+      }
     }
   ]
 }

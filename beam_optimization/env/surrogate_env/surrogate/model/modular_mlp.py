@@ -19,14 +19,12 @@ from beam_optimization.config.adige import (
 )
 
 
-# Beam-state features that are physically bounded, independent of any specific
-# beam line: npart_ratio is a fraction of surviving particles, sizes and
-# emittances cannot be negative. Offsets/angles (x0, y0, x'0, y'0) have no such
-# bound (they are signed displacements from a zero reference), so they are left
-# unconstrained.
-_NPART_RATIO_INDEX = BEAM_STATE_FEATURES.index("npart_ratio")
+# Beam-state features constrained to be positive with softplus. On the
+# experimental branch, npart_ratio is positive but deliberately has
+# no neural upper bound; score() retains its existing clamp to [0, 1].
 _NONNEGATIVE_INDICES = [
-    BEAM_STATE_FEATURES.index(name) for name in ("SizeX", "SizeY", "ex", "ey")
+    BEAM_STATE_FEATURES.index(name)
+    for name in ("npart_ratio", "SizeX", "SizeY", "ex", "ey")
 ]
 
 
@@ -143,18 +141,12 @@ class ModularMLP(nn.Module):
     @staticmethod
     def _apply_physical_bounds(beam: torch.Tensor) -> torch.Tensor:
         """Reconstruct predicted beam-state features (raw physical units) into
-        what is physically possible: npart_ratio in (0, 1), sizes/emittances > 0.
+        the represented physical space. On this experimental branch,
+        npart_ratio uses softplus: it remains positive and can represent 1
+        without an upper-bound activation, but may exceed 1. Consumers retain
+        their existing score clamp and RL terminal-threshold handling.
 
-        npart_ratio: sigmoid(), not a clamp. compute_normalization_metadata()
-        (trainer.py) computes this column's mean/std at output stages in
-        logit space, so the denormalized value arriving here already
-        *represents* a logit -- sigmoid() is its exact inverse, giving a
-        value that is mathematically guaranteed to fall in (0, 1) no matter
-        how far off the raw prediction is, instead of a clamp that turns any
-        noisy negative prediction into an artificial exact 0 ("all particles
-        lost" per score()) and discards how wrong the prediction actually was.
-
-        sizes/emittances: softplus(), not a clamp. Their output-stage
+        npart_ratio/sizes/emittances: softplus(), not a clamp. Their output-stage
         normalization statistics are computed in inverse-softplus space, so
         this is the exact reconstruction transform. Unconstrained MSE
         regression can otherwise predict impossible negative values; softplus
@@ -171,7 +163,6 @@ class ModularMLP(nn.Module):
         # into slices in place: repeated in-place writes to the same tensor break
         # autograd's saved-tensor version tracking during training.
         columns = list(torch.unbind(beam, dim=1))
-        columns[_NPART_RATIO_INDEX] = torch.sigmoid(columns[_NPART_RATIO_INDEX])
         for index in _NONNEGATIVE_INDICES:
             columns[index] = F.softplus(columns[index])
         return torch.stack(columns, dim=1)
@@ -210,8 +201,8 @@ class ModularMLP(nn.Module):
 
     # ── Checkpoint I/O ─────────────────────────────────────────────────────────
 
-    # NOTE: the _apply_physical_bounds() transform (sigmoid/softplus choice) is
-    # a code-level architectural decision, not serialized here. A checkpoint
+    # NOTE: the _apply_physical_bounds() output transform is a code-level
+    # architectural decision, not serialized here. A checkpoint
     # trained under a different transform is not self-describing and must be
     # retrained, not silently reused, after that transform changes.
     _CONFIG_KEYS = ("hidden_sizes", "dropout", "latent_dim", "out_hidden", "out_dropout")

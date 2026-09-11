@@ -45,6 +45,7 @@ ALGO_STYLES: dict[str, tuple[str, str]] = {
     "mbpo":         ("#008300", "-"),
     "dyna":         ("#008300", "-"),
     "iterative_sim2real_sac": ("#00a6a6", "-"),
+    "iterative_sim2real_td3": ("#147d64", "-"),
     "svg_final":    ("#4a3aa7", "-"),
     "svg_finale":   ("#4a3aa7", "-"),  # legacy alias
     "svg_uniform":  ("#b24f91", "--"),

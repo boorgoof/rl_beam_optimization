@@ -66,8 +66,8 @@ def _dataset_with_known_npart_ratio(*, n: int = 5, seed: int = 0):
     """Synthetic dataset where every feature except npart_ratio is arbitrary,
     beam0's npart_ratio is always exactly 1.0 (matches the real dataset
     invariant -- see visualize_surrogate_model.ipynb section 3.4), and each
-    output stage's npart_ratio is a known, controlled value in (0, 1) so
-    compute_normalization_metadata()'s logit transform can be checked exactly.
+    output stage's npart_ratio is a known, controlled positive value so the
+    inverse-softplus transform can be checked exactly.
     """
     rng = np.random.default_rng(seed)
     npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
@@ -87,16 +87,16 @@ def _dataset_with_known_npart_ratio(*, n: int = 5, seed: int = 0):
     return dataset, known_npart_ratios
 
 
-class ComputeNormalizationMetadataLogitTests(unittest.TestCase):
-    def test_output_stage_npart_ratio_uses_logit_space_stats(self):
+class ComputeNormalizationMetadataTransformTests(unittest.TestCase):
+    def test_output_stage_npart_ratio_uses_inverse_softplus_stats(self):
         dataset, known = _dataset_with_known_npart_ratio()
         npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
 
         norm_stats = compute_normalization_metadata(dataset)
 
-        expected_logit = torch.logit(torch.tensor(known), eps=1e-4)
-        expected_mean = expected_logit.mean().item()
-        expected_var = expected_logit.var(unbiased=False).item()
+        transformed = _inverse_softplus(torch.tensor(known))
+        expected_mean = transformed.mean().item()
+        expected_var = transformed.var(unbiased=False).item()
 
         for stage_idx in range(1, N_OUTPUT_STAGES + 1):
             mean = norm_stats["beam_state_means"][stage_idx][npart_idx].item()
@@ -106,9 +106,8 @@ class ComputeNormalizationMetadataLogitTests(unittest.TestCase):
 
     def test_stage_zero_beam0_npart_ratio_stays_raw(self):
         # beam0's npart_ratio is a constant 1.0; it must stay untransformed
-        # (raw mean 1.0, raw variance 0.0), not logit-transformed (which
-        # would be +inf without the eps clamp -- compute_normalization_metadata()
-        # deliberately skips stage 0).
+        # (raw mean 1.0, raw variance 0.0), not inverse-softplus transformed.
+        # compute_normalization_metadata() deliberately skips stage 0.
         dataset, _ = _dataset_with_known_npart_ratio()
         npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
 
@@ -156,7 +155,7 @@ class ComputeNormalizationMetadataLogitTests(unittest.TestCase):
         norm_stats = compute_normalization_metadata(dataset)
 
         for stage_idx, tensor in enumerate(beam_states[1:], start=1):
-            for feature in ("SizeX", "SizeY", "ex", "ey"):
+            for feature in ("npart_ratio", "SizeX", "SizeY", "ex", "ey"):
                 feature_idx = BEAM_STATE_FEATURES.index(feature)
                 transformed = _inverse_softplus(tensor[:, feature_idx])
                 expected_mean = transformed.mean().item()

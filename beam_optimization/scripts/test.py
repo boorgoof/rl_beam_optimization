@@ -38,7 +38,10 @@ from beam_optimization.scripts.common import run_episode as run_common_episode
 
 
 ACT_DIM = N_PARAMS
-ITERATIVE_SIM2REAL_ALGORITHM = "iterative_sim2real_sac"
+ITERATIVE_SIM2REAL_ALGORITHMS = {
+    "iterative_sim2real_sac": "sac",
+    "iterative_sim2real_td3": "td3",
+}
 
 
 def load_surrogate(path: str | Path):
@@ -96,13 +99,15 @@ def make_env(args):
 def make_agent(algo: str, policy_path: str, obs_dim: int, hidden: list[int], env=None):
     """Instantiate and load a trained policy."""
     algo = canonical_algorithm_name(algo)
-    if algo == ITERATIVE_SIM2REAL_ALGORITHM:
+    if algo in ITERATIVE_SIM2REAL_ALGORITHMS:
         from beam_optimization.algorithms.model_free.stable_baselines import (
             StableBaselinesAgent,
         )
         if env is None:
-            raise ValueError("Iterative Sim-to-Real SAC loading requires the test env.")
-        return StableBaselinesAgent.load("sac", policy_path, env=env)
+            raise ValueError("Iterative Sim-to-Real loading requires the test env.")
+        return StableBaselinesAgent.load(
+            ITERATIVE_SIM2REAL_ALGORITHMS[algo], policy_path, env=env
+        )
     if algo in STABLE_BASELINES_ALGORITHMS:
         from beam_optimization.algorithms.model_free.stable_baselines import (
             StableBaselinesAgent,
@@ -307,8 +312,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run one trained policy for qualitative test episodes."
     )
-    parser.add_argument("--algo", required=True,
-                        choices=[*MODEL_FREE_ALGORITHMS, "sb3_sac", ITERATIVE_SIM2REAL_ALGORITHM])
+    parser.add_argument(
+        "--algo", required=True,
+        choices=[*MODEL_FREE_ALGORITHMS, "sb3_sac", *ITERATIVE_SIM2REAL_ALGORITHMS],
+    )
     parser.add_argument("--policy", required=True, help="Path to the trained policy checkpoint.")
     parser.add_argument("--env", default="surrogate", choices=["surrogate", "tracewin"])
     parser.add_argument("--max-ep-steps", type=int, default=MAX_STEPS)
@@ -373,7 +380,7 @@ def main():
     expected_suffix = (
         ".zip"
         if args.algo in STABLE_BASELINES_ALGORITHMS
-        or args.algo == ITERATIVE_SIM2REAL_ALGORITHM
+        or args.algo in ITERATIVE_SIM2REAL_ALGORITHMS
         else ".pt"
     )
     if Path(args.policy).suffix.lower() != expected_suffix:

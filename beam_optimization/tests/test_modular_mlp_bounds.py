@@ -52,24 +52,19 @@ class PhysicalBoundsTests(unittest.TestCase):
         self.assertNotAlmostEqual(bounded[0, _IDX["SizeY"]].item(), 3.3, places=2)
         self.assertAlmostEqual(bounded[0, _IDX["y0"]].item(), -12.5, places=5)
 
-    def test_npart_ratio_uses_sigmoid_not_a_clamp(self):
-        # The value arriving here is in logit space (compute_normalization_metadata()
-        # denormalizes npart_ratio at output stages using logit-space stats), so
-        # _apply_physical_bounds must reconstruct it with sigmoid(), the exact
-        # inverse -- not clamp it as if it were already a proportion.
+    def test_npart_ratio_uses_softplus_and_is_not_upper_bounded(self):
+        # The value arriving here is in inverse-softplus space, so softplus is
+        # its exact reconstruction. Unlike sigmoid, it does not saturate at 1.
         raw = torch.zeros((1, len(BEAM_STATE_FEATURES)))
         raw[0, _IDX["npart_ratio"]] = 1.5
 
         bounded = ModularMLP._apply_physical_bounds(raw)
 
-        expected = torch.sigmoid(torch.tensor(1.5)).item()
+        expected = F.softplus(torch.tensor(1.5)).item()
         self.assertAlmostEqual(bounded[0, _IDX["npart_ratio"]].item(), expected, places=6)
+        self.assertGreater(bounded[0, _IDX["npart_ratio"]].item(), 1.0)
 
-    def test_npart_ratio_never_reaches_exactly_zero_or_one(self):
-        # An old clamp(0, 1) would turn a very negative raw prediction into an
-        # artificial exact 0.0 -- read by score() as "all particles lost" even
-        # when the true npart_ratio was just low, not zero. sigmoid() cannot
-        # produce an exact 0 or 1 for any finite input.
+    def test_npart_ratio_remains_positive_for_negative_predictions(self):
         raw = torch.zeros((1, len(BEAM_STATE_FEATURES)))
         raw[0, _IDX["npart_ratio"]] = -20.0
 
@@ -111,7 +106,7 @@ class ForwardOutputBoundsTests(unittest.TestCase):
         for stage_output in outputs:
             npart = stage_output[:, _IDX["npart_ratio"]]
             self.assertTrue(torch.all(npart >= 0.0))
-            self.assertTrue(torch.all(npart <= 1.0))
+            self.assertTrue(torch.isfinite(npart).all())
             for name in ("SizeX", "SizeY", "ex", "ey"):
                 self.assertTrue(torch.all(stage_output[:, _IDX[name]] >= 0.0))
 

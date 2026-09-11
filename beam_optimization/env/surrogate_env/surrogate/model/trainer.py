@@ -22,7 +22,7 @@ from beam_optimization.env.dataset import BeamDataset
 from beam_optimization.env.surrogate_env.surrogate.model.modular_mlp import ModularMLP
 
 
-_POSITIVE_OUTPUT_FEATURES = ("SizeX", "SizeY", "ex", "ey")
+_POSITIVE_OUTPUT_FEATURES = ("npart_ratio", "SizeX", "SizeY", "ex", "ey")
 _POSITIVE_OUTPUT_INDICES = [
     BEAM_STATE_FEATURES.index(name) for name in _POSITIVE_OUTPUT_FEATURES
 ]
@@ -438,24 +438,19 @@ def train_surrogate(
 def compute_normalization_metadata(dataset: BeamDataset) -> dict:
     """Compute ModularMLP normalization statistics from a BeamDataset.
 
-    npart_ratio at output stages (index 1..N_OUTPUT_STAGES of beam_states) is
-    logit-transformed and positive size/emittance features are inverse-softplus
-    transformed before their statistics are computed. These are the exact
-    inverses of ModularMLP._apply_physical_bounds(), so denormalization followed
-    by sigmoid/softplus reconstructs the physical target space consistently.
-    beam0 (stage 0, the network input) is left untransformed because it is only
-    consumed by _norm_beam(), not the output-side denorm+bounds path.
+    npart_ratio and positive size/emittance features at output stages are
+    inverse-softplus transformed before their statistics are computed. This is
+    the exact inverse of their reconstruction in
+    ModularMLP._apply_physical_bounds(). beam0, offsets, and angles remain in
+    raw physical space.
     """
     stage_params, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
-    npart_idx = BEAM_STATE_FEATURES.index("npart_ratio")
-
     transformed_beam_states = []
     for stage_idx, tensor in enumerate(beam_states):
         if stage_idx == 0:
             transformed_beam_states.append(tensor)
             continue
         columns = list(torch.unbind(tensor, dim=1))
-        columns[npart_idx] = torch.logit(columns[npart_idx], eps=1e-4)
         for feature_idx in _POSITIVE_OUTPUT_INDICES:
             columns[feature_idx] = _inverse_softplus(columns[feature_idx])
         transformed_beam_states.append(torch.stack(columns, dim=1))
@@ -482,8 +477,7 @@ def compute_stage_feature_stds(
     """Raw target-feature standard deviations used by the training loss.
 
     These are intentionally separate from the model normalization metadata:
-    output ``npart_ratio`` is represented in logit space inside that metadata,
-    whereas the loss compares predictions and targets in raw physical units.
+    the loss always compares predictions and targets in raw physical units.
     """
     _, beam_states = dataset.get_training_batch(np.arange(len(dataset)))
     return [

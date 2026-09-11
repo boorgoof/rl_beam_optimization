@@ -51,7 +51,9 @@ class _LinearBeamModel(torch.nn.Module):
         for stage_index in range(N_OUTPUT_STAGES):
             stage = beam0 + influence * (stage_index + 1) + self.offset
             columns = list(stage.unbind(dim=1))
-            columns[_NPART_INDEX] = torch.sigmoid(columns[_NPART_INDEX])
+            columns[_NPART_INDEX] = torch.nn.functional.softplus(
+                columns[_NPART_INDEX]
+            )
             outputs.append(torch.stack(columns, dim=1))
         return outputs
 
