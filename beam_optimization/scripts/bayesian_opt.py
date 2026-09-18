@@ -1,9 +1,9 @@
 """Bayesian Optimization directly against TraceWin.
 
-The Gaussian Process is warm-started with real TraceWin rows from a
-BeamDataset. Every new point proposed by the optimizer is evaluated by
-TraceWin. A deterministic per-evaluation seed sequence is used only when
-``--tracewin-seed-base`` is explicitly provided.
+By default, the Gaussian Process is warm-started with real TraceWin rows from
+a BeamDataset. ``--cold-start`` instead starts with a space-filling design and
+does not load a dataset. Every point proposed by the optimizer is evaluated by
+TraceWin.
 """
 from __future__ import annotations
 
@@ -143,13 +143,13 @@ def _warm_start_payload(selection) -> list[dict]:
 def _report_config(
     args,
     *,
-    dataset_path: Path,
+    dataset_path: Path | None,
     project_file: Path,
     calc_root: Path,
     bounds: list[tuple[float, float]],
 ) -> dict:
-    return {
-        "dataset": str(dataset_path),
+    config = {
+        "dataset": None if dataset_path is None else str(dataset_path),
         "project": str(project_file),
         "calc_root": str(calc_root),
         "n_calls": args.n_calls,
@@ -168,8 +168,27 @@ def _report_config(
         "timeout": args.timeout,
         "retries": args.retries,
         "new_samples_output": str(Path(args.new_samples_output).resolve()),
-        "merged_dataset_output": str(Path(args.merged_dataset_output).resolve()),
+        "merged_dataset_output": (
+            None
+            if args.merged_dataset_output is None
+            else str(Path(args.merged_dataset_output).resolve())
+        ),
     }
+    if args.cold_start:
+        config.update(
+            {
+                "cold_start": True,
+                "initial_points": args.initial_points,
+                "initial_point_generator": args.initial_point_generator,
+                "tracewin_fixed_seed": args.tracewin_fixed_seed,
+                "gp_observation_model": "noise_free_with_jitter",
+            }
+        )
+    elif args.tracewin_fixed_seed is not None:
+        # Keep the default warm-start configuration byte-for-byte compatible
+        # with checkpoints created before fixed seeds were supported.
+        config["tracewin_fixed_seed"] = args.tracewin_fixed_seed
+    return config
 
 
 def _new_report(
@@ -263,6 +282,23 @@ def _random_unused_tracewin_seed(report: dict) -> int:
             return seed
 
 
+def _tracewin_seed_for_evaluation(
+    report: dict,
+    evaluation_index: int,
+    *,
+    tracewin_seed_base: int | None,
+    tracewin_fixed_seed: int | None,
+    random_tracewin_seeds: bool,
+) -> int | None:
+    if tracewin_fixed_seed is not None:
+        return int(tracewin_fixed_seed)
+    if tracewin_seed_base is not None:
+        return int(tracewin_seed_base) + evaluation_index
+    if random_tracewin_seeds:
+        return _random_unused_tracewin_seed(report)
+    return None
+
+
 def _load_new_samples(
     path: Path,
     report: dict,
@@ -321,11 +357,12 @@ def _load_new_samples(
             optimizer_seed = int(report["config"]["seed"]) + run_index
             run = _ensure_run(report, run_index, optimizer_seed)
             stored_vector = dataset_vectors[-1]
-            tracewin_seed_base = report["config"].get("tracewin_seed_base")
-            tracewin_seed = (
-                None
-                if tracewin_seed_base is None
-                else int(tracewin_seed_base) + total_evaluations
+            tracewin_seed = _tracewin_seed_for_evaluation(
+                report,
+                total_evaluations,
+                tracewin_seed_base=report["config"].get("tracewin_seed_base"),
+                tracewin_fixed_seed=report["config"].get("tracewin_fixed_seed"),
+                random_tracewin_seeds=False,
             )
             run["evaluations"].append(
                 {
@@ -417,9 +454,12 @@ def _build_optimizer(
     evaluations: list[dict],
     initial_points: int = 0,
     initial_point_generator: str = "random",
+    noise_free: bool = False,
 ):
     try:
         from skopt import Optimizer
+        from skopt.learning import GaussianProcessRegressor
+        from skopt.learning.gaussian_process.kernels import ConstantKernel, Matern
         from skopt.space import Real
     except ImportError as exc:
         raise ImportError(
@@ -430,9 +470,29 @@ def _build_optimizer(
         Real(lower, upper, name=key)
         for key, (lower, upper) in zip(PARAM_KEYS, bounds)
     ]
+    base_estimator = "GP"
+    if noise_free:
+        dimensions_count = len(dimensions)
+        kernel = ConstantKernel(
+            1.0,
+            constant_value_bounds=(0.01, 1000.0),
+        ) * Matern(
+            length_scale=np.ones(dimensions_count),
+            length_scale_bounds=[(0.01, 100.0)] * dimensions_count,
+            nu=2.5,
+        )
+        base_estimator = GaussianProcessRegressor(
+            kernel=kernel,
+            alpha=1e-10,
+            normalize_y=True,
+            noise=None,
+            n_restarts_optimizer=2,
+            random_state=optimizer_seed,
+        )
+
     optimizer = Optimizer(
         dimensions=dimensions,
-        base_estimator="GP",
+        base_estimator=base_estimator,
         n_initial_points=initial_points,
         initial_point_generator=initial_point_generator,
         acq_func="EI",
@@ -540,9 +600,11 @@ def run_tracewin_bayesian(
     n_runs: int,
     seed: int,
     tracewin_seed_base: int | None,
+    tracewin_fixed_seed: int | None = None,
     initial_points: int = 0,
     initial_point_generator: str = "random",
     random_tracewin_seeds: bool = False,
+    noise_free_gp: bool = False,
 ) -> dict:
     """Run or resume the ask/tell loop, persisting after every evaluation."""
     new_dataset = _load_new_samples(new_samples_output, report)
@@ -558,6 +620,7 @@ def run_tracewin_bayesian(
             evaluations=run["evaluations"],
             initial_points=initial_points,
             initial_point_generator=initial_point_generator,
+            noise_free=noise_free_gp,
         )
         gp_penalty = _replayed_gp_penalty(report["warm_start"], run["evaluations"])
         simulator = simulator_factory(run_index)
@@ -565,12 +628,13 @@ def run_tracewin_bayesian(
         while len(run["evaluations"]) < n_calls:
             call_index = len(run["evaluations"])
             evaluation_index = _completed_evaluation_count(report)
-            if tracewin_seed_base is not None:
-                tracewin_seed = tracewin_seed_base + evaluation_index
-            elif random_tracewin_seeds:
-                tracewin_seed = _random_unused_tracewin_seed(report)
-            else:
-                tracewin_seed = None
+            tracewin_seed = _tracewin_seed_for_evaluation(
+                report,
+                evaluation_index,
+                tracewin_seed_base=tracewin_seed_base,
+                tracewin_fixed_seed=tracewin_fixed_seed,
+                random_tracewin_seeds=random_tracewin_seeds,
+            )
 
             if tracewin_seed is None:
                 simulator.tracewin_params.pop("random_seed", None)
@@ -832,6 +896,14 @@ def save_convergence_plot(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", default=str(default_dataset_path()))
+    parser.add_argument(
+        "--cold-start",
+        action="store_true",
+        help=(
+            "Do not load or warm-start from a dataset. Begin each run with "
+            "a space-filling initial design evaluated directly in TraceWin."
+        ),
+    )
     tracewin_source = parser.add_mutually_exclusive_group()
     tracewin_source.add_argument("--workspace", default=None, metavar="PATH")
     tracewin_source.add_argument(
@@ -843,6 +915,21 @@ def main() -> None:
     parser.add_argument("--calc-dir", default=None, metavar="PATH")
     parser.add_argument("--n-calls", type=int, default=100)
     parser.add_argument("--n-runs", type=int, default=1)
+    parser.add_argument(
+        "--initial-points",
+        type=int,
+        default=None,
+        help=(
+            "Number of initial space-filling TraceWin evaluations per run "
+            "in cold-start mode (default: 60). Included in --n-calls."
+        ),
+    )
+    parser.add_argument(
+        "--initial-point-generator",
+        choices=("random", "sobol", "halton", "hammersly", "lhs", "grid"),
+        default="sobol",
+        help="Space-filling design used by --cold-start (default: sobol).",
+    )
     parser.add_argument("--warm-best", type=int, default=10)
     parser.add_argument("--warm-diverse", type=int, default=30)
     parser.add_argument(
@@ -855,13 +942,23 @@ def main() -> None:
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
+    tracewin_seeds = parser.add_mutually_exclusive_group()
+    tracewin_seeds.add_argument(
         "--tracewin-seed-base",
         type=int,
         default=None,
         help=(
             "Deterministic first TraceWin seed. If omitted, no random_seed "
             "parameter is passed to TraceWin."
+        ),
+    )
+    tracewin_seeds.add_argument(
+        "--tracewin-fixed-seed",
+        type=int,
+        default=None,
+        help=(
+            "Pass the same TraceWin random_seed to every objective evaluation. "
+            "This defines a fixed, approximately deterministic objective."
         ),
     )
     parser.add_argument("--tracewin-particles", type=int, default=10_000)
@@ -880,6 +977,19 @@ def main() -> None:
         parser.error("--n-calls and --n-runs must be positive")
     if args.warm_best < 0 or args.warm_diverse < 0:
         parser.error("--warm-best and --warm-diverse must be non-negative")
+    if args.cold_start:
+        if args.initial_points is None:
+            args.initial_points = 60
+        if args.initial_points <= 0:
+            parser.error("--initial-points must be positive")
+        if args.initial_points > args.n_calls:
+            parser.error("--initial-points cannot exceed --n-calls")
+        args.warm_best = 0
+        args.warm_diverse = 0
+    elif args.initial_points is not None:
+        parser.error("--initial-points requires --cold-start")
+    else:
+        args.initial_points = 0
 
     try:
         workspace, project_file = resolve_tracewin_project(
@@ -889,28 +999,34 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
-    dataset_path = Path(args.dataset).expanduser().resolve()
-    if not dataset_path.is_file():
-        parser.error(f"Dataset not found: {dataset_path}")
-    source_dataset = BeamDataset.load(dataset_path)
-
     bounds = hardware_aware_bounds(PARAMETERS, args.bounds_scale)
-    selection = select_warm_start(
-        source_dataset.get_param_vecs().numpy(),
-        source_dataset.scores.numpy(),
-        parameters=PARAMETERS,
-        bounds=bounds,
-        n_best=args.warm_best,
-        n_diverse=args.warm_diverse,
-        seed=args.seed,
-    )
-    requested_warm = args.warm_best + args.warm_diverse
-    if len(selection.indices) < requested_warm:
-        print(
-            f"WARNING: requested {requested_warm} warm-start rows, but only "
-            f"{len(selection.indices)} valid unique rows are available.",
-            flush=True,
+    if args.cold_start:
+        dataset_path = None
+        source_dataset = None
+        warm_start = []
+        args.merged_dataset_output = None
+    else:
+        dataset_path = Path(args.dataset).expanduser().resolve()
+        if not dataset_path.is_file():
+            parser.error(f"Dataset not found: {dataset_path}")
+        source_dataset = BeamDataset.load(dataset_path)
+        selection = select_warm_start(
+            source_dataset.get_param_vecs().numpy(),
+            source_dataset.scores.numpy(),
+            parameters=PARAMETERS,
+            bounds=bounds,
+            n_best=args.warm_best,
+            n_diverse=args.warm_diverse,
+            seed=args.seed,
         )
+        requested_warm = args.warm_best + args.warm_diverse
+        if len(selection.indices) < requested_warm:
+            print(
+                f"WARNING: requested {requested_warm} warm-start rows, but only "
+                f"{len(selection.indices)} valid unique rows are available.",
+                flush=True,
+            )
+        warm_start = _warm_start_payload(selection)
 
     output = Path(args.output).expanduser().resolve()
     calc_root = (
@@ -919,7 +1035,11 @@ def main() -> None:
         else _default_calc_root(workspace, output)
     )
     new_samples_output = Path(args.new_samples_output).expanduser().resolve()
-    merged_dataset_output = Path(args.merged_dataset_output).expanduser().resolve()
+    merged_dataset_output = (
+        None
+        if args.merged_dataset_output is None
+        else Path(args.merged_dataset_output).expanduser().resolve()
+    )
     config = _report_config(
         args,
         dataset_path=dataset_path,
@@ -927,42 +1047,59 @@ def main() -> None:
         calc_root=calc_root,
         bounds=bounds,
     )
-    warm_start = _warm_start_payload(selection)
     try:
         report = _load_or_create_report(
             output,
             config=config,
             warm_start=warm_start,
+            mode="tracewin_cold_start" if args.cold_start else "tracewin",
         )
     except ValueError as exc:
         parser.error(str(exc))
 
     print(f"TraceWin workspace : {workspace}")
     print(f"TraceWin project   : {project_file}")
-    print(f"Dataset            : {dataset_path}")
-    print(f"Warm start         : {len(warm_start)} known TraceWin points")
-    print(f"New calls          : {args.n_calls} per run × {args.n_runs} run(s)")
+    print(
+        "Dataset            : "
+        + ("none (cold start)" if dataset_path is None else str(dataset_path))
+    )
+    if args.cold_start:
+        print(
+            f"Initial design     : {args.initial_points} "
+            f"{args.initial_point_generator} points per run"
+        )
+        print(
+            f"GP/EI calls        : {args.n_calls - args.initial_points} per run"
+        )
+    else:
+        print(f"Warm start         : {len(warm_start)} known TraceWin points")
+    print(f"TraceWin calls     : {args.n_calls} per run × {args.n_runs} run(s)")
     print(f"Bounds scale       : {args.bounds_scale} sensitivity units")
     print(
         "TraceWin seeds     : "
         + (
-            "unset (TraceWin default behavior)"
-            if args.tracewin_seed_base is None
-            else f"{args.tracewin_seed_base} + evaluation index"
+            f"fixed at {args.tracewin_fixed_seed}"
+            if args.tracewin_fixed_seed is not None
+            else (
+                "unset (TraceWin default behavior)"
+                if args.tracewin_seed_base is None
+                else f"{args.tracewin_seed_base} + evaluation index"
+            )
         )
     )
     print(f"Checkpoint         : {output}")
 
-    _ensure_default_evaluation(
-        report,
-        project_file=project_file,
-        calc_root=calc_root,
-        timeout=args.timeout,
-        retries=args.retries,
-        tracewin_particles=args.tracewin_particles,
-        tracewin_threads=args.tracewin_threads,
-    )
-    _write_json_atomic(output, report)
+    if not args.cold_start:
+        _ensure_default_evaluation(
+            report,
+            project_file=project_file,
+            calc_root=calc_root,
+            timeout=args.timeout,
+            retries=args.retries,
+            tracewin_particles=args.tracewin_particles,
+            tracewin_threads=args.tracewin_threads,
+        )
+        _write_json_atomic(output, report)
 
     def simulator_factory(run_index: int) -> TraceWinSimulator:
         return TraceWinSimulator(
@@ -987,20 +1124,33 @@ def main() -> None:
         n_runs=args.n_runs,
         seed=args.seed,
         tracewin_seed_base=args.tracewin_seed_base,
+        tracewin_fixed_seed=args.tracewin_fixed_seed,
+        initial_points=args.initial_points,
+        initial_point_generator=(
+            args.initial_point_generator if args.cold_start else "random"
+        ),
+        noise_free_gp=args.cold_start,
     )
-    _print_best_params(report["best_result"], report.get("default_result"))
     convergence = save_convergence_plot(report, output)
-    delta = save_delta_plot(
-        report["best_result"],
-        output,
-        default_result=report.get("default_result"),
-    )
+    best_result = report["best_result"]
+    delta = None
+    if best_result is not None:
+        _print_best_params(best_result, report.get("default_result"))
+        delta = save_delta_plot(
+            best_result,
+            output,
+            default_result=report.get("default_result"),
+        )
+    else:
+        print("\nWARNING: every TraceWin evaluation failed; no best point exists.")
     print(f"\nJSON checkpoint       -> {output}")
     print(f"New TraceWin samples  -> {new_samples_output}")
-    print(f"Merged dataset        -> {merged_dataset_output}")
+    if merged_dataset_output is not None:
+        print(f"Merged dataset        -> {merged_dataset_output}")
     if convergence is not None:
         print(f"Convergence plot      -> {convergence}")
-    print(f"Delta plot            -> {delta}")
+    if delta is not None:
+        print(f"Delta plot            -> {delta}")
 
 
 if __name__ == "__main__":

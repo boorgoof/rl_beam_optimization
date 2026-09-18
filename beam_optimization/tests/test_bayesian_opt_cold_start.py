@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -23,6 +24,7 @@ from beam_optimization.config.adige import (
     score_function_metadata,
 )
 from beam_optimization.env.dataset import BeamDataset
+from beam_optimization.scripts import bayesian_opt as bayesian_opt_script
 from beam_optimization.scripts import bayesian_opt_cold_start
 from beam_optimization.scripts.bayesian_opt import (
     _build_optimizer,
@@ -72,6 +74,75 @@ class _FakeSimulator:
 
 
 class SobolOptimizerTests(unittest.TestCase):
+    def test_main_cold_start_does_not_load_dataset_and_forwards_design(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "results.json"
+            samples = root / "samples.pt"
+            argv = [
+                "bayesian_opt",
+                "--cold-start",
+                "--workspace",
+                str(root),
+                "--initial-points",
+                "60",
+                "--initial-point-generator",
+                "sobol",
+                "--n-calls",
+                "300",
+                "--n-runs",
+                "5",
+                "--tracewin-fixed-seed",
+                "42",
+                "--output",
+                str(output),
+                "--new-samples-output",
+                str(samples),
+            ]
+
+            def finish_without_tracewin(**kwargs):
+                return kwargs["report"]
+
+            with (
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.object(
+                    bayesian_opt_script,
+                    "resolve_tracewin_project",
+                    return_value=(root, root / "project.ini"),
+                ),
+                mock.patch.object(
+                    bayesian_opt_script.BeamDataset,
+                    "load",
+                ) as load_dataset,
+                mock.patch.object(
+                    bayesian_opt_script,
+                    "_ensure_default_evaluation",
+                ) as evaluate_default,
+                mock.patch.object(
+                    bayesian_opt_script,
+                    "run_tracewin_bayesian",
+                    side_effect=finish_without_tracewin,
+                ) as run,
+                mock.patch.object(
+                    bayesian_opt_script,
+                    "save_convergence_plot",
+                    return_value=None,
+                ),
+            ):
+                bayesian_opt_script.main()
+
+        load_dataset.assert_not_called()
+        evaluate_default.assert_not_called()
+        call = run.call_args.kwargs
+        self.assertIsNone(call["source_dataset"])
+        self.assertIsNone(call["merged_dataset_output"])
+        self.assertEqual(call["initial_points"], 60)
+        self.assertEqual(call["initial_point_generator"], "sobol")
+        self.assertEqual(call["n_calls"], 300)
+        self.assertEqual(call["n_runs"], 5)
+        self.assertEqual(call["tracewin_fixed_seed"], 42)
+        self.assertTrue(call["noise_free_gp"])
+
     def test_power_of_two_validation(self):
         self.assertTrue(bayesian_opt_cold_start._is_power_of_two(64))
         self.assertFalse(bayesian_opt_cold_start._is_power_of_two(50))
@@ -164,6 +235,22 @@ class SobolOptimizerTests(unittest.TestCase):
         )
         np.testing.assert_allclose(resumed_gp.ask(), expected_first_gp)
 
+    def test_paper_style_optimizer_uses_ard_matern_without_fitted_noise(self):
+        bounds = hardware_aware_bounds(PARAMETERS, 10.0)
+        optimizer = _build_optimizer(
+            bounds,
+            optimizer_seed=42,
+            warm_start=[],
+            evaluations=[],
+            initial_points=4,
+            initial_point_generator="sobol",
+            noise_free=True,
+        )
+        estimator = optimizer.base_estimator_
+        self.assertIsNone(estimator.noise)
+        self.assertEqual(estimator.kernel.k2.nu, 2.5)
+        self.assertEqual(len(estimator.kernel.k2.length_scale), len(PARAMETERS))
+
     def test_cold_module_does_not_load_dataset_or_surrogate(self):
         source = inspect.getsource(bayesian_opt_cold_start)
         self.assertNotIn("BeamDataset.load", source)
@@ -172,6 +259,61 @@ class SobolOptimizerTests(unittest.TestCase):
 
 
 class ColdStartLoopTests(unittest.TestCase):
+    def test_fixed_tracewin_seed_is_reused_across_runs(self):
+        bounds = hardware_aware_bounds(PARAMETERS, 10.0)
+        midpoint = [(lower + upper) / 2.0 for lower, upper in bounds]
+        report = {
+            "version": 1,
+            "mode": "tracewin_cold_start",
+            "status": "running",
+            "created_at": "test",
+            "updated_at": "test",
+            "config": {},
+            "warm_start": [],
+            "runs": [],
+            "best_result": None,
+            "score_function": score_function_metadata(),
+        }
+        outcomes = {42: (True, 10.0)}
+        seen_seeds = []
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch(
+                "beam_optimization.scripts.bayesian_opt._build_optimizer",
+                return_value=_FakeOptimizer(midpoint),
+            ):
+                result = run_tracewin_bayesian(
+                    simulator_factory=lambda _run_index: _FakeSimulator(
+                        outcomes,
+                        seen_seeds,
+                    ),
+                    source_dataset=None,
+                    bounds=bounds,
+                    report=report,
+                    output=root / "cold.json",
+                    new_samples_output=root / "cold_samples.pt",
+                    merged_dataset_output=None,
+                    n_calls=2,
+                    n_runs=2,
+                    seed=7,
+                    tracewin_seed_base=None,
+                    tracewin_fixed_seed=42,
+                    initial_points=1,
+                    initial_point_generator="sobol",
+                )
+
+        self.assertEqual(seen_seeds, [42, 42, 42, 42])
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(
+            [
+                evaluation["phase"]
+                for run in result["runs"]
+                for evaluation in run["evaluations"]
+            ],
+            ["sobol", "bayesian", "sobol", "bayesian"],
+        )
+
     def test_failure_seed_phases_samples_and_resume(self):
         bounds = hardware_aware_bounds(PARAMETERS, 10.0)
         midpoint = [(lower + upper) / 2.0 for lower, upper in bounds]

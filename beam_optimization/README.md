@@ -38,6 +38,21 @@ cd /path/to/rl_beam_optimization
 source beam_optimization/.venv/bin/activate
 ```
 
+### CPU threads
+
+Commands launched with `python -m beam_optimization` default to at most 8 CPU
+threads (limited by CPU affinity), to reduce thread coordination overhead for
+small policy networks. Explicit `OMP_NUM_THREADS` and `MKL_NUM_THREADS` settings
+are preserved. For example, to use 4 threads:
+
+```bash
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python -m beam_optimization train_policies --help
+```
+
+This default applies to newly launched CLI commands. For notebooks or direct
+script execution, set these variables before starting Python. It does not fix
+storage latency or configure TraceWin's `--tracewin-threads` option.
+
 ### Jupyter Notebook Setup
 
 `beam_optimization/requirements.txt` also installs `notebook` and `ipykernel`,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import runpy
 import sys
 from typing import Sequence
@@ -61,6 +62,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     # run the selected command module with the remaining arguments
+    # Small policy networks spend more time coordinating large CPU thread pools
+    # than computing. Set defaults before the command imports torch/BLAS, while
+    # preserving explicit user settings (including an OMP-only configuration).
+    available_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    os.environ.setdefault("OMP_NUM_THREADS", str(min(8, available_cpus)))
+    os.environ.setdefault("MKL_NUM_THREADS", os.environ["OMP_NUM_THREADS"])
     command_args = argv[1:]
     sys.argv = [f"python -m beam_optimization {parsed_command.command}", *command_args]
     runpy.run_module(COMMAND_MODULES[parsed_command.command], run_name="__main__")
