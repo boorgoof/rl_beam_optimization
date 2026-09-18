@@ -204,8 +204,34 @@ class TraceWinSimulator(BeamSimulator):
 
             df = tw.results()
             beam_states, final_beam = self._extract_beam_states(df)
+            # Use the input distribution as the canonical beam0 for successful
+            # runs too. Physics failures already fall back to this file when
+            # partran1.out is incomplete; using the same source on both paths
+            # prevents tiny parser/rounding differences from becoming a
+            # spurious failure label in surrogate-training datasets.
+            beam0_source = "partran1.out"
+            beam0_error: Optional[str] = None
+            input_dst = Path(self.calc_dir) / "part_rfq.dst"
+            if input_dst.exists():
+                try:
+                    beam_states[0] = _beam0_from_dst(
+                        input_dst, self.initial_npart
+                    )
+                    beam0_source = "part_rfq.dst"
+                except Exception as exc:
+                    beam0_error = str(exc)
             self._cache_input_beam(beam_states[0])
             score_val = score(final_beam)
+
+            metadata = {
+                "project_file": self.project_file,
+                "calc_dir": self.calc_dir,
+                "sim_count": self._sim_count,
+                "initial_npart": self.initial_npart,
+                "beam0_source": beam0_source,
+            }
+            if beam0_error is not None:
+                metadata["beam0_error"] = beam0_error
 
             return BeamSimulationResult(
                 params=params.copy(),
@@ -214,12 +240,7 @@ class TraceWinSimulator(BeamSimulator):
                 score_val=score_val,
                 success=True,
                 source="tracewin",
-                metadata={
-                    "project_file": self.project_file,
-                    "calc_dir": self.calc_dir,
-                    "sim_count": self._sim_count,
-                    "initial_npart": self.initial_npart,
-                },
+                metadata=metadata,
             )
         finally:
             self._clean_runtime_project_artifacts(Path(self._source_project_dir))
@@ -272,20 +293,22 @@ class TraceWinSimulator(BeamSimulator):
         available_markers: list[int | float] = []
         input_dst = Path(self.calc_dir) / "part_rfq.dst"
 
+        partial_beam0: Optional[np.ndarray] = None
         if tracewin is not None:
             try:
                 partial_df = tracewin.results()
                 beam_states, _ = self._extract_beam_states(partial_df)
                 available_markers = _available_stage_markers(partial_df)
                 if STAGE_MARKERS[0] in available_markers:
-                    beam0 = beam_states[0].copy()
-                    self._cache_input_beam(beam0)
-                    beam0_source = "partran1.out"
+                    partial_beam0 = beam_states[0].copy()
             except Exception as exc:
                 partial_results_error = str(exc)
                 beam_states = None
 
-        if beam0 is None and input_dst.exists():
+        # Always prefer part_rfq.dst, matching the successful-run path above.
+        # partran1.out remains a fallback when the input distribution cannot be
+        # read, while the cache covers failures that produce neither file.
+        if input_dst.exists():
             try:
                 beam0 = _beam0_from_dst(input_dst, self.initial_npart)
                 self._cache_input_beam(beam0)
@@ -293,6 +316,11 @@ class TraceWinSimulator(BeamSimulator):
             except Exception as exc:
                 beam0_error = str(exc)
                 beam0 = None
+
+        if beam0 is None and partial_beam0 is not None:
+            beam0 = partial_beam0
+            self._cache_input_beam(beam0)
+            beam0_source = "partran1.out"
 
         if beam0 is None and self._cached_input_beam is not None:
             beam0 = self._cached_input_beam.copy()

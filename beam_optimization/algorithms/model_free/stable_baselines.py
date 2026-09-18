@@ -201,7 +201,7 @@ class StableBaselinesAgent:
         return int(self._model.num_timesteps)
 
     def set_env(self, env) -> None:
-        """Switch Gym environments without recreating SAC or its optimizers."""
+        """Switch Gym environments without recreating the model or optimizers."""
         self._model.set_env(env)
         self._env = env
 
@@ -236,8 +236,8 @@ class StableBaselinesAgent:
     ) -> None:
         """Change off-policy optimizer settings without recreating the model.
 
-        Iterative Sim-to-Real uses the normal SAC rate on the surrogate and a
-        much smaller rate on TraceWin.  Updating both ``learning_rate`` and
+        Iterative Sim-to-Real uses the normal off-policy rate on the surrogate
+        and a much smaller rate on TraceWin. Updating both ``learning_rate`` and
         ``lr_schedule`` is required because SB3 reapplies the schedule to the
         actor, critic, and entropy optimizers before every gradient block.
         ``gradient_steps=0`` is intentionally supported so a callback can
